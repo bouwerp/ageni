@@ -23,12 +23,23 @@ const (
 	ModeSettings
 )
 
+// ReloadFunc rebuilds adapters from the current ~/.ageni/.env and applies
+// them to the live master + manager. Returns an error if the new config is
+// invalid; callers should preserve the running session in that case.
+type ReloadFunc func() error
+
+// CancelFunc cancels any in-flight master generation and all running
+// sub-agents. Returns a count of sub-agents cancelled (0 if just master).
+type CancelFunc func() int
+
 // App is the top-level Bubble Tea model.
 type App struct {
-	bus      *agent.Bus
-	manager  *agent.Manager
-	tracker  *llm.Tracker
-	masterIn chan<- agent.Event
+	bus            *agent.Bus
+	manager        *agent.Manager
+	tracker        *llm.Tracker
+	masterIn       chan<- agent.Event
+	reload         ReloadFunc
+	cancelInFlight CancelFunc
 
 	chat   viewport.Model
 	side   viewport.Model
@@ -57,7 +68,7 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -73,18 +84,20 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	side := viewport.New(30, 20)
 
 	a := &App{
-		bus:        bus,
-		manager:    manager,
-		tracker:    tracker,
-		masterIn:   masterIn,
-		chat:       chat,
-		side:       side,
-		input:      ta,
-		focusInput: true,
-		subBufs:    make(map[string]*strings.Builder),
-		subStatus:  make(map[string]agent.SubagentStatus),
-		ctx:        cctx,
-		cancel:     cancel,
+		bus:            bus,
+		manager:        manager,
+		tracker:        tracker,
+		masterIn:       masterIn,
+		reload:         reload,
+		cancelInFlight: cancelInFlight,
+		chat:           chat,
+		side:           side,
+		input:          ta,
+		focusInput:     true,
+		subBufs:        make(map[string]*strings.Builder),
+		subStatus:      make(map[string]agent.SubagentStatus),
+		ctx:            cctx,
+		cancel:         cancel,
 	}
 	a.chatBuf.WriteString(titleStyle.Render("ageni") + " — type a request to begin\n\n")
 	a.refreshChat()
@@ -184,6 +197,8 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		case msg.Type == tea.KeyTab:
 			a.cycleView()
+		case msg.Type == tea.KeyEsc:
+			a.stopGeneration()
 		case msg.String() == "ctrl+,", msg.String() == "ctrl+s":
 			return a, a.openSettings()
 		}
@@ -224,6 +239,18 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, tea.Batch(cmds...)
 }
 
+func (a *App) stopGeneration() {
+	if a.cancelInFlight == nil {
+		return
+	}
+	subs := a.cancelInFlight()
+	if subs > 0 {
+		a.flashMessage = fmt.Sprintf("stopped generation (cancelled master + %d sub-agent(s))", subs)
+	} else {
+		a.flashMessage = "stopped generation"
+	}
+}
+
 func (a *App) openSettings() tea.Cmd {
 	form, st, err := newSettingsForm()
 	if err != nil {
@@ -256,11 +283,16 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	if a.settingsForm.State == huh.StateCompleted {
-		err := a.settingsState.save()
-		if err != nil {
+		if err := a.settingsState.save(); err != nil {
 			a.flashMessage = "settings: save failed — " + err.Error()
+		} else if a.reload != nil {
+			if err := a.reload(); err != nil {
+				a.flashMessage = "settings saved, reload failed: " + err.Error() + " (running adapters unchanged)"
+			} else {
+				a.flashMessage = "settings applied — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel + ", sub-agent: " + a.settingsState.subProvider + "/" + a.settingsState.subModel
+			}
 		} else {
-			a.flashMessage = "settings saved to ~/.ageni/.env — restart `ageni` to apply"
+			a.flashMessage = "settings saved — restart `ageni` to apply"
 		}
 		a.mode = ModeChat
 		a.refreshChat()
@@ -454,7 +486,7 @@ func (a *App) statusLine() string {
 	if a.flashMessage != "" {
 		flash = "  │  " + a.flashMessage
 	}
-	return fmt.Sprintf("%s  │  %s  │  Tab=cycle  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
+	return fmt.Sprintf("%s  │  %s  │  Tab=cycle  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
 }
 
 func renderUsage(snap llm.TrackerSnapshot) string {

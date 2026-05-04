@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bouwerp/ageni/internal/llm"
@@ -16,8 +17,9 @@ import (
 //   - between turns, drains pending sub-agent events into a system-reminder
 //     so the master can react ("monitor and correct")
 type Master struct {
-	Adapter llm.Adapter
-	Model   string
+	mu      sync.RWMutex
+	adapter llm.Adapter
+	model   string
 
 	tools    *tools.Registry
 	bus      *Bus
@@ -27,17 +29,48 @@ type Master struct {
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
+
+	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
+	// CancelCurrent). nil when no call is in flight.
+	turnCancel context.CancelFunc
 }
 
 func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, manager *Manager) *Master {
 	return &Master{
-		Adapter:  adapter,
-		Model:    model,
+		adapter:  adapter,
+		model:    model,
 		tools:    registry,
 		bus:      bus,
 		tracker:  tracker,
 		manager:  manager,
 		maxTurns: 30,
+	}
+}
+
+// UpdateAdapter swaps the live adapter+model. Safe to call from any
+// goroutine; takes effect on the next LLM call (in-flight calls finish on
+// the old adapter).
+func (m *Master) UpdateAdapter(adapter llm.Adapter, model string) {
+	m.mu.Lock()
+	m.adapter = adapter
+	m.model = model
+	m.mu.Unlock()
+}
+
+func (m *Master) currentAdapter() (llm.Adapter, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.adapter, m.model
+}
+
+// CancelCurrent interrupts any in-flight LLM call. The master loop stays
+// alive and processes the next event in its inbox.
+func (m *Master) CancelCurrent() {
+	m.mu.Lock()
+	c := m.turnCancel
+	m.mu.Unlock()
+	if c != nil {
+		c()
 	}
 }
 
@@ -110,15 +143,31 @@ func (m *Master) injectSubagentReminder() {
 	m.pendingEvs = nil
 }
 
-func (m *Master) takeTurns(ctx context.Context) {
+func (m *Master) takeTurns(parent context.Context) {
+	ctx, cancel := context.WithCancel(parent)
+	m.mu.Lock()
+	m.turnCancel = cancel
+	m.mu.Unlock()
+	defer func() {
+		m.mu.Lock()
+		m.turnCancel = nil
+		m.mu.Unlock()
+		cancel()
+	}()
+
 	for turn := 0; turn < m.maxTurns; turn++ {
+		if ctx.Err() != nil {
+			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
+			return
+		}
+		adapter, model := m.currentAdapter()
 		req := llm.Request{
-			Model:    m.Model,
+			Model:    model,
 			System:   m.systemPrompt(),
 			Messages: m.messages,
 			Tools:    m.tools.Definitions(),
 		}
-		stream, err := m.Adapter.Stream(ctx, req)
+		stream, err := adapter.Stream(ctx, req)
 		if err != nil {
 			m.bus.Publish(Event{Kind: EvError, Err: err})
 			return
@@ -147,7 +196,7 @@ func (m *Master) takeTurns(ctx context.Context) {
 				return
 			case llm.StreamEventDone:
 				if ev.Usage != nil {
-					m.tracker.Add("master", m.Model, *ev.Usage)
+					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 				}
 			}

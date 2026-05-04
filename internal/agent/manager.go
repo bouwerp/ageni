@@ -106,3 +106,30 @@ func (m *Manager) Kill(id string) error {
 	s.setStatus(StatusCancelled)
 	return nil
 }
+
+// UpdateFactory swaps the adapter factory used by future Spawn calls. Existing
+// sub-agents keep running with their original adapter.
+func (m *Manager) UpdateFactory(factory AdapterFactory) {
+	m.mu.Lock()
+	m.factory = factory
+	m.mu.Unlock()
+}
+
+// CancelAll cancels every running sub-agent. Done/error sub-agents are
+// untouched.
+func (m *Manager) CancelAll() int {
+	m.mu.Lock()
+	subs := make([]*Subagent, 0, len(m.subs))
+	for _, s := range m.subs {
+		if s.Status() == StatusRunning {
+			subs = append(subs, s)
+		}
+	}
+	m.mu.Unlock()
+
+	for _, s := range subs {
+		s.Cancel()
+		s.setStatus(StatusCancelled)
+	}
+	return len(subs)
+}

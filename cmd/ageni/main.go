@@ -168,8 +168,37 @@ func run() error {
 	logSub := bus.Subscribe(256)
 	go logger.Run(ctx, logSub)
 
+	// Hot-reload callback: re-reads ~/.ageni/.env, rebuilds adapters, swaps
+	// them into master + manager. Triggered by the in-TUI settings page.
+	reload := func() error {
+		// Clear cached values so godotenv picks up edits.
+		clearAgeniEnv()
+		newCfg, err := config.Load()
+		if err != nil {
+			return err
+		}
+		newMasterAdapter := buildAdapter(newCfg.Master)
+		newSubAdapter := buildAdapter(newCfg.Subagent)
+		newFactory := func(tier string) (llm.Adapter, string) {
+			switch tier {
+			case "opus":
+				return newMasterAdapter, newCfg.Master.Model
+			default:
+				return newSubAdapter, newCfg.Subagent.Model
+			}
+		}
+		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
+		manager.UpdateFactory(newFactory)
+		return nil
+	}
+
+	cancelInFlight := func() int {
+		master.CancelCurrent()
+		return manager.CancelAll()
+	}
+
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err
@@ -184,6 +213,24 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 		return llm.NewAnthropicAdapter(rc.APIKey)
 	default:
 		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
+	}
+}
+
+// clearAgeniEnv unsets all ageni-managed env vars so a subsequent
+// config.Load() re-reads them from the (possibly updated) ~/.ageni/.env or
+// ./.env file. Without this, godotenv would skip vars already set in
+// os.Environ from the previous load and the hot-reload would be a no-op.
+func clearAgeniEnv() {
+	keys := []string{
+		"MASTER_PROVIDER", "MASTER_MODEL", "MASTER_BASE_URL", "MASTER_API_KEY",
+		"SUBAGENT_PROVIDER", "SUBAGENT_MODEL", "SUBAGENT_BASE_URL", "SUBAGENT_API_KEY",
+		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
+		"HF_TOKEN", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "DEEPSEEK_API_KEY",
+		"GEMINI_API_KEY", "OLLAMA_API_KEY", "OPENAI_BASE_URL",
+		"AGENI_MAX_SUBAGENTS",
+	}
+	for _, k := range keys {
+		_ = os.Unsetenv(k)
 	}
 }
 

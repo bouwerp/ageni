@@ -116,14 +116,16 @@ func resolveRole(prefix, providerName string) (RoleConfig, error) {
 	return rc, nil
 }
 
-// loadDotenvChain loads dotenv files in increasing-precedence order.
+// loadDotenvChain loads dotenv files into the process env. godotenv.Load is
+// non-overwriting (first to set wins), so we load in precedence order:
+//  1. Real env (already in os.Environ — wins automatically)
+//  2. ./.env (project)
+//  3. ~/.ageni/.env (global default)
 func loadDotenvChain() {
-	// Global.
+	_ = godotenv.Load(".env")
 	if home, err := os.UserHomeDir(); err == nil {
 		_ = godotenv.Load(filepath.Join(home, ".ageni", ".env"))
 	}
-	// Project.
-	_ = godotenv.Load(".env")
 }
 
 // GlobalEnvPath returns the standard location for the user-level config.
