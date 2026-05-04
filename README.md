@@ -68,17 +68,30 @@ Sub-agents share `cwd` with the master. No sandboxing in v1 — file/bash tools 
 
 ### Tool system
 
-Tools are unified internally as Go structs implementing a `Tool` interface, then translated per-provider when sent to the LLM. Adding a tool = one struct + one registration call.
+Tools are unified internally as Go structs implementing a `Tool` interface, then translated per-provider when sent to the LLM. Adding a tool = one struct + one registration call. MCP servers configured at `~/.ageni/mcp.json` are auto-loaded and their tools become available alongside the built-ins.
 
-**v1 toolset (master + sub-agents both have access):**
-- `read_file(path)` / `write_file(path, content)` / `edit_file(path, old, new)` / `list_dir(path)`
-- `run_bash(cmd, timeout)` — streamed stdout/stderr
+**Built-in toolset (master + sub-agents both have access):**
 
-**v1 master-only tools:**
+| Category | Tools |
+|---|---|
+| **Files** | `read_file` (with line ranges), `write_file`, `edit_file`, `multi_edit` (atomic batch), `list_dir`, `glob` (`**` patterns) |
+| **Search** | `grep` (ripgrep --json), `web_fetch` (HTML→markdown), `web_search` (Tavily) |
+| **Shell** | `run_bash` (streamed), `run_tests` (typed Go/npm/pytest/cargo) |
+| **Git** | `git_status` (porcelain v2), `git_diff`, `git_log`, `compute_diff` (in-memory unified diff) |
+| **Plan** | `todo_write` (session todo list at `.ageni/todo.json`) |
+| **GitHub** | `github` (PRs, issues, code search via `gh` CLI) |
+| **Registries** | `pkg_info` (npm / PyPI / Go modules / crates.io) |
+| **MCP** | Any tools exported by servers in `~/.ageni/mcp.json` (prefixed `<server>__<tool>`) |
+
+**Master-only tools:**
 - `spawn_subagent(task, context)` → `subagent_id`
 - `check_subagent(id)` → recent transcript
 - `send_to_subagent(id, msg)`
 - `kill_subagent(id)`
+
+### External CLI dependencies
+
+`grep` shells out to `rg`, `git_*` to `git`, `github` to `gh`. Run `ageni doctor` to check what's installed and `ageni doctor --install` to install missing ones via your platform package manager (brew / apt / dnf / yum / pacman / apk). The `install.sh` one-liner runs this automatically; pass `--install-deps` for non-interactive auto-install or `--skip-deps` to bypass.
 
 ## Stack
 
@@ -97,8 +110,13 @@ Go was chosen over Python and Rust after evaluating:
 | `github.com/charmbracelet/bubbletea` | TUI framework |
 | `github.com/charmbracelet/lipgloss` | Layout & styling |
 | `github.com/charmbracelet/bubbles` | Pre-built widgets (textinput, viewport, list, spinner) |
+| `github.com/charmbracelet/huh` | Forms (init wizard, settings) |
 | `github.com/charmbracelet/glamour` | Markdown rendering |
-| stdlib `os/exec` | Shell tool |
+| `github.com/JohannesKaufmann/html-to-markdown/v2` | `web_fetch` HTML→markdown |
+| `github.com/bmatcuk/doublestar/v4` | `glob` `**` support |
+| `github.com/hexops/gotextdiff` | `compute_diff` unified diffs |
+| `github.com/modelcontextprotocol/go-sdk` | MCP client |
+| stdlib `os/exec` | Shell + CLI tool wrappers |
 | stdlib `context` | Cancellation |
 
 ### Why not Python?
