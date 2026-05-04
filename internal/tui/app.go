@@ -388,17 +388,47 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentToolCall:
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
-			b.WriteString(fmt.Sprintf("\n• tool: %s\n", ev.ToolCall.Name))
+			b.WriteString(fmt.Sprintf("\n• tool: %s(%s)\n", ev.ToolCall.Name, compactArgs(ev.ToolCall.Arguments)))
 		}
 		a.refreshChat()
 	case agent.EvSubagentToolDone:
-		// noop here; transcript already shows tool flow
+		// Always log to the sub-agent detail pane, and surface tool errors
+		// to the master chat so they're not silently buried.
+		if ev.ToolResult != nil {
+			if b, ok := a.subBufs[ev.SubagentID]; ok {
+				snip := ev.ToolResult.Content
+				if len(snip) > 200 {
+					snip = snip[:200] + "…"
+				}
+				mark := ""
+				if ev.ToolResult.IsError {
+					mark = " [ERROR]"
+				}
+				b.WriteString(fmt.Sprintf("  ↳%s %s\n", mark, oneLine(snip)))
+			}
+			if ev.ToolResult.IsError {
+				a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s tool error] %s\n", ev.SubagentID, oneLine(ev.ToolResult.Content))))
+			}
+		}
+		a.refreshChat()
 	case agent.EvSubagentDone:
 		a.subStatus[ev.SubagentID] = agent.StatusDone
 		a.refreshSide()
 	case agent.EvSubagentError:
 		a.subStatus[ev.SubagentID] = agent.StatusError
+		errText := "(unknown)"
+		if ev.Err != nil {
+			errText = ev.Err.Error()
+		}
+		// Show the error in the master chat AND in the sub-agent's transcript
+		// so the user sees it whether they're looking at master or sub-agent
+		// view.
+		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s error] %s\n", ev.SubagentID, errText)))
+		if b, ok := a.subBufs[ev.SubagentID]; ok {
+			b.WriteString(fmt.Sprintf("\n[error] %s\n", errText))
+		}
 		a.refreshSide()
+		a.refreshChat()
 	case agent.EvError:
 		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("\n[error] %v\n", ev.Err)))
 		a.refreshChat()
