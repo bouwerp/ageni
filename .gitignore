@@ -1,0 +1,6 @@
+.env
+/ageni
+dist/
+*.test
+*.out
+.DS_Store

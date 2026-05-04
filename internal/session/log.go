@@ -1,0 +1,107 @@
+package session
+
+import (
+	"context"
+	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
+	"sync"
+	"time"
+
+	"github.com/bouwerp/ageni/internal/agent"
+)
+
+// Logger appends every Bus event to a JSONL file in ~/.ageni/sessions/.
+type Logger struct {
+	mu   sync.Mutex
+	file *os.File
+	enc  *json.Encoder
+	path string
+}
+
+func NewLogger() (*Logger, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, err
+	}
+	dir := filepath.Join(home, ".ageni", "sessions")
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		return nil, err
+	}
+	name := fmt.Sprintf("%s.jsonl", time.Now().Format("20060102-150405"))
+	path := filepath.Join(dir, name)
+	f, err := os.Create(path)
+	if err != nil {
+		return nil, err
+	}
+	return &Logger{file: f, enc: json.NewEncoder(f), path: path}, nil
+}
+
+func (l *Logger) Path() string { return l.path }
+
+func (l *Logger) Close() error { return l.file.Close() }
+
+// Run consumes events from a subscription and writes them to disk until ctx is done.
+func (l *Logger) Run(ctx context.Context, sub <-chan agent.Event) {
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case ev, ok := <-sub:
+			if !ok {
+				return
+			}
+			l.write(ev)
+		}
+	}
+}
+
+type entry struct {
+	Kind          string  `json:"kind"`
+	At            string  `json:"at"`
+	SubagentID    string  `json:"subagent_id,omitempty"`
+	Text          string  `json:"text,omitempty"`
+	ToolName      string  `json:"tool_name,omitempty"`
+	ToolArgs      string  `json:"tool_args,omitempty"`
+	ToolResult    string  `json:"tool_result,omitempty"`
+	ToolError     bool    `json:"tool_error,omitempty"`
+	InputTokens   int     `json:"input_tokens,omitempty"`
+	OutputTokens  int     `json:"output_tokens,omitempty"`
+	CacheRead     int     `json:"cache_read_tokens,omitempty"`
+	CacheCreation int     `json:"cache_creation_tokens,omitempty"`
+	SubagentTask  string  `json:"subagent_task,omitempty"`
+	SubagentModel string  `json:"subagent_model,omitempty"`
+	Err           string  `json:"err,omitempty"`
+}
+
+func (l *Logger) write(ev agent.Event) {
+	e := entry{
+		Kind:          string(ev.Kind),
+		At:            ev.At.Format(time.RFC3339Nano),
+		SubagentID:    ev.SubagentID,
+		Text:          ev.Text,
+		SubagentTask:  ev.SubagentTask,
+		SubagentModel: ev.SubagentModel,
+	}
+	if ev.ToolCall != nil {
+		e.ToolName = ev.ToolCall.Name
+		e.ToolArgs = string(ev.ToolCall.Arguments)
+	}
+	if ev.ToolResult != nil {
+		e.ToolResult = ev.ToolResult.Content
+		e.ToolError = ev.ToolResult.IsError
+	}
+	if ev.Usage != nil {
+		e.InputTokens = ev.Usage.InputTokens
+		e.OutputTokens = ev.Usage.OutputTokens
+		e.CacheRead = ev.Usage.CacheReadTokens
+		e.CacheCreation = ev.Usage.CacheCreationTokens
+	}
+	if ev.Err != nil {
+		e.Err = ev.Err.Error()
+	}
+	l.mu.Lock()
+	_ = l.enc.Encode(&e)
+	l.mu.Unlock()
+}

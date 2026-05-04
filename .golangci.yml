@@ -1,0 +1,50 @@
+run:
+  timeout: 5m
+  tests: true
+
+linters:
+  enable:
+    - gofmt
+    - govet
+    - errcheck
+    - staticcheck
+    - unused
+    - gosimple
+    - ineffassign
+    - typecheck
+    - copyloopvar
+    - gocyclo
+    - misspell
+    - unconvert
+    - unparam
+    - gosec
+    - gocritic
+
+linters-settings:
+  gocyclo:
+    min-complexity: 50
+  gocritic:
+    enabled-checks:
+      - appendCombine
+      - boolExprSimplify
+      - dupImport
+      - emptyStringTest
+      - hexLiteral
+      - methodExprCall
+      - stringXbytes
+      - typeUnparen
+      - unnecessaryBlock
+      - yodaStyleExpr
+
+issues:
+  exclude-dirs:
+    - vendor
+  exclude-rules:
+    - path: _test\.go
+      linters:
+        - gocyclo
+        - errcheck
+        - gosec
+    - linters:
+        - unparam
+      text: "is unused"
