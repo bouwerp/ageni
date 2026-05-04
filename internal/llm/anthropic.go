@@ -21,7 +21,10 @@ type AnthropicAdapter struct {
 
 func NewAnthropicAdapter(apiKey string) *AnthropicAdapter {
 	return &AnthropicAdapter{
-		client: anthropic.NewClient(option.WithAPIKey(apiKey)),
+		client: anthropic.NewClient(
+			option.WithAPIKey(apiKey),
+			option.WithMaxRetries(4),
+		),
 	}
 }
 

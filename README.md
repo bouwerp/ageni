@@ -8,7 +8,7 @@ Works against any OpenAI- or Anthropic-compatible hosted endpoint.
 
 - **One master, many sub-agents.** The user only talks to the master. The master decomposes work, spawns sub-agents with focused tasks, and intervenes when they go off-track.
 - **Live monitoring, not polling.** Sub-agents push events as they run. The master sees those events in its own context and can inspect, message, or kill any sub-agent at any time.
-- **Provider-agnostic.** Master and sub-agents can each use Anthropic, OpenAI, or any OpenAI-compatible endpoint. Mix and match.
+- **Provider-agnostic.** Master and sub-agents each pick from a catalog of providers (Anthropic, OpenAI, OpenRouter, Groq, HuggingFace, Cerebras, Mistral, DeepSeek, Gemini, local Ollama / llama.cpp / vLLM, Ollama Cloud, or any custom OpenAI-compatible endpoint). Mix and match — e.g. Anthropic Opus master + free Groq Llama sub-agents.
 - **Distributable.** Single static binary, cross-compiled for Linux/macOS/Windows. No runtime dependencies.
 - **Day-to-day usable.** Real TUI, streaming output, persistent session log, sensible defaults.
 
@@ -204,25 +204,52 @@ No prompt text is shared verbatim across providers.
 
 ## Configuration
 
-Config via env vars (or `.env` file in cwd):
+The recommended way to configure ageni is the interactive wizard:
 
-```
-MASTER_PROVIDER=anthropic              # anthropic | openai
-MASTER_MODEL=claude-opus-4-7
-SUBAGENT_PROVIDER=anthropic
-SUBAGENT_MODEL=claude-sonnet-4-6
-
-ANTHROPIC_API_KEY=sk-ant-...
-OPENAI_API_KEY=sk-...
-
-# Optional: point at OpenAI-compatible endpoints
-OPENAI_BASE_URL=https://api.openai.com/v1
-
-# Optional: cap on concurrent sub-agents (default 8)
-AGENI_MAX_SUBAGENTS=8
+```sh
+ageni init
 ```
 
-Master and sub-agents are configured independently — run master on Anthropic and sub-agents on OpenAI, or vice versa.
+It walks you through picking a master provider + model, a sub-agent provider + model, and writes `~/.ageni/.env`. On first launch with no config, ageni drops straight into the wizard.
+
+### Provider catalog
+
+Built-in presets — pick any of these in the wizard, or set `MASTER_PROVIDER` / `SUBAGENT_PROVIDER` directly:
+
+| Provider | Free tier | Cache | Notes |
+|---|:-:|:-:|---|
+| `anthropic` | trial | ✓ | Claude Opus / Sonnet / Haiku. Best tool-use, full prompt caching. |
+| `openai` |  | ✓ | GPT-4o / o3 / mini. Automatic prompt caching. |
+| `openrouter` | ✓ |  | Aggregator: 100+ models, many `:free` (Llama, Qwen, DeepSeek). |
+| `groq` | ✓ |  | Very fast Llama / Qwen / DeepSeek. Free RPM-limited (~30/min). |
+| `huggingface` | ✓ |  | HF Inference Providers router. Small monthly free credit. |
+| `cerebras` | ✓ |  | World's fastest Llama. Generous free tier (~30 RPM, 1M tok/day). |
+| `mistral` | ✓ |  | Mistral La Plateforme: Codestral, Large, Nemo. Free tier with limits. |
+| `deepseek` | trial |  | DeepSeek V3 / R1. Cheap pay-as-you-go. |
+| `gemini` | ✓ |  | Gemini 2.5 Pro / Flash via OpenAI-compat. Generous free quotas. |
+| `ollama` | local |  | Local: `ollama serve` on :11434. Wizard auto-detects + lists models. |
+| `llamacpp` | local |  | Local: `llama-server` on :8080. |
+| `vllm` | local |  | Self-hosted vLLM on :8000. |
+| `ollama-cloud` | trial |  | Hosted Ollama Turbo. |
+| `custom` | — |  | Any OpenAI-compatible endpoint (OpenCode local proxy, internal gateways, etc.). |
+
+The wizard shows free-tier markers, suggests free defaults, and reduces the concurrent-sub-agent cap when you pick a strict free tier (Groq → 2, HF → 2).
+
+### Free-tier caveats
+
+- **Rate limits.** Groq, HF, and many OpenRouter free models cap at 30-60 requests/min. The harness retries on 429s with exponential backoff (4 attempts), but parallel sub-agent fan-out still hits ceilings. Lower `AGENI_MAX_SUBAGENTS` accordingly.
+- **No prompt caching.** Only Anthropic and OpenAI proper offer real prompt caching. On other providers the master's stable system prompt is re-charged every turn.
+- **Tool-use compliance varies.** Claude Sonnet 4.6+, Llama 3.3 70B, Qwen 2.5 Coder, DeepSeek V3 are all reliable. Smaller / older models can hallucinate tool args.
+
+### Config file load order
+
+1. `~/.ageni/.env` — global default written by `ageni init`
+2. `./.env` — per-project override
+3. Real environment — always wins
+
+### Manual config
+
+If you'd rather skip the wizard, see [`.env.example`](.env.example) for the full env-var surface.
 
 ## Sessions
 

@@ -20,7 +20,10 @@ type OpenAIAdapter struct {
 }
 
 func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
-	opts := []option.RequestOption{option.WithAPIKey(apiKey)}
+	opts := []option.RequestOption{
+		option.WithAPIKey(apiKey),
+		option.WithMaxRetries(4),
+	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}

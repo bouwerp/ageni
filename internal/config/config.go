@@ -3,88 +3,136 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"strconv"
 
 	"github.com/joho/godotenv"
+
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
-type Provider string
-
-const (
-	ProviderAnthropic Provider = "anthropic"
-	ProviderOpenAI    Provider = "openai"
-)
-
-type ModelConfig struct {
-	Provider Provider
+// RoleConfig is the resolved configuration for one agent role (master or
+// sub-agent). It carries everything the adapter factory needs.
+type RoleConfig struct {
+	Provider llm.ProviderSpec
 	Model    string
+	BaseURL  string // resolved (preset, or override from MASTER_BASE_URL/SUBAGENT_BASE_URL)
+	APIKey   string // resolved (role-specific override, then provider default)
 }
 
 type Config struct {
-	Master   ModelConfig
-	Subagent ModelConfig
-
-	AnthropicAPIKey string
-	OpenAIAPIKey    string
-	OpenAIBaseURL   string
+	Master   RoleConfig
+	Subagent RoleConfig
 
 	MaxSubagents int
 }
 
+// Load resolves configuration from (in order, last wins):
+//
+//  1. ~/.ageni/.env     (global default written by `ageni init`)
+//  2. ./.env            (per-project override)
+//  3. real environment  (always wins)
+//
+// Returns nil, nil with err==ErrNotConfigured if no provider is set anywhere
+// — the caller should drop into the wizard in that case.
 func Load() (*Config, error) {
-	_ = godotenv.Load()
+	loadDotenvChain()
 
-	c := &Config{
-		Master: ModelConfig{
-			Provider: providerOr("MASTER_PROVIDER", ProviderAnthropic),
-			Model:    envOr("MASTER_MODEL", "claude-opus-4-7"),
-		},
-		Subagent: ModelConfig{
-			Provider: providerOr("SUBAGENT_PROVIDER", ProviderAnthropic),
-			Model:    envOr("SUBAGENT_MODEL", "claude-sonnet-4-6"),
-		},
-		AnthropicAPIKey: os.Getenv("ANTHROPIC_API_KEY"),
-		OpenAIAPIKey:    os.Getenv("OPENAI_API_KEY"),
-		OpenAIBaseURL:   os.Getenv("OPENAI_BASE_URL"),
-		MaxSubagents:    intOr("AGENI_MAX_SUBAGENTS", 8),
+	masterRaw := os.Getenv("MASTER_PROVIDER")
+	subRaw := os.Getenv("SUBAGENT_PROVIDER")
+	if masterRaw == "" && subRaw == "" {
+		return nil, ErrNotConfigured
+	}
+	if masterRaw == "" {
+		return nil, fmt.Errorf("MASTER_PROVIDER not set")
+	}
+	if subRaw == "" {
+		return nil, fmt.Errorf("SUBAGENT_PROVIDER not set")
 	}
 
-	if err := c.validate(); err != nil {
-		return nil, err
+	master, err := resolveRole("MASTER", masterRaw)
+	if err != nil {
+		return nil, fmt.Errorf("master: %w", err)
 	}
-	return c, nil
+	sub, err := resolveRole("SUBAGENT", subRaw)
+	if err != nil {
+		return nil, fmt.Errorf("sub-agent: %w", err)
+	}
+
+	return &Config{
+		Master:       master,
+		Subagent:     sub,
+		MaxSubagents: intOr("AGENI_MAX_SUBAGENTS", 8),
+	}, nil
 }
 
-func (c *Config) validate() error {
-	for _, mc := range []ModelConfig{c.Master, c.Subagent} {
-		switch mc.Provider {
-		case ProviderAnthropic:
-			if c.AnthropicAPIKey == "" {
-				return fmt.Errorf("ANTHROPIC_API_KEY required for provider=%s", mc.Provider)
+// ErrNotConfigured indicates no provider has been chosen anywhere — caller
+// should run the wizard.
+var ErrNotConfigured = fmt.Errorf("ageni is not configured; run `ageni init`")
+
+func resolveRole(prefix, providerName string) (RoleConfig, error) {
+	spec, ok := llm.LookupProvider(providerName)
+	if !ok {
+		return RoleConfig{}, fmt.Errorf("unknown provider %q (run `ageni init` to see the list)", providerName)
+	}
+
+	rc := RoleConfig{Provider: spec}
+
+	rc.Model = os.Getenv(prefix + "_MODEL")
+	if rc.Model == "" {
+		rc.Model = spec.DefaultModel
+	}
+	if rc.Model == "" {
+		return rc, fmt.Errorf("%s_MODEL is required for provider %q", prefix, providerName)
+	}
+
+	rc.BaseURL = os.Getenv(prefix + "_BASE_URL")
+	if rc.BaseURL == "" {
+		rc.BaseURL = spec.BaseURL
+	}
+	if spec.Kind == llm.KindOpenAICompat && rc.BaseURL == "" {
+		return rc, fmt.Errorf("%s_BASE_URL is required for provider %q", prefix, providerName)
+	}
+
+	if spec.NeedsKey {
+		rc.APIKey = os.Getenv(prefix + "_API_KEY")
+		if rc.APIKey == "" && spec.APIKeyEnv != "" {
+			rc.APIKey = os.Getenv(spec.APIKeyEnv)
+		}
+		if rc.APIKey == "" {
+			env := spec.APIKeyEnv
+			if env == "" {
+				env = prefix + "_API_KEY"
 			}
-		case ProviderOpenAI:
-			if c.OpenAIAPIKey == "" {
-				return fmt.Errorf("OPENAI_API_KEY required for provider=%s", mc.Provider)
-			}
-		default:
-			return fmt.Errorf("unknown provider: %q", mc.Provider)
+			return rc, fmt.Errorf("API key required: set %s or %s_API_KEY", env, prefix)
+		}
+	} else {
+		// Optional auth (e.g. some custom endpoints). Pull anyway if set.
+		if v := os.Getenv(prefix + "_API_KEY"); v != "" {
+			rc.APIKey = v
 		}
 	}
-	return nil
+
+	return rc, nil
 }
 
-func envOr(key, def string) string {
-	if v := os.Getenv(key); v != "" {
-		return v
+// loadDotenvChain loads dotenv files in increasing-precedence order.
+func loadDotenvChain() {
+	// Global.
+	if home, err := os.UserHomeDir(); err == nil {
+		_ = godotenv.Load(filepath.Join(home, ".ageni", ".env"))
 	}
-	return def
+	// Project.
+	_ = godotenv.Load(".env")
 }
 
-func providerOr(key string, def Provider) Provider {
-	if v := os.Getenv(key); v != "" {
-		return Provider(v)
+// GlobalEnvPath returns the standard location for the user-level config.
+func GlobalEnvPath() (string, error) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return "", err
 	}
-	return def
+	return filepath.Join(home, ".ageni", ".env"), nil
 }
 
 func intOr(key string, def int) int {

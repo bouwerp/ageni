@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"os/signal"
@@ -31,6 +32,12 @@ func main() {
 			return
 		case "update":
 			if err := runUpdate(version); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
+		case "init":
+			if err := runInit(); err != nil {
 				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
 				os.Exit(1)
 			}
@@ -65,6 +72,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "Commands:")
 	fmt.Fprintln(w, "  (none)           start the TUI")
 	fmt.Fprintln(w, "  version, -v      print version information")
+	fmt.Fprintln(w, "  init             interactive config wizard")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
 	fmt.Fprintln(w, "  help, -h         show this help")
 }
@@ -72,43 +80,37 @@ func printUsage(w *os.File) {
 func run() error {
 	cfg, err := config.Load()
 	if err != nil {
-		return err
+		// First-run UX: drop into the wizard if no provider is configured.
+		if errors.Is(err, config.ErrNotConfigured) {
+			fmt.Println("No ageni config found — running first-time setup.")
+			fmt.Println()
+			if werr := runInit(); werr != nil {
+				return werr
+			}
+			cfg, err = config.Load()
+			if err != nil {
+				return err
+			}
+		} else {
+			return err
+		}
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go handleSignals(cancel)
 
-	// Adapters — instantiate one of each provider that's configured. The
-	// factory below selects per-tier.
-	var (
-		anthr *llm.AnthropicAdapter
-		oai   *llm.OpenAIAdapter
-	)
-	if cfg.AnthropicAPIKey != "" {
-		anthr = llm.NewAnthropicAdapter(cfg.AnthropicAPIKey)
-	}
-	if cfg.OpenAIAPIKey != "" {
-		oai = llm.NewOpenAIAdapter(cfg.OpenAIAPIKey, cfg.OpenAIBaseURL)
-	}
+	masterAdapter := buildAdapter(cfg.Master)
+	subAdapter := buildAdapter(cfg.Subagent)
 
-	masterAdapter, masterModel, err := pickAdapter(cfg.Master, anthr, oai)
-	if err != nil {
-		return fmt.Errorf("master: %w", err)
-	}
-	subAdapter, subModel, err := pickAdapter(cfg.Subagent, anthr, oai)
-	if err != nil {
-		return fmt.Errorf("subagent: %w", err)
-	}
-
-	// Tier factory. v1 mapping: tier → configured sub-agent adapter+model.
+	// Tier factory. v1: opus → master adapter, others → sub-agent adapter.
 	// (Per-tier model overrides land in v2.)
 	factory := func(tier string) (llm.Adapter, string) {
 		switch tier {
 		case "opus":
-			return masterAdapter, masterModel
+			return masterAdapter, cfg.Master.Model
 		default:
-			return subAdapter, subModel
+			return subAdapter, cfg.Subagent.Model
 		}
 	}
 
@@ -139,7 +141,7 @@ func run() error {
 	masterReg.Register(agent.KillTool{M: manager})
 
 	// Master loop
-	master := agent.NewMaster(masterAdapter, masterModel, masterReg, bus, tracker, manager)
+	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	masterIn := make(chan agent.Event, 16)
 
 	// Forward sub-agent events from the bus into the master inbox so it can react.
@@ -175,20 +177,13 @@ func run() error {
 	return nil
 }
 
-func pickAdapter(mc config.ModelConfig, anthr *llm.AnthropicAdapter, oai *llm.OpenAIAdapter) (llm.Adapter, string, error) {
-	switch mc.Provider {
-	case config.ProviderAnthropic:
-		if anthr == nil {
-			return nil, "", fmt.Errorf("anthropic adapter not configured")
-		}
-		return anthr, mc.Model, nil
-	case config.ProviderOpenAI:
-		if oai == nil {
-			return nil, "", fmt.Errorf("openai adapter not configured")
-		}
-		return oai, mc.Model, nil
+// buildAdapter returns the right Adapter for a resolved RoleConfig.
+func buildAdapter(rc config.RoleConfig) llm.Adapter {
+	switch rc.Provider.Kind {
+	case llm.KindAnthropic:
+		return llm.NewAnthropicAdapter(rc.APIKey)
 	default:
-		return nil, "", fmt.Errorf("unknown provider: %s", mc.Provider)
+		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
 	}
 }
 
