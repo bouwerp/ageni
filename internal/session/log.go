@@ -58,21 +58,21 @@ func (l *Logger) Run(ctx context.Context, sub <-chan agent.Event) {
 }
 
 type entry struct {
-	Kind          string  `json:"kind"`
-	At            string  `json:"at"`
-	SubagentID    string  `json:"subagent_id,omitempty"`
-	Text          string  `json:"text,omitempty"`
-	ToolName      string  `json:"tool_name,omitempty"`
-	ToolArgs      string  `json:"tool_args,omitempty"`
-	ToolResult    string  `json:"tool_result,omitempty"`
-	ToolError     bool    `json:"tool_error,omitempty"`
-	InputTokens   int     `json:"input_tokens,omitempty"`
-	OutputTokens  int     `json:"output_tokens,omitempty"`
-	CacheRead     int     `json:"cache_read_tokens,omitempty"`
-	CacheCreation int     `json:"cache_creation_tokens,omitempty"`
-	SubagentTask  string  `json:"subagent_task,omitempty"`
-	SubagentModel string  `json:"subagent_model,omitempty"`
-	Err           string  `json:"err,omitempty"`
+	Kind          string `json:"kind"`
+	At            string `json:"at"`
+	SubagentID    string `json:"subagent_id,omitempty"`
+	Text          string `json:"text,omitempty"`
+	ToolName      string `json:"tool_name,omitempty"`
+	ToolArgs      string `json:"tool_args,omitempty"`
+	ToolResult    string `json:"tool_result,omitempty"`
+	ToolError     bool   `json:"tool_error,omitempty"`
+	InputTokens   int    `json:"input_tokens,omitempty"`
+	OutputTokens  int    `json:"output_tokens,omitempty"`
+	CacheRead     int    `json:"cache_read_tokens,omitempty"`
+	CacheCreation int    `json:"cache_creation_tokens,omitempty"`
+	SubagentTask  string `json:"subagent_task,omitempty"`
+	SubagentModel string `json:"subagent_model,omitempty"`
+	Err           string `json:"err,omitempty"`
 }
 
 func (l *Logger) write(ev agent.Event) {

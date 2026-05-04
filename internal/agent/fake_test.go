@@ -54,9 +54,9 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 	reg.Register(tools.ListDir{})
 
 	task := SubagentTask{
-		Objective:    "list working directory",
-		OutputFormat: "<result>summary</result>",
-		AllowedTools: []string{"list_dir"},
+		Objective:       "list working directory",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"list_dir"},
 		BudgetToolCalls: 5,
 	}
 	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker)
@@ -97,8 +97,8 @@ func TestSubagentRespectsBudget(t *testing.T) {
 	reg.Register(tools.ListDir{})
 
 	task := SubagentTask{
-		Objective:    "loop forever",
-		OutputFormat: "<result/>",
+		Objective:       "loop forever",
+		OutputFormat:    "<result/>",
 		BudgetToolCalls: 3,
 	}
 	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker)

@@ -11,20 +11,20 @@ import (
 type EventKind string
 
 const (
-	EvUserMessage     EventKind = "user_message"
-	EvMasterText      EventKind = "master_text"
-	EvMasterToolCall  EventKind = "master_tool_call"
-	EvMasterToolDone  EventKind = "master_tool_done"
-	EvMasterTurnDone  EventKind = "master_turn_done"
-	EvMasterUsage     EventKind = "master_usage"
-	EvSubagentSpawn   EventKind = "subagent_spawn"
-	EvSubagentText    EventKind = "subagent_text"
+	EvUserMessage      EventKind = "user_message"
+	EvMasterText       EventKind = "master_text"
+	EvMasterToolCall   EventKind = "master_tool_call"
+	EvMasterToolDone   EventKind = "master_tool_done"
+	EvMasterTurnDone   EventKind = "master_turn_done"
+	EvMasterUsage      EventKind = "master_usage"
+	EvSubagentSpawn    EventKind = "subagent_spawn"
+	EvSubagentText     EventKind = "subagent_text"
 	EvSubagentToolCall EventKind = "subagent_tool_call"
 	EvSubagentToolDone EventKind = "subagent_tool_done"
-	EvSubagentDone    EventKind = "subagent_done"
-	EvSubagentError   EventKind = "subagent_error"
-	EvSubagentUsage   EventKind = "subagent_usage"
-	EvError           EventKind = "error"
+	EvSubagentDone     EventKind = "subagent_done"
+	EvSubagentError    EventKind = "subagent_error"
+	EvSubagentUsage    EventKind = "subagent_usage"
+	EvError            EventKind = "error"
 )
 
 // Event is a single message on the bus.

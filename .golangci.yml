@@ -48,3 +48,17 @@ issues:
     - linters:
         - unparam
       text: "is unused"
+    # Tools intentionally write user-facing files with standard permissions
+    # (0644/0755) and execute arbitrary shell commands — that's their job.
+    - path: internal/tools/files\.go
+      linters:
+        - gosec
+    - path: internal/tools/shell\.go
+      linters:
+        - gosec
+        - gocritic
+    # Self-update fetches archives from GitHub-supplied URLs and writes a
+    # 0755 executable, both of which are required for the feature.
+    - path: cmd/ageni/update\.go
+      linters:
+        - gosec

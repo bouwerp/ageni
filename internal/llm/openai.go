@@ -110,7 +110,7 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 
 func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams {
 	params := openai.ChatCompletionNewParams{
-		Model: shared.ChatModel(req.Model),
+		Model: req.Model,
 		StreamOptions: openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
 		},

@@ -3,13 +3,12 @@ package tui
 import "github.com/charmbracelet/lipgloss"
 
 var (
-	colorBorder    = lipgloss.Color("240")
-	colorBorderHi  = lipgloss.Color("63")
-	colorAccent    = lipgloss.Color("39")
-	colorMuted     = lipgloss.Color("245")
-	colorOK        = lipgloss.Color("42")
-	colorWarn      = lipgloss.Color("214")
-	colorErr       = lipgloss.Color("196")
+	colorBorder   = lipgloss.Color("240")
+	colorBorderHi = lipgloss.Color("63")
+	colorAccent   = lipgloss.Color("39")
+	colorMuted    = lipgloss.Color("245")
+	colorOK       = lipgloss.Color("42")
+	colorErr      = lipgloss.Color("196")
 
 	chatStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).

@@ -113,7 +113,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, req Request) (<-chan Stre
 
 func (a *AnthropicAdapter) buildParams(req Request) (anthropic.MessageNewParams, error) {
 	params := anthropic.MessageNewParams{
-		Model:     anthropic.Model(req.Model),
+		Model:     req.Model,
 		MaxTokens: int64(req.MaxTokens),
 	}
 	if req.MaxTokens == 0 {

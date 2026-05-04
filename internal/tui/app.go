@@ -16,26 +16,24 @@ import (
 
 // App is the top-level Bubble Tea model.
 type App struct {
-	bus     *agent.Bus
-	manager *agent.Manager
-	tracker *llm.Tracker
+	bus      *agent.Bus
+	manager  *agent.Manager
+	tracker  *llm.Tracker
 	masterIn chan<- agent.Event
 
-	chat     viewport.Model
-	side     viewport.Model
-	input    textarea.Model
-	usage    string
-	status   string
-	width    int
-	height   int
+	chat   viewport.Model
+	side   viewport.Model
+	input  textarea.Model
+	usage  string
+	width  int
+	height int
 
 	// Buffers
-	chatBuf      strings.Builder
+	chatBuf       strings.Builder
 	currentMaster strings.Builder
-	currentSubID string
-	subBufs      map[string]*strings.Builder
-	subStatus    map[string]agent.SubagentStatus
-	subOrder     []string
+	subBufs       map[string]*strings.Builder
+	subStatus     map[string]agent.SubagentStatus
+	subOrder      []string
 
 	// view state
 	focusInput bool
@@ -61,18 +59,18 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	side := viewport.New(30, 20)
 
 	a := &App{
-		bus:       bus,
-		manager:   manager,
-		tracker:   tracker,
-		masterIn:  masterIn,
-		chat:      chat,
-		side:      side,
-		input:     ta,
+		bus:        bus,
+		manager:    manager,
+		tracker:    tracker,
+		masterIn:   masterIn,
+		chat:       chat,
+		side:       side,
+		input:      ta,
 		focusInput: true,
-		subBufs:   make(map[string]*strings.Builder),
-		subStatus: make(map[string]agent.SubagentStatus),
-		ctx:       cctx,
-		cancel:    cancel,
+		subBufs:    make(map[string]*strings.Builder),
+		subStatus:  make(map[string]agent.SubagentStatus),
+		ctx:        cctx,
+		cancel:     cancel,
 	}
 	a.chatBuf.WriteString(titleStyle.Render("ageni") + " — type a request to begin\n\n")
 	a.refreshChat()

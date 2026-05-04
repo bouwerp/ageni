@@ -21,14 +21,14 @@ type AdapterFactory func(tier string) (adapter llm.Adapter, model string)
 
 // Manager owns active sub-agents and provides spawn/check/send/kill.
 type Manager struct {
-	mu       sync.Mutex
-	subs     map[string]*Subagent
-	bus      *Bus
-	tools    *tools.Registry
-	tracker  *llm.Tracker
-	factory  AdapterFactory
+	mu            sync.Mutex
+	subs          map[string]*Subagent
+	bus           *Bus
+	tools         *tools.Registry
+	tracker       *llm.Tracker
+	factory       AdapterFactory
 	maxConcurrent int
-	nextID   int
+	nextID        int
 }
 
 func NewManager(bus *Bus, registry *tools.Registry, tracker *llm.Tracker, factory AdapterFactory, maxConcurrent int) *Manager {

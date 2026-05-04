@@ -62,11 +62,11 @@ type Request struct {
 type StreamEventType string
 
 const (
-	StreamEventText      StreamEventType = "text"
-	StreamEventToolCall  StreamEventType = "tool_call"
-	StreamEventDone      StreamEventType = "done"
-	StreamEventError     StreamEventType = "error"
-	StreamEventThinking  StreamEventType = "thinking"
+	StreamEventText     StreamEventType = "text"
+	StreamEventToolCall StreamEventType = "tool_call"
+	StreamEventDone     StreamEventType = "done"
+	StreamEventError    StreamEventType = "error"
+	StreamEventThinking StreamEventType = "thinking"
 )
 
 type StreamEvent struct {
