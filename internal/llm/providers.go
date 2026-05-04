@@ -60,7 +60,7 @@ var providers = []ProviderSpec{
 		RecommendedModels: []ModelSuggestion{
 			{ID: "claude-opus-4-7", Label: "Opus 4.7 — flagship, planner-grade"},
 			{ID: "claude-sonnet-4-6", Label: "Sonnet 4.6 — strong default for sub-agents"},
-			{ID: "claude-haiku-4-5", Label: "Haiku 4.5 — cheap and fast"},
+			{ID: "claude-haiku-4-5-20251001", Label: "Haiku 4.5 — cheap and fast"},
 		},
 		SuggestedMaxSubagents: 8,
 		SupportsCaching:       true,
@@ -97,9 +97,11 @@ var providers = []ProviderSpec{
 		DefaultModel: "meta-llama/llama-3.3-70b-instruct:free",
 		RecommendedModels: []ModelSuggestion{
 			{ID: "meta-llama/llama-3.3-70b-instruct:free", Label: "Llama 3.3 70B (free)", Free: true},
-			{ID: "qwen/qwen-2.5-coder-32b-instruct:free", Label: "Qwen 2.5 Coder 32B (free)", Free: true},
-			{ID: "deepseek/deepseek-chat-v3-0324:free", Label: "DeepSeek V3 (free)", Free: true},
+			{ID: "qwen/qwen3-coder:free", Label: "Qwen3 Coder (free, code-specialized)", Free: true},
+			{ID: "z-ai/glm-4.5-air:free", Label: "GLM 4.5 Air (free)", Free: true},
+			{ID: "openai/gpt-oss-120b:free", Label: "GPT-OSS 120B (free)", Free: true},
 			{ID: "anthropic/claude-sonnet-4.6", Label: "Claude Sonnet 4.6 (paid)"},
+			{ID: "anthropic/claude-opus-4.7", Label: "Claude Opus 4.7 (paid)"},
 			{ID: "openai/gpt-4o", Label: "GPT-4o (paid)"},
 		},
 		SuggestedMaxSubagents: 4,
@@ -108,7 +110,7 @@ var providers = []ProviderSpec{
 	{
 		Name:         "groq",
 		Label:        "Groq",
-		Description:  "Very fast Llama / Qwen / DeepSeek inference on custom hardware. Free tier with RPM limits.",
+		Description:  "Very fast Llama / GPT-OSS inference on custom hardware. Free tier with RPM limits.",
 		Kind:         KindOpenAICompat,
 		BaseURL:      "https://api.groq.com/openai/v1",
 		APIKeyEnv:    "GROQ_API_KEY",
@@ -117,9 +119,9 @@ var providers = []ProviderSpec{
 		DefaultModel: "llama-3.3-70b-versatile",
 		RecommendedModels: []ModelSuggestion{
 			{ID: "llama-3.3-70b-versatile", Label: "Llama 3.3 70B (free)", Free: true},
-			{ID: "qwen-2.5-coder-32b", Label: "Qwen 2.5 Coder 32B (free)", Free: true},
-			{ID: "deepseek-r1-distill-llama-70b", Label: "DeepSeek R1 distill 70B (free)", Free: true},
-			{ID: "mixtral-8x7b-32768", Label: "Mixtral 8x7B (free)", Free: true},
+			{ID: "llama-3.1-8b-instant", Label: "Llama 3.1 8B Instant (free, fast)", Free: true},
+			{ID: "openai/gpt-oss-120b", Label: "GPT-OSS 120B (free)", Free: true},
+			{ID: "openai/gpt-oss-20b", Label: "GPT-OSS 20B (free)", Free: true},
 		},
 		SuggestedMaxSubagents: 2,
 		KnownLimits:           "Free tier: ~30 requests/min. Set max-subagents=2 to avoid 429s.",
@@ -155,9 +157,10 @@ var providers = []ProviderSpec{
 		RecommendedModels: []ModelSuggestion{
 			{ID: "llama-3.3-70b", Label: "Llama 3.3 70B (free)", Free: true},
 			{ID: "llama3.1-8b", Label: "Llama 3.1 8B (free)", Free: true},
+			{ID: "gpt-oss-120b", Label: "GPT-OSS 120B (free)", Free: true},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Free tier: ~30 RPM, 1M tokens/day. Very fast TTFT.",
+		KnownLimits:           "Free tier: ~30 RPM, 1M tokens/day. Very fast TTFT. Verify model availability at inference-docs.cerebras.ai/llms.txt.",
 	},
 	{
 		Name:         "mistral",

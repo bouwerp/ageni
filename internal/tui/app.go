@@ -8,10 +8,19 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/llm"
+)
+
+// Mode toggles between the chat UI and the settings form.
+type Mode int
+
+const (
+	ModeChat Mode = iota
+	ModeSettings
 )
 
 // App is the top-level Bubble Tea model.
@@ -38,6 +47,11 @@ type App struct {
 	// view state
 	focusInput bool
 	viewSub    string // selected subagent id, "" = master chat
+
+	mode          Mode
+	settingsForm  *huh.Form
+	settingsState *settingsState
+	flashMessage  string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -146,21 +160,32 @@ func (a *App) subscribeUsageOne(sub <-chan llm.TrackerSnapshot) tea.Cmd {
 }
 
 func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Window sizing applies to both modes.
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		a.width = ws.Width
+		a.height = ws.Height
+		a.layout()
+	}
+
+	if a.mode == ModeSettings {
+		return a.updateSettings(msg)
+	}
+	return a.updateChat(msg)
+}
+
+func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
 	switch msg := msg.(type) {
-	case tea.WindowSizeMsg:
-		a.width = msg.Width
-		a.height = msg.Height
-		a.layout()
-
 	case tea.KeyMsg:
-		switch msg.Type {
-		case tea.KeyCtrlC:
+		switch {
+		case msg.Type == tea.KeyCtrlC:
 			a.cancel()
 			return a, tea.Quit
-		case tea.KeyTab:
+		case msg.Type == tea.KeyTab:
 			a.cycleView()
+		case msg.String() == "ctrl+,", msg.String() == "ctrl+s":
+			return a, a.openSettings()
 		}
 		if msg.Type == tea.KeyEnter && !msg.Alt && a.focusInput {
 			text := strings.TrimSpace(a.input.Value())
@@ -197,6 +222,51 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+func (a *App) openSettings() tea.Cmd {
+	form, st, err := newSettingsForm()
+	if err != nil {
+		a.flashMessage = "settings: " + err.Error()
+		return nil
+	}
+	a.settingsForm = form
+	a.settingsState = st
+	a.mode = ModeSettings
+	return a.settingsForm.Init()
+}
+
+func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Allow Ctrl+C to quit and Esc to bail without saving from anywhere.
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.Type {
+		case tea.KeyCtrlC:
+			a.cancel()
+			return a, tea.Quit
+		case tea.KeyEsc:
+			a.mode = ModeChat
+			a.flashMessage = "settings: cancelled"
+			return a, nil
+		}
+	}
+
+	f, cmd := a.settingsForm.Update(msg)
+	if form, ok := f.(*huh.Form); ok {
+		a.settingsForm = form
+	}
+
+	if a.settingsForm.State == huh.StateCompleted {
+		err := a.settingsState.save()
+		if err != nil {
+			a.flashMessage = "settings: save failed — " + err.Error()
+		} else {
+			a.flashMessage = "settings saved to ~/.ageni/.env — restart `ageni` to apply"
+		}
+		a.mode = ModeChat
+		a.refreshChat()
+		return a, nil
+	}
+	return a, cmd
 }
 
 func (a *App) cycleView() {
@@ -362,6 +432,10 @@ func (a *App) View() string {
 	if a.width < 60 || a.height < 12 {
 		return "ageni: window too small (need 60×12)"
 	}
+	if a.mode == ModeSettings && a.settingsForm != nil {
+		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=cancel without saving  Enter=advance/submit\n\n")
+		return header + a.settingsForm.View()
+	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
 		chatStyle.Render(a.chat.View()),
 		sideStyle.Render(a.side.View()),
@@ -376,7 +450,11 @@ func (a *App) statusLine() string {
 	if a.viewSub != "" {
 		view = "view: " + a.viewSub
 	}
-	return fmt.Sprintf("%s  │  %s  │  Tab=cycle  Ctrl+C=quit", view, a.usage)
+	flash := ""
+	if a.flashMessage != "" {
+		flash = "  │  " + a.flashMessage
+	}
+	return fmt.Sprintf("%s  │  %s  │  Tab=cycle  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
 }
 
 func renderUsage(snap llm.TrackerSnapshot) string {
