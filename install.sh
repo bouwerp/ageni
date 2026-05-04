@@ -214,6 +214,22 @@ cleanup() {
 
 trap cleanup EXIT
 
+install_dependencies() {
+    if [ "$SKIP_DEPS" = "1" ]; then
+        return
+    fi
+    if ! command -v ageni &> /dev/null && [ ! -x "$INSTALL_DIR/$BINARY_NAME" ]; then
+        return
+    fi
+    echo ""
+    echo "Checking external CLI dependencies (ripgrep, git, gh)..."
+    if [ "$AUTO_INSTALL_DEPS" = "1" ]; then
+        "$INSTALL_DIR/$BINARY_NAME" doctor --install || true
+    else
+        "$INSTALL_DIR/$BINARY_NAME" doctor || true
+    fi
+}
+
 main() {
     echo "=== ageni installation ==="
     echo ""
@@ -222,6 +238,7 @@ main() {
     setup_config
     download_binary
     install_binary
+    install_dependencies
 
     echo ""
     echo -e "${GREEN}Installation complete!${NC}"
@@ -237,13 +254,23 @@ while [[ $# -gt 0 ]]; do
             INSTALL_DIR="/usr/local/bin"
             shift
             ;;
+        --install-deps|-y)
+            AUTO_INSTALL_DEPS=1
+            shift
+            ;;
+        --skip-deps)
+            SKIP_DEPS=1
+            shift
+            ;;
         -h|--help)
             echo "Usage: $0 [OPTIONS]"
             echo ""
             echo "Options:"
-            echo "  --prefix DIR    Install to custom directory (default: ~/.local/bin)"
-            echo "  --system        Install to /usr/local/bin (requires sudo)"
-            echo "  -h, --help      Show this help message"
+            echo "  --prefix DIR     Install to custom directory (default: ~/.local/bin)"
+            echo "  --system         Install to /usr/local/bin (requires sudo)"
+            echo "  --install-deps   Auto-install external CLIs (rg, git, gh)"
+            echo "  --skip-deps      Skip the dependency check entirely"
+            echo "  -h, --help       Show this help message"
             exit 0
             ;;
         *)

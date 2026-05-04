@@ -42,6 +42,18 @@ func main() {
 				os.Exit(1)
 			}
 			return
+		case "doctor":
+			autoInstall := false
+			for _, a := range os.Args[2:] {
+				if a == "--install" || a == "-y" {
+					autoInstall = true
+				}
+			}
+			if err := runDoctor(autoInstall); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
 		case "--help", "-h", "help":
 			printUsage(os.Stdout)
 			return
@@ -73,6 +85,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  (none)           start the TUI")
 	fmt.Fprintln(w, "  version, -v      print version information")
 	fmt.Fprintln(w, "  init             interactive config wizard")
+	fmt.Fprintln(w, "  doctor           check external CLI dependencies; --install / -y to auto-install")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
 	fmt.Fprintln(w, "  help, -h         show this help")
 }
@@ -116,25 +129,34 @@ func run() error {
 
 	bus := agent.NewBus()
 	tracker := llm.NewTracker()
-	registry := tools.NewRegistry()
 
-	// Built-in tools (master + sub-agents both get these)
-	registry.Register(tools.ReadFile{})
-	registry.Register(tools.WriteFile{})
-	registry.Register(tools.EditFile{})
-	registry.Register(tools.ListDir{})
-	registry.Register(tools.RunBash{})
+	// Build a base set of tools used by both master and sub-agents.
+	registerBase := func(r *tools.Registry, todo *tools.TodoWrite) {
+		r.Register(tools.ReadFile{})
+		r.Register(tools.WriteFile{})
+		r.Register(tools.EditFile{})
+		r.Register(tools.MultiEdit{})
+		r.Register(tools.ListDir{})
+		r.Register(tools.Glob{})
+		r.Register(tools.Grep{})
+		r.Register(tools.RunBash{})
+		r.Register(tools.WebFetch{})
+		r.Register(tools.WebSearch{})
+		r.Register(todo)
+	}
+
+	// One TodoWrite instance shared between master and sub-agents so the
+	// session todo list is a single source of truth.
+	todo := tools.NewTodoWrite()
+
+	registry := tools.NewRegistry()
+	registerBase(registry, todo)
 
 	// Manager + master-only tools
 	manager := agent.NewManager(bus, registry, tracker, factory, cfg.MaxSubagents)
 
-	// Master gets a separate registry that includes the spawn/check/send/kill tools.
 	masterReg := tools.NewRegistry()
-	masterReg.Register(tools.ReadFile{})
-	masterReg.Register(tools.WriteFile{})
-	masterReg.Register(tools.EditFile{})
-	masterReg.Register(tools.ListDir{})
-	masterReg.Register(tools.RunBash{})
+	registerBase(masterReg, todo)
 	masterReg.Register(agent.SpawnTool{M: manager})
 	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})

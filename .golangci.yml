@@ -62,3 +62,8 @@ issues:
     - path: cmd/ageni/update\.go
       linters:
         - gosec
+    # 'doctor' shells out to the platform package manager — the command
+    # string is built from a closed allow-list of known package managers.
+    - path: cmd/ageni/doctor\.go
+      linters:
+        - gosec

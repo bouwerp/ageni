@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,29 +12,75 @@ import (
 	"strings"
 )
 
-// ReadFile reads a file's contents.
+// ReadFile reads a file's contents, optionally a line range.
 type ReadFile struct{}
 
 func (ReadFile) Name() string { return "read_file" }
 func (ReadFile) Description() string {
-	return "Read a file's full contents. Use this to inspect source code, configs, or any text file."
+	return `Read a file's contents. Use offset+limit to read a specific line range — strongly recommended for files >500 lines. Returns a header showing the actual range and total file size.`
 }
 func (ReadFile) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string","description":"Absolute or relative path to the file"}},"required":["path"]}`)
+	return json.RawMessage(`{
+"type":"object",
+"properties":{
+  "path":{"type":"string","description":"Absolute or relative path to the file."},
+  "offset":{"type":"integer","description":"1-indexed starting line. Default 1."},
+  "limit":{"type":"integer","description":"Max lines to return. Default: whole file (capped at 2000 lines)."}
+},
+"required":["path"]
+}`)
 }
 func (ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
-	var p struct{ Path string }
+	var p struct {
+		Path   string `json:"path"`
+		Offset int    `json:"offset"`
+		Limit  int    `json:"limit"`
+	}
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
-	b, err := os.ReadFile(p.Path)
+	f, err := os.Open(p.Path)
 	if err != nil {
 		return "", err
 	}
-	return string(b), nil
+	defer f.Close()
+
+	if p.Offset <= 0 {
+		p.Offset = 1
+	}
+	if p.Limit <= 0 {
+		p.Limit = 2000
+	}
+
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 1024*1024)
+	var sb strings.Builder
+	totalLines := 0
+	emitted := 0
+	for scanner.Scan() {
+		totalLines++
+		if totalLines < p.Offset {
+			continue
+		}
+		if emitted >= p.Limit {
+			// keep counting to report total below
+			continue
+		}
+		sb.WriteString(scanner.Text())
+		sb.WriteByte('\n')
+		emitted++
+	}
+	if err := scanner.Err(); err != nil {
+		return "", err
+	}
+	header := fmt.Sprintf("[%s lines %d-%d of %d]\n", p.Path, p.Offset, p.Offset+emitted-1, totalLines)
+	if emitted == 0 {
+		header = fmt.Sprintf("[%s: offset %d is past end of file (%d lines total)]\n", p.Path, p.Offset, totalLines)
+	}
+	return header + sb.String(), nil
 }
 
 // WriteFile writes (creating or overwriting) a file.
