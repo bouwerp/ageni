@@ -135,9 +135,10 @@ func pickRole(role string, existing map[string]string, prefix string, probed map
 	}
 	if err := huh.NewSelect[string]().
 		Title(fmt.Sprintf("Pick a provider for the %s agent", role)).
-		Description(roleHint(role)).
+		Description(roleHint(role) + " (type to filter)").
 		Options(options...).
 		Value(&chosenName).
+		Filtering(true).
 		Height(20).
 		Run(); err != nil {
 		return cs, err
@@ -268,9 +269,10 @@ found:
 	if len(options) > 1 {
 		if err := huh.NewSelect[string]().
 			Title(fmt.Sprintf("Pick a model for %s on %s", role, spec.Label)).
-			Description(spec.KnownLimits).
+			Description(spec.KnownLimits + "  (type to filter)").
 			Options(options...).
 			Value(&picked).
+			Filtering(true).
 			Height(15).
 			Run(); err != nil {
 			return err

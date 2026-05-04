@@ -54,13 +54,18 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			huh.NewNote().Title("Master agent").Description("The agent you talk to. Best model you can afford."),
 			huh.NewSelect[string]().
 				Title("Provider").
+				Description("Type to filter").
 				Options(provOpts...).
 				Value(&st.masterProvider).
+				Filtering(true).
 				Height(12),
 			huh.NewInput().
 				Title("Model").
-				Description("Provider-specific model ID. Defaults from the catalog if left blank.").
-				Value(&st.masterModel),
+				Description("Tab to accept a suggestion, or type any provider-specific ID.").
+				Value(&st.masterModel).
+				SuggestionsFunc(func() []string {
+					return modelSuggestionsFor(st.masterProvider)
+				}, &st.masterProvider),
 			huh.NewInput().
 				Title("API key (leave blank to keep existing)").
 				EchoMode(huh.EchoModePassword).
@@ -70,12 +75,18 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			huh.NewNote().Title("Sub-agents").Description("Workers spawned by the master. Cheaper / free-tier is fine."),
 			huh.NewSelect[string]().
 				Title("Provider").
+				Description("Type to filter").
 				Options(provOpts...).
 				Value(&st.subProvider).
+				Filtering(true).
 				Height(12),
 			huh.NewInput().
 				Title("Model").
-				Value(&st.subModel),
+				Description("Tab to accept a suggestion, or type any provider-specific ID.").
+				Value(&st.subModel).
+				SuggestionsFunc(func() []string {
+					return modelSuggestionsFor(st.subProvider)
+				}, &st.subProvider),
 			huh.NewInput().
 				Title("API key (leave blank to keep existing)").
 				EchoMode(huh.EchoModePassword).
@@ -151,6 +162,20 @@ func providerSelectOptions() []huh.Option[string] {
 		opts = append(opts, huh.NewOption(label, p.Name))
 	}
 	return opts
+}
+
+// modelSuggestionsFor returns the recommended model IDs for a provider name,
+// for use as autocomplete suggestions on the Input field.
+func modelSuggestionsFor(providerName string) []string {
+	spec, ok := llm.LookupProvider(providerName)
+	if !ok {
+		return nil
+	}
+	out := make([]string, 0, len(spec.RecommendedModels))
+	for _, m := range spec.RecommendedModels {
+		out = append(out, m.ID)
+	}
+	return out
 }
 
 func orDefault(v, def string) string {
