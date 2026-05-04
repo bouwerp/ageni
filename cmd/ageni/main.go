@@ -13,6 +13,7 @@ import (
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/mcp"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/bouwerp/ageni/internal/tui"
@@ -131,6 +132,16 @@ func run() error {
 	tracker := llm.NewTracker()
 
 	// Build a base set of tools used by both master and sub-agents.
+	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect
+	// their tools to add to the registries below.
+	mcpMgr, mcpTools, mcpErr := mcp.LoadAndConnect(ctx)
+	if mcpErr != nil {
+		fmt.Fprintf(os.Stderr, "ageni: mcp setup: %v\n", mcpErr)
+	}
+	if mcpMgr != nil {
+		defer mcpMgr.Close()
+	}
+
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite) {
 		r.Register(tools.ReadFile{})
 		r.Register(tools.WriteFile{})
@@ -147,7 +158,12 @@ func run() error {
 		r.Register(tools.GitLog{})
 		r.Register(tools.ComputeDiff{})
 		r.Register(tools.RunTests{})
+		r.Register(tools.GitHub{})
+		r.Register(tools.PkgInfo{})
 		r.Register(todo)
+		for _, t := range mcpTools {
+			r.Register(t)
+		}
 	}
 
 	// One TodoWrite instance shared between master and sub-agents so the

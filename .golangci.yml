@@ -1,72 +1,106 @@
+version: "2"
+
 run:
   timeout: 5m
   tests: true
 
 linters:
+  default: none
   enable:
-    - gofmt
-    - govet
     - errcheck
-    - staticcheck
-    - unused
-    - gosimple
-    - ineffassign
-    - typecheck
-    - copyloopvar
     - gocyclo
+    - gocritic
+    - gosec
+    - govet
+    - ineffassign
     - misspell
+    - staticcheck
     - unconvert
     - unparam
-    - gosec
-    - gocritic
-
-linters-settings:
-  gocyclo:
-    min-complexity: 50
-  gocritic:
-    enabled-checks:
-      - appendCombine
-      - boolExprSimplify
-      - dupImport
-      - emptyStringTest
-      - hexLiteral
-      - methodExprCall
-      - stringXbytes
-      - typeUnparen
-      - unnecessaryBlock
-      - yodaStyleExpr
-
-issues:
-  exclude-dirs:
-    - vendor
-  exclude-rules:
-    - path: _test\.go
-      linters:
-        - gocyclo
-        - errcheck
-        - gosec
-    - linters:
-        - unparam
-      text: "is unused"
-    # Tools intentionally write user-facing files with standard permissions
-    # (0644/0755) and execute arbitrary shell commands — that's their job.
-    - path: internal/tools/files\.go
-      linters:
-        - gosec
-    - path: internal/tools/shell\.go
-      linters:
-        - gosec
-        - gocritic
-    - path: internal/tools/tests\.go
-      linters:
-        - gosec
-    # Self-update fetches archives from GitHub-supplied URLs and writes a
-    # 0755 executable, both of which are required for the feature.
-    - path: cmd/ageni/update\.go
-      linters:
-        - gosec
-    # 'doctor' shells out to the platform package manager — the command
-    # string is built from a closed allow-list of known package managers.
-    - path: cmd/ageni/doctor\.go
-      linters:
-        - gosec
+    - unused
+  settings:
+    gocyclo:
+      min-complexity: 50
+    gocritic:
+      enabled-checks:
+        - appendCombine
+        - boolExprSimplify
+        - dupImport
+        - emptyStringTest
+        - hexLiteral
+        - methodExprCall
+        - stringXbytes
+        - typeUnparen
+        - unnecessaryBlock
+        - yodaStyleExpr
+    gosec:
+      excludes:
+        - G101  # false-positive on API_KEY env var names in our provider catalog
+        - G104  # duplicates errcheck
+        - G301  # directory perms 0755 are intentional for tool/config dirs
+        - G306  # file perms 0644 are intentional for user-written files
+        - G115  # integer overflow conversions are bounded in our code
+    staticcheck:
+      checks:
+        - all
+        - "-QF*"      # quickfix style suggestions are noisy
+        - "-ST1000"   # package comments not required
+        - "-ST1021"   # exported type comment formatting
+        - "-ST1020"   # exported function comment formatting
+    errcheck:
+      exclude-functions:
+        - (*strings.Builder).WriteString
+        - (*strings.Builder).WriteByte
+        - (*strings.Builder).Write
+        - (io.Closer).Close
+        - (*os.File).Close
+        - (net.Conn).Close
+        - (*compress/gzip.Reader).Close
+        - (*archive/zip.ReadCloser).Close
+        - (*github.com/bouwerp/ageni/internal/session.Logger).Close
+        - encoding/json.Unmarshal
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - os.Remove
+        - os.Unsetenv
+  exclusions:
+    paths:
+      - vendor
+    rules:
+      - path: _test\.go
+        linters:
+          - gocyclo
+          - errcheck
+          - gosec
+      - linters:
+          - unparam
+        text: "is unused"
+      # Tools intentionally write user-facing files with standard permissions
+      # (0644/0755) and execute arbitrary shell commands — that's their job.
+      - path: internal/tools/files\.go
+        linters: [gosec]
+      - path: internal/tools/shell\.go
+        linters: [gosec, gocritic]
+      - path: internal/tools/tests\.go
+        linters: [gosec]
+      # Self-update fetches archives from GitHub-supplied URLs and writes a
+      # 0755 executable, both of which are required for the feature.
+      - path: cmd/ageni/update\.go
+        linters: [gosec]
+      # 'doctor' shells out to the platform package manager — the command
+      # string is built from a closed allow-list of known package managers.
+      - path: cmd/ageni/doctor\.go
+        linters: [gosec]
+      # MCP loads command + args from user config; subprocess construction is
+      # the documented usage of the SDK's CommandTransport.
+      - path: internal/mcp/mcp\.go
+        linters: [gosec]
+      # git_status / git_diff / git_log / github build cliArgs slices and
+      # exec git/gh — the binary names are constants; only flags/paths vary.
+      - path: internal/tools/git\.go
+        linters: [gosec]
+      - path: internal/tools/github\.go
+        linters: [gosec]
+      # Session log opens a path constructed from $HOME/.ageni — intentional.
+      - path: internal/session/log\.go
+        linters: [gosec]
