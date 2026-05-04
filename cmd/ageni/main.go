@@ -142,6 +142,11 @@ func run() error {
 		r.Register(tools.RunBash{})
 		r.Register(tools.WebFetch{})
 		r.Register(tools.WebSearch{})
+		r.Register(tools.GitStatus{})
+		r.Register(tools.GitDiff{})
+		r.Register(tools.GitLog{})
+		r.Register(tools.ComputeDiff{})
+		r.Register(tools.RunTests{})
 		r.Register(todo)
 	}
 

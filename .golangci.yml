@@ -57,6 +57,9 @@ issues:
       linters:
         - gosec
         - gocritic
+    - path: internal/tools/tests\.go
+      linters:
+        - gosec
     # Self-update fetches archives from GitHub-supplied URLs and writes a
     # 0755 executable, both of which are required for the feature.
     - path: cmd/ageni/update\.go
