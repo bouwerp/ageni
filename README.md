@@ -236,7 +236,7 @@ Each run writes a JSONL session log to `~/.ageni/sessions/<timestamp>.jsonl` con
 curl -sSL https://raw.githubusercontent.com/bouwerp/ageni/main/install.sh | bash
 ```
 
-The installer detects your platform, downloads the latest pre-built binary from GitHub Releases, falls back to building from source if no pre-built is available, and installs to `~/.local/bin` (configurable with `--prefix DIR` or `--system` for `/usr/local/bin`).
+The installer detects your platform, downloads the latest pre-built binary from GitHub Releases, verifies its `.sha256` checksum, and installs it to `~/.local/bin` (configurable with `--prefix DIR` or `--system` for `/usr/local/bin`). It fails fast if no pre-built binary exists for your platform — use the source build below in that case.
 
 ### From source
 
@@ -262,7 +262,7 @@ Or via script:
 curl -sSL https://raw.githubusercontent.com/bouwerp/ageni/main/scripts/update.sh | bash
 ```
 
-The in-binary update fetches the latest release, downloads the platform-specific archive, and atomically replaces the running binary. The script form additionally creates a timestamped backup beside the installed binary and keeps the last 5 backups for rollback.
+The in-binary update fetches the latest release, downloads the platform-specific archive, verifies its checksum, and atomically replaces the running binary. The script form additionally creates a timestamped backup beside the installed binary, verifies the checksum before installing, and keeps the last 5 backups for rollback. Both fail fast if no pre-built binary exists for your platform.
 
 ## Build & run
 

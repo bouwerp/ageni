@@ -4,6 +4,8 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -53,11 +55,13 @@ func runUpdate(currentVersion string) error {
 	}
 	wanted := assetName + archiveExt
 
-	var downloadURL string
+	var downloadURL, shaURL string
 	for _, a := range release.Assets {
-		if a.Name == wanted {
+		switch a.Name {
+		case wanted:
 			downloadURL = a.BrowserDownloadURL
-			break
+		case wanted + ".sha256":
+			shaURL = a.BrowserDownloadURL
 		}
 	}
 	if downloadURL == "" {
@@ -65,7 +69,7 @@ func runUpdate(currentVersion string) error {
 	}
 
 	fmt.Printf("Downloading %s...\n", wanted)
-	newBinary, err := downloadAndExtract(downloadURL, assetName, archiveExt)
+	newBinary, err := downloadAndExtract(downloadURL, shaURL, assetName, archiveExt)
 	if err != nil {
 		return fmt.Errorf("download failed: %w", err)
 	}
@@ -116,39 +120,92 @@ func platformAssetName() string {
 	return fmt.Sprintf("ageni-%s-%s", runtime.GOOS, runtime.GOARCH)
 }
 
-// downloadAndExtract fetches the archive and extracts the named binary to a
-// temporary file. assetName is the binary filename inside the archive; ext is
-// either ".tar.gz" or ".zip".
-func downloadAndExtract(url, assetName, ext string) (string, error) {
-	resp, err := http.Get(url) //nolint:noctx
+// downloadAndExtract fetches the archive (verifying its SHA-256 checksum if
+// shaURL is non-empty) and extracts the named binary to a temporary file.
+// assetName is the binary filename inside the archive; ext is either
+// ".tar.gz" or ".zip".
+func downloadAndExtract(url, shaURL, assetName, ext string) (string, error) {
+	// Buffer the archive to a temp file so we can verify its checksum before
+	// trusting it (and so .zip extraction has a seekable source).
+	tmp, err := os.CreateTemp("", "ageni-update-archive-*"+ext)
 	if err != nil {
 		return "", err
 	}
-	defer resp.Body.Close()
+	defer os.Remove(tmp.Name())
 
+	resp, err := http.Get(url) //nolint:noctx
+	if err != nil {
+		tmp.Close()
+		return "", err
+	}
+	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
+		tmp.Close()
 		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
+		tmp.Close()
+		return "", err
+	}
+	if err := tmp.Close(); err != nil {
+		return "", err
+	}
+
+	if shaURL != "" {
+		if err := verifyChecksum(tmp.Name(), shaURL); err != nil {
+			return "", err
+		}
+		fmt.Println("Checksum OK.")
 	}
 
 	switch ext {
 	case ".tar.gz":
-		return extractTarGz(resp.Body, assetName)
-	case ".zip":
-		// zip needs a seekable source, so buffer to a temp file first.
-		tmp, err := os.CreateTemp("", "ageni-update-archive-*.zip")
+		f, err := os.Open(tmp.Name())
 		if err != nil {
 			return "", err
 		}
-		defer os.Remove(tmp.Name())
-		if _, err := io.Copy(tmp, resp.Body); err != nil {
-			tmp.Close()
-			return "", err
-		}
-		tmp.Close()
+		defer f.Close()
+		return extractTarGz(f, assetName)
+	case ".zip":
 		return extractZip(tmp.Name(), assetName)
 	default:
 		return "", fmt.Errorf("unknown archive extension: %s", ext)
 	}
+}
+
+func verifyChecksum(archivePath, shaURL string) error {
+	resp, err := http.Get(shaURL) //nolint:noctx
+	if err != nil {
+		return fmt.Errorf("fetch checksum: %w", err)
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return fmt.Errorf("checksum fetch returned %d", resp.StatusCode)
+	}
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return fmt.Errorf("read checksum: %w", err)
+	}
+	// Format is "<hex>  <filename>".
+	expected := strings.TrimSpace(string(body))
+	if i := strings.IndexAny(expected, " \t"); i > 0 {
+		expected = expected[:i]
+	}
+
+	f, err := os.Open(archivePath)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	h := sha256.New()
+	if _, err := io.Copy(h, f); err != nil {
+		return err
+	}
+	actual := hex.EncodeToString(h.Sum(nil))
+	if !strings.EqualFold(expected, actual) {
+		return fmt.Errorf("checksum mismatch: expected %s, got %s", expected, actual)
+	}
+	return nil
 }
 
 func extractTarGz(r io.Reader, binaryName string) (string, error) {

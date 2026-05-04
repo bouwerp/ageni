@@ -2,12 +2,12 @@
 set -e
 
 # ageni update script.
-# Updates an installed ageni binary to the latest release. The recommended
-# in-binary path is `ageni update`; this script is for environments where the
-# binary cannot self-replace (e.g. system-wide installs running under another
-# user) or for scripted updates.
+# Updates an installed ageni binary to the latest release by downloading the
+# platform-specific pre-built binary from GitHub Releases. The recommended
+# path is `ageni update` (in-binary self-update); this script is for
+# environments where the binary cannot self-replace or for scripted updates.
+# Fails if no pre-built binary is available for the detected platform.
 
-REPO_URL="https://github.com/bouwerp/ageni"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 BINARY_NAME="ageni"
 BACKUP_SUFFIX=".backup.$(date +%Y%m%d_%H%M%S)"
@@ -95,21 +95,24 @@ detect_platform() {
 }
 
 download_binary() {
-    echo "Attempting to download pre-built binary..."
+    echo "Fetching release metadata..."
 
     detect_platform
 
     if ! RELEASE_DATA=$(curl -sf "$GITHUB_API" 2>/dev/null); then
-        echo -e "${YELLOW}No release found, will build from source${NC}"
-        return 1
+        echo -e "${RED}Could not reach GitHub Releases API ($GITHUB_API).${NC}"
+        echo "Check your network connection and try again."
+        exit 1
     fi
 
-    LATEST_VERSION=$(echo "$RELEASE_DATA" | grep '"tag_name"' | cut -d '"' -f 4)
+    LATEST_VERSION=$(echo "$RELEASE_DATA" | grep '"tag_name"' | head -1 | cut -d '"' -f 4)
     DOWNLOAD_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*${RELEASE_NAME}.${ARCHIVE_EXT}\"" | cut -d '"' -f 4)
 
     if [ -z "$DOWNLOAD_URL" ]; then
-        echo -e "${YELLOW}Pre-built binary not available for ${OS}-${ARCH}, will build from source${NC}"
-        return 1
+        echo -e "${RED}No pre-built binary for ${OS}-${ARCH} in the latest release.${NC}"
+        echo "Available assets:"
+        echo "$RELEASE_DATA" | grep '"name"' | grep -E 'ageni-' | cut -d '"' -f 4 | sed 's/^/  /'
+        exit 1
     fi
 
     echo -e "${GREEN}Downloading version: $LATEST_VERSION${NC}"
@@ -117,9 +120,30 @@ download_binary() {
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR"
 
-    if ! curl -sfL "$DOWNLOAD_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}"; then
-        echo -e "${RED}Download failed${NC}"
-        return 1
+    if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}"; then
+        echo -e "${RED}Download failed.${NC}"
+        restore_backup
+        exit 1
+    fi
+
+    # Verify checksum if a sibling .sha256 asset exists.
+    SHA_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*${RELEASE_NAME}.${ARCHIVE_EXT}.sha256\"" | cut -d '"' -f 4)
+    if [ -n "$SHA_URL" ]; then
+        echo "Verifying checksum..."
+        if curl -sfL "$SHA_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}.sha256"; then
+            EXPECTED=$(awk '{print $1}' "${RELEASE_NAME}.${ARCHIVE_EXT}.sha256")
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL=$(sha256sum "${RELEASE_NAME}.${ARCHIVE_EXT}" | awk '{print $1}')
+            else
+                ACTUAL=$(shasum -a 256 "${RELEASE_NAME}.${ARCHIVE_EXT}" | awk '{print $1}')
+            fi
+            if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo -e "${RED}Checksum mismatch (expected $EXPECTED, got $ACTUAL).${NC}"
+                restore_backup
+                exit 1
+            fi
+            echo -e "${GREEN}Checksum OK.${NC}"
+        fi
     fi
 
     case "$ARCHIVE_EXT" in
@@ -128,58 +152,15 @@ download_binary() {
     esac
 
     if [ ! -f "$RELEASE_NAME" ]; then
-        echo -e "${RED}Binary not found in archive${NC}"
-        return 1
+        echo -e "${RED}Binary $RELEASE_NAME not found in archive.${NC}"
+        restore_backup
+        exit 1
     fi
 
     mv "$RELEASE_NAME" "$BINARY_NAME"
     chmod +x "$BINARY_NAME"
 
-    echo -e "${GREEN}Download successful!${NC}"
-    return 0
-}
-
-fetch_source() {
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
-
-    echo "Fetching latest source code..."
-    git clone --depth 1 "$REPO_URL" ageni-src 2>/dev/null || {
-        echo -e "${RED}Failed to clone repository${NC}"
-        exit 1
-    }
-
-    cd ageni-src
-}
-
-build_new_version() {
-    echo "Building new version..."
-
-    OS=$(uname -s | tr '[:upper:]' '[:lower:]')
-    ARCH=$(uname -m)
-
-    case "$ARCH" in
-        x86_64) ARCH="amd64" ;;
-        arm64|aarch64) ARCH="arm64" ;;
-    esac
-
-    export GOOS="$OS"
-    export GOARCH="$ARCH"
-
-    VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-    BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-    go build -ldflags "-X main.version=$VERSION -X main.buildTime=$BUILD_TIME" \
-        -o "${BINARY_NAME}" \
-        ./cmd/ageni
-
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Build failed!${NC}"
-        restore_backup
-        exit 1
-    fi
-
-    echo -e "${GREEN}Build successful!${NC}"
+    echo -e "${GREEN}Download successful.${NC}"
 }
 
 install_new_version() {
@@ -226,13 +207,6 @@ cleanup() {
 
 trap cleanup EXIT
 
-show_changelog() {
-    echo ""
-    echo -e "${BLUE}Recent changes:${NC}"
-    git log --oneline -10 2>/dev/null || echo "Changelog not available"
-    echo ""
-}
-
 main() {
     echo "=== ageni update ==="
     echo ""
@@ -240,18 +214,8 @@ main() {
     find_installation
     get_latest_version
     backup_current
-
-    if download_binary; then
-        install_new_version
-    else
-        echo ""
-        echo -e "${YELLOW}Falling back to building from source...${NC}"
-        fetch_source
-        show_changelog
-        build_new_version
-        install_new_version
-    fi
-
+    download_binary
+    install_new_version
     cleanup_old_backups
 
     echo ""

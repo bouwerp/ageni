@@ -2,10 +2,10 @@
 set -e
 
 # ageni installation script.
-# Detects platform, downloads the latest release, falls back to building from
-# source if no pre-built binary is available.
+# Detects platform, downloads the latest pre-built binary from GitHub
+# Releases, and installs it. Fails if no pre-built binary is available for
+# the detected platform.
 
-REPO_URL="https://github.com/bouwerp/ageni"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="ageni"
 GITHUB_API="https://api.github.com/repos/bouwerp/ageni/releases/latest"
@@ -59,32 +59,56 @@ get_release_name() {
 }
 
 download_binary() {
-    echo "Checking for pre-built binary..."
+    echo "Fetching release metadata..."
 
     get_release_name
 
     if ! RELEASE_DATA=$(curl -sf "$GITHUB_API" 2>/dev/null); then
-        echo -e "${YELLOW}No release found, will build from source${NC}"
-        return 1
+        echo -e "${RED}Could not reach GitHub Releases API ($GITHUB_API).${NC}"
+        echo "Check your network connection and try again."
+        exit 1
     fi
 
     DOWNLOAD_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*${RELEASE_NAME}.${ARCHIVE_EXT}\"" | cut -d '"' -f 4)
-
     if [ -z "$DOWNLOAD_URL" ]; then
-        echo -e "${YELLOW}Pre-built binary not available for $PLATFORM, will build from source${NC}"
-        return 1
+        echo -e "${RED}No pre-built binary for $PLATFORM in the latest release.${NC}"
+        echo "Available assets:"
+        echo "$RELEASE_DATA" | grep '"name"' | grep -E 'ageni-' | cut -d '"' -f 4 | sed 's/^/  /'
+        echo ""
+        echo "If you need this platform, please open an issue or build from source manually:"
+        echo "  git clone https://github.com/bouwerp/ageni && cd ageni && make install"
+        exit 1
     fi
 
-    VERSION=$(echo "$RELEASE_DATA" | grep '"tag_name"' | cut -d '"' -f 4)
+    VERSION=$(echo "$RELEASE_DATA" | grep '"tag_name"' | head -1 | cut -d '"' -f 4)
     echo -e "${GREEN}Found release: $VERSION${NC}"
-    echo "Downloading $RELEASE_NAME..."
+    echo "Downloading $RELEASE_NAME.$ARCHIVE_EXT..."
 
     TEMP_DIR=$(mktemp -d)
     cd "$TEMP_DIR"
 
-    if ! curl -sfL "$DOWNLOAD_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}"; then
-        echo -e "${RED}Download failed${NC}"
-        return 1
+    if ! curl -fL --progress-bar "$DOWNLOAD_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}"; then
+        echo -e "${RED}Download failed.${NC}"
+        exit 1
+    fi
+
+    # Optional: verify checksum if a .sha256 sibling asset exists.
+    SHA_URL=$(echo "$RELEASE_DATA" | grep "browser_download_url.*${RELEASE_NAME}.${ARCHIVE_EXT}.sha256\"" | cut -d '"' -f 4)
+    if [ -n "$SHA_URL" ]; then
+        echo "Verifying checksum..."
+        if curl -sfL "$SHA_URL" -o "${RELEASE_NAME}.${ARCHIVE_EXT}.sha256"; then
+            EXPECTED=$(awk '{print $1}' "${RELEASE_NAME}.${ARCHIVE_EXT}.sha256")
+            if command -v sha256sum >/dev/null 2>&1; then
+                ACTUAL=$(sha256sum "${RELEASE_NAME}.${ARCHIVE_EXT}" | awk '{print $1}')
+            else
+                ACTUAL=$(shasum -a 256 "${RELEASE_NAME}.${ARCHIVE_EXT}" | awk '{print $1}')
+            fi
+            if [ "$EXPECTED" != "$ACTUAL" ]; then
+                echo -e "${RED}Checksum mismatch (expected $EXPECTED, got $ACTUAL).${NC}"
+                exit 1
+            fi
+            echo -e "${GREEN}Checksum OK.${NC}"
+        fi
     fi
 
     echo "Extracting binary..."
@@ -94,89 +118,14 @@ download_binary() {
     esac
 
     if [ ! -f "$RELEASE_NAME" ]; then
-        echo -e "${RED}Binary not found in archive${NC}"
-        return 1
+        echo -e "${RED}Binary $RELEASE_NAME not found in archive.${NC}"
+        exit 1
     fi
 
     mv "$RELEASE_NAME" "$BINARY_NAME"
     chmod +x "$BINARY_NAME"
 
-    echo -e "${GREEN}Download successful!${NC}"
-    return 0
-}
-
-check_prerequisites() {
-    echo "Checking prerequisites..."
-
-    if ! command -v git &> /dev/null; then
-        echo -e "${RED}Error: git is required but not installed.${NC}"
-        exit 1
-    fi
-
-    if ! command -v go &> /dev/null; then
-        echo -e "${YELLOW}Warning: Go is not installed. Attempting to install...${NC}"
-        install_go
-    else
-        GO_VERSION=$(go version | grep -oE '[0-9]+\.[0-9]+' | head -1)
-        echo -e "${GREEN}Go version: $GO_VERSION${NC}"
-    fi
-}
-
-install_go() {
-    echo "Installing Go..."
-
-    case "$OS" in
-        linux)
-            if command -v apt-get &> /dev/null; then
-                sudo apt-get update && sudo apt-get install -y golang-go
-            elif command -v yum &> /dev/null; then
-                sudo yum install -y golang
-            elif command -v pacman &> /dev/null; then
-                sudo pacman -S go
-            else
-                echo -e "${RED}Could not install Go automatically. Please install Go 1.24+ manually.${NC}"
-                exit 1
-            fi
-            ;;
-        darwin)
-            if command -v brew &> /dev/null; then
-                brew install go
-            else
-                echo -e "${YELLOW}Homebrew not found. Installing Homebrew first...${NC}"
-                /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
-                brew install go
-            fi
-            ;;
-    esac
-}
-
-clone_repo() {
-    echo "Cloning repository..."
-    TEMP_DIR=$(mktemp -d)
-    cd "$TEMP_DIR"
-    git clone --depth 1 "$REPO_URL" ageni-src
-    cd ageni-src
-}
-
-build_binary() {
-    echo "Building ageni for $PLATFORM..."
-
-    export GOOS="$OS"
-    export GOARCH="$ARCH"
-
-    VERSION=$(git describe --tags --always --dirty 2>/dev/null || echo "dev")
-    BUILD_TIME=$(date -u +"%Y-%m-%dT%H:%M:%SZ")
-
-    go build -ldflags "-X main.version=$VERSION -X main.buildTime=$BUILD_TIME" \
-        -o "${BINARY_NAME}" \
-        ./cmd/ageni
-
-    if [ $? -ne 0 ]; then
-        echo -e "${RED}Build failed!${NC}"
-        exit 1
-    fi
-
-    echo -e "${GREEN}Build successful!${NC}"
+    echo -e "${GREEN}Download successful.${NC}"
 }
 
 install_binary() {
@@ -271,17 +220,8 @@ main() {
 
     detect_platform
     setup_config
-
-    if download_binary; then
-        install_binary
-    else
-        echo ""
-        echo -e "${YELLOW}Falling back to building from source...${NC}"
-        check_prerequisites
-        clone_repo
-        build_binary
-        install_binary
-    fi
+    download_binary
+    install_binary
 
     echo ""
     echo -e "${GREEN}Installation complete!${NC}"
