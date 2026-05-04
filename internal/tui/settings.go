@@ -59,13 +59,15 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 				Value(&st.masterProvider).
 				Filtering(true).
 				Height(12),
-			huh.NewInput().
+			huh.NewSelect[string]().
 				Title("Model").
-				Description("Tab to accept a suggestion, or type any provider-specific ID.").
+				Description("Type to filter; arrows to navigate.").
+				OptionsFunc(func() []huh.Option[string] {
+					return modelOptionsFor(st.masterProvider, st.masterModel)
+				}, &st.masterProvider).
 				Value(&st.masterModel).
-				SuggestionsFunc(func() []string {
-					return modelSuggestionsFor(st.masterProvider)
-				}, &st.masterProvider),
+				Filtering(true).
+				Height(12),
 			huh.NewInput().
 				Title("API key (leave blank to keep existing)").
 				EchoMode(huh.EchoModePassword).
@@ -80,13 +82,15 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 				Value(&st.subProvider).
 				Filtering(true).
 				Height(12),
-			huh.NewInput().
+			huh.NewSelect[string]().
 				Title("Model").
-				Description("Tab to accept a suggestion, or type any provider-specific ID.").
+				Description("Type to filter; arrows to navigate.").
+				OptionsFunc(func() []huh.Option[string] {
+					return modelOptionsFor(st.subProvider, st.subModel)
+				}, &st.subProvider).
 				Value(&st.subModel).
-				SuggestionsFunc(func() []string {
-					return modelSuggestionsFor(st.subProvider)
-				}, &st.subProvider),
+				Filtering(true).
+				Height(12),
 			huh.NewInput().
 				Title("API key (leave blank to keep existing)").
 				EchoMode(huh.EchoModePassword).
@@ -164,18 +168,31 @@ func providerSelectOptions() []huh.Option[string] {
 	return opts
 }
 
-// modelSuggestionsFor returns the recommended model IDs for a provider name,
-// for use as autocomplete suggestions on the Input field.
-func modelSuggestionsFor(providerName string) []string {
+// modelOptionsFor returns Select options for a provider, with the
+// currently-configured value (if any) pinned at the top so users with custom
+// models still see them. Type to filter; arrows to navigate.
+func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
+		if currentValue != "" {
+			return []huh.Option[string]{huh.NewOption("(current) "+currentValue, currentValue)}
+		}
 		return nil
 	}
-	out := make([]string, 0, len(spec.RecommendedModels))
-	for _, m := range spec.RecommendedModels {
-		out = append(out, m.ID)
+	opts := make([]huh.Option[string], 0, len(spec.RecommendedModels)+1)
+	seen := map[string]bool{}
+	if currentValue != "" {
+		opts = append(opts, huh.NewOption("(current) "+currentValue, currentValue))
+		seen[currentValue] = true
 	}
-	return out
+	for _, m := range spec.RecommendedModels {
+		if seen[m.ID] {
+			continue
+		}
+		label := m.Label + " — " + m.ID
+		opts = append(opts, huh.NewOption(label, m.ID))
+	}
+	return opts
 }
 
 func orDefault(v, def string) string {
