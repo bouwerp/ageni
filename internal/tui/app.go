@@ -114,7 +114,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
-	ta.Placeholder = "Talk to the master. Enter to send, Shift+Enter for newline. Tab cycles panes. Ctrl+C quits."
+	ta.Placeholder = "Talk to the master. @path attaches a file. Enter to send, Shift+Enter for newline."
 	ta.Prompt = "❯ "
 	ta.CharLimit = 0
 	ta.SetWidth(80)
@@ -351,13 +351,24 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if a.history != nil {
 					a.history.Append(text)
 				}
+				// Show the raw text in the chat (the user typed @path —
+				// they don't want to see their screen flooded with the
+				// resulting <attached_file> blocks). The master gets the
+				// expanded form via masterIn.
 				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + text + "\n\n")
+				expanded, attached, skipped := expandFileMentions(text)
+				if len(attached) > 0 {
+					a.flashMessage = fmt.Sprintf("attached %d file(s): %s", len(attached), strings.Join(attached, ", "))
+				}
+				if len(skipped) > 0 {
+					a.chatBuf.WriteString(mutedStyle.Render("[@-mentions skipped: "+strings.Join(skipped, ", ")+"]") + "\n\n")
+				}
 				a.currentMaster.Reset()
 				a.masterBusy = true
 				a.refreshChat()
 				a.refreshSide()
 				select {
-				case a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: text}:
+				case a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: expanded}:
 				default:
 				}
 				return a, nil
