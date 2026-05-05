@@ -38,7 +38,9 @@ func NewLogger(s *Session) (*Logger, error) {
 		}
 		path = filepath.Join(dir, fmt.Sprintf("%s.jsonl", time.Now().Format("20060102-150405")))
 	}
-	f, err := os.Create(path) //nolint:gosec
+	// Append, don't truncate — on resume, prior turns must remain in the
+	// log so future replays can reconstruct them.
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}

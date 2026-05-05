@@ -214,7 +214,7 @@ func run() error {
 	// Open a session — either resume an existing one (--session <id>) or
 	// start fresh. Per-instance state lives under ~/.ageni/sessions/<id>/
 	// so multiple instances in the same repo never collide.
-	sess, sessErr := openOrCreateSession()
+	sess, resumed, sessErr := openOrCreateSession()
 	if sessErr != nil {
 		return fmt.Errorf("session init: %w", sessErr)
 	}
@@ -297,6 +297,24 @@ func run() error {
 		}
 	}()
 
+	// Replay prior conversation into the master if we're resuming. Must
+	// happen BEFORE Run starts so the very first inference call sees the
+	// full history. Errors are non-fatal — we'd rather start with an empty
+	// buffer than refuse to launch.
+	var resumeHistory []llm.Message
+	if resumed {
+		hist, herr := session.LoadHistory(sess)
+		if herr != nil {
+			fmt.Fprintf(os.Stderr, "ageni: replay log: %v (continuing without history)\n", herr)
+		} else {
+			resumeHistory = hist
+			master.LoadHistory(hist)
+			if len(hist) > 0 {
+				fmt.Printf("Replayed %d prior message(s) into master context\n", len(hist))
+			}
+		}
+	}
+
 	go master.Run(ctx, masterIn)
 
 	// Session log
@@ -340,6 +358,9 @@ func run() error {
 
 	// TUI
 	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes)
+	if len(resumeHistory) > 0 {
+		app.LoadHistory(resumeHistory)
+	}
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err
@@ -359,8 +380,10 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 
 // openOrCreateSession parses os.Args for "--session <id>" / "--session=<id>"
 // and resumes that session if found; otherwise creates a fresh one. The
-// flag is removed from os.Args so other parsers don't see it.
-func openOrCreateSession() (*session.Session, error) {
+// flag is removed from os.Args so other parsers don't see it. The second
+// return value is true when an existing session was resumed (so the
+// caller can replay history into the master + TUI).
+func openOrCreateSession() (*session.Session, bool, error) {
 	args := os.Args[1:]
 	var resumeID string
 	cleaned := make([]string, 0, len(args))
@@ -380,18 +403,19 @@ func openOrCreateSession() (*session.Session, error) {
 	os.Args = append(os.Args[:1], cleaned...)
 
 	if resumeID == "" {
-		return session.New(detectRepoRoot())
+		s, err := session.New(detectRepoRoot())
+		return s, false, err
 	}
 	id, err := session.ResolveID(resumeID)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	s, err := session.Open(id)
 	if err != nil {
-		return nil, err
+		return nil, false, err
 	}
 	fmt.Printf("Resuming session %s (last used %s)\n", s.ID, humaniseTime(s.LastUsed))
-	return s, nil
+	return s, true, nil
 }
 
 func humaniseTime(t time.Time) string {

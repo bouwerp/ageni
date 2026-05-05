@@ -79,6 +79,17 @@ func (m *Master) SetCorrectionsPath(path string) {
 	m.mu.Unlock()
 }
 
+// LoadHistory seeds the master's message buffer with prior turns, used
+// when resuming a session via --session <id>. Must be called BEFORE Run.
+// The supplied messages are taken as-is; ID consistency for tool-call
+// pairs is the caller's responsibility (session.LoadHistory mints
+// matching IDs at replay time).
+func (m *Master) LoadHistory(messages []llm.Message) {
+	m.mu.Lock()
+	m.messages = append([]llm.Message(nil), messages...)
+	m.mu.Unlock()
+}
+
 // UpdateAdapter swaps the live adapter+model. Safe to call from any
 // goroutine; takes effect on the next LLM call (in-flight calls finish on
 // the old adapter).

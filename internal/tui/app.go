@@ -155,6 +155,46 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	return a
 }
 
+// LoadHistory renders prior conversation messages into the chat buffer
+// so a resumed session shows where the user left off. Master tool calls
+// + results are rendered the same way live events render them, so the
+// resumed view is visually indistinguishable from a continuing session.
+//
+// Sub-agent activity is NOT replayed into the chat — workers were
+// per-process and their transcripts didn't survive. The master's
+// memory of what they returned is preserved through tool-result
+// messages on its history.
+func (a *App) LoadHistory(messages []llm.Message) {
+	if len(messages) == 0 {
+		return
+	}
+	a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("─── resumed: %d prior message(s) ───\n\n", len(messages))))
+	for _, m := range messages {
+		switch m.Role {
+		case llm.RoleUser:
+			// Skip system-injected reminders / active_context blocks; users
+			// don't need to see those replayed.
+			if strings.HasPrefix(m.Text, "<active_context_block>") || strings.HasPrefix(m.Text, "<system-reminder>") {
+				continue
+			}
+			a.chatBuf.WriteString(userStyle.Render("you ❯ ") + m.Text + "\n\n")
+		case llm.RoleAssistant:
+			if strings.TrimSpace(m.Text) != "" {
+				a.chatBuf.WriteString(titleStyle.Render("master ❯") + "\n" + a.renderMarkdown(m.Text) + "\n\n")
+			}
+			for _, tc := range m.ToolCalls {
+				a.chatBuf.WriteString(renderToolCall(tc.Name, tc.Arguments) + "\n")
+			}
+		case llm.RoleTool:
+			for _, tr := range m.ToolResults {
+				a.chatBuf.WriteString(renderToolResult(&tr) + "\n\n")
+			}
+		}
+	}
+	a.chatBuf.WriteString(mutedStyle.Render("─── continuing ───\n\n"))
+	a.refreshChat()
+}
+
 // Tea Msg types
 type busEvtMsg agent.Event
 type usageMsg llm.TrackerSnapshot
