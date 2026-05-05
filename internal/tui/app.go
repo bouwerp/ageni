@@ -52,11 +52,12 @@ type App struct {
 	height int
 
 	// Buffers
-	chatBuf       strings.Builder
-	currentMaster strings.Builder
-	subBufs       map[string]*strings.Builder
-	subStatus     map[string]agent.SubagentStatus
-	subOrder      []string
+	chatBuf        strings.Builder
+	currentMaster  strings.Builder
+	currentSubText map[string]*strings.Builder // in-progress text per sub-agent
+	subBufs        map[string]*strings.Builder
+	subStatus      map[string]agent.SubagentStatus
+	subOrder       []string
 
 	// view state
 	focusInput bool
@@ -112,6 +113,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		input:          ta,
 		focusInput:     true,
 		subBufs:        make(map[string]*strings.Builder),
+		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
 		history:        LoadHistory(),
 		historyIdx:     -1,
@@ -481,17 +483,28 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.subBufs[ev.SubagentID] = &strings.Builder{}
 		a.subStatus[ev.SubagentID] = agent.StatusRunning
 		a.subOrder = append(a.subOrder, ev.SubagentID)
-		a.subBufs[ev.SubagentID].WriteString(fmt.Sprintf("# %s\n%s\n\n", ev.SubagentID, ev.SubagentTask))
+		header := titleStyle.Render(ev.SubagentID+" — "+ev.SubagentModel) + "\n" +
+			toolArgsStyle.Render(ev.SubagentTask) + "\n\n"
+		a.subBufs[ev.SubagentID].WriteString(header)
 		a.refreshSide()
 		a.refreshChat()
 	case agent.EvSubagentText:
-		if b, ok := a.subBufs[ev.SubagentID]; ok {
-			b.WriteString(ev.Text)
+		// Stream raw to a per-sub-agent in-progress buffer; refreshChat
+		// shows it live at the bottom of the sub-agent pane.
+		cur := a.currentSubText[ev.SubagentID]
+		if cur == nil {
+			cur = &strings.Builder{}
+			a.currentSubText[ev.SubagentID] = cur
 		}
+		cur.WriteString(ev.Text)
 		a.refreshChat()
 	case agent.EvSubagentToolCall:
+		// A tool call ends the current text segment — flush the streamed
+		// raw text into the persistent buffer with glamour rendering, then
+		// write the styled tool block.
+		a.flushSubText(ev.SubagentID)
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
-			b.WriteString("\n" + renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
+			b.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentToolDone:
@@ -523,13 +536,15 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentDone:
 		a.subStatus[ev.SubagentID] = agent.StatusDone
-		// Sub-agents stream raw chunks as they go; on completion replace the
-		// streamed plaintext with a markdown-rendered version of the final
-		// answer (where the result/reasoning blocks live).
+		// ev.Text is the authoritative final assistant turn — drop any
+		// in-progress streamed copy and render the canonical version once.
+		if cur, ok := a.currentSubText[ev.SubagentID]; ok {
+			cur.Reset()
+		}
 		if ev.Text != "" {
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
 				rendered := a.renderMarkdown(ev.Text)
-				b.WriteString("\n\n" + titleStyle.Render("final ❯") + "\n" + rendered + "\n")
+				b.WriteString("\n" + titleStyle.Render("final ❯") + "\n" + rendered + "\n")
 			}
 		}
 		a.refreshSide()
@@ -558,6 +573,21 @@ func (a *App) handleEvent(ev agent.Event) {
 func (a *App) appendMasterRender() {
 	// Live-render the in-progress master text as the trailing block.
 	a.refreshChat()
+}
+
+// flushSubText commits the in-progress streamed text for a sub-agent into
+// its persistent buffer, glamour-rendered. Called at every turn boundary
+// (tool call or done) so each turn's text gets formatted markdown rendering.
+func (a *App) flushSubText(id string) {
+	cur, ok := a.currentSubText[id]
+	if !ok || cur.Len() == 0 {
+		return
+	}
+	rendered := a.renderMarkdown(cur.String())
+	if b, ok := a.subBufs[id]; ok {
+		b.WriteString(rendered + "\n\n")
+	}
+	cur.Reset()
 }
 
 func (a *App) flushMasterText() {
@@ -636,7 +666,14 @@ func (a *App) refreshChat() {
 	atBottom := a.chat.AtBottom()
 	if a.viewSub != "" {
 		if b, ok := a.subBufs[a.viewSub]; ok {
-			a.chat.SetContent(b.String())
+			body := b.String()
+			// Show in-progress streamed text live at the bottom of the
+			// sub-agent pane, before it gets flushed/rendered at the next
+			// turn boundary.
+			if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
+				body += titleStyle.Render(a.viewSub+" ❯ ") + cur.String()
+			}
+			a.chat.SetContent(body)
 			if atBottom {
 				a.chat.GotoBottom()
 			}
