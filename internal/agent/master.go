@@ -27,6 +27,8 @@ type Master struct {
 	manager  *Manager
 	maxTurns int
 
+	skillCatalog string // optional: appended to the cached system prompt
+
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
 
@@ -45,6 +47,14 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 		manager:  manager,
 		maxTurns: 30,
 	}
+}
+
+// SetSkillCatalog injects a "<available_skills>...</available_skills>" block
+// into the master's stable system prompt. Pass an empty string to clear.
+func (m *Master) SetSkillCatalog(catalog string) {
+	m.mu.Lock()
+	m.skillCatalog = catalog
+	m.mu.Unlock()
 }
 
 // UpdateAdapter swaps the live adapter+model. Safe to call from any
@@ -228,8 +238,17 @@ func (m *Master) takeTurns(parent context.Context) {
 var _ = time.Now
 
 func (m *Master) systemPrompt() string {
+	m.mu.RLock()
+	catalog := m.skillCatalog
+	m.mu.RUnlock()
+
+	skillsBlock := ""
+	if catalog != "" {
+		skillsBlock = "\n\n<available_skills>\n" + catalog + "\n\nWhen a user request matches a skill's trigger phrases or domain, call read_skill(name=\"...\") to load its full instructions before proceeding. Pass topic=\"...\" for sub-references when listed.\n</available_skills>"
+	}
+
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>
+	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + `
 
 <orchestration_rules>
 - You direct, sub-agents execute. Default to delegating; do work yourself only for trivial single-step tasks or final synthesis.

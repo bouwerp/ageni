@@ -27,6 +27,7 @@ type Manager struct {
 	tools         *tools.Registry
 	tracker       *llm.Tracker
 	factory       AdapterFactory
+	skillCatalog  string
 	maxConcurrent int
 	nextID        int
 }
@@ -40,6 +41,14 @@ func NewManager(bus *Bus, registry *tools.Registry, tracker *llm.Tracker, factor
 		factory:       factory,
 		maxConcurrent: maxConcurrent,
 	}
+}
+
+// SetSkillCatalog updates the catalog passed to newly-spawned sub-agents.
+// Existing sub-agents keep the catalog they were spawned with.
+func (m *Manager) SetSkillCatalog(catalog string) {
+	m.mu.Lock()
+	m.skillCatalog = catalog
+	m.mu.Unlock()
 }
 
 // Spawn creates and starts a sub-agent. Returns its ID.
@@ -72,7 +81,7 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		m.mu.Unlock()
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker)
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog)
 	m.subs[id] = sub
 	m.mu.Unlock()
 

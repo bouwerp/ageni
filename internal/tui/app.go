@@ -417,6 +417,20 @@ func (a *App) handleEvent(ev agent.Event) {
 			}
 		}
 		a.refreshChat()
+	case agent.EvSubagentRetry:
+		// Surface transient errors + retries in chat so the user can see why
+		// a sub-agent is taking longer than expected.
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s\n", ev.SubagentID, oneLine(ev.Text))))
+		if b, ok := a.subBufs[ev.SubagentID]; ok {
+			b.WriteString("\n[retry] " + ev.Text + "\n")
+		}
+		a.refreshChat()
+	case agent.EvSubagentInbox:
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[→ %s] %s\n", ev.SubagentID, oneLine(ev.Text))))
+		if b, ok := a.subBufs[ev.SubagentID]; ok {
+			b.WriteString("\n[inbox] " + ev.Text + "\n")
+		}
+		a.refreshChat()
 	case agent.EvSubagentDone:
 		a.subStatus[ev.SubagentID] = agent.StatusDone
 		// Sub-agents stream raw chunks as they go; on completion replace the

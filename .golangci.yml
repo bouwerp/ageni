@@ -62,6 +62,7 @@ linters:
         - fmt.Fprintln
         - fmt.Fprintf
         - os.Remove
+        - os.RemoveAll
         - os.Unsetenv
   exclusions:
     paths:
@@ -90,6 +91,10 @@ linters:
       # 'doctor' shells out to the platform package manager — the command
       # string is built from a closed allow-list of known package managers.
       - path: cmd/ageni/doctor\.go
+        linters: [gosec]
+      # 'skills install' shells out to git clone with a user-supplied repo
+      # URL and copies SKILL.md trees — both intentional.
+      - path: cmd/ageni/skills\.go
         linters: [gosec]
       # MCP loads command + args from user config; subprocess construction is
       # the documented usage of the SDK's CommandTransport.

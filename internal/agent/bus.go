@@ -23,6 +23,8 @@ const (
 	EvSubagentToolDone EventKind = "subagent_tool_done"
 	EvSubagentDone     EventKind = "subagent_done"
 	EvSubagentError    EventKind = "subagent_error"
+	EvSubagentRetry    EventKind = "subagent_retry"
+	EvSubagentInbox    EventKind = "subagent_inbox"
 	EvSubagentUsage    EventKind = "subagent_usage"
 	EvError            EventKind = "error"
 )

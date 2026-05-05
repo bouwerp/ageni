@@ -34,7 +34,8 @@ func (SpawnTool) Schema() json.RawMessage {
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Whitelist of tool names. Omit for all-tools-allowed."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
   "budget_tool_calls":{"type":"integer","description":"Hard cap on tool calls. Default 10."},
-  "context":{"type":"string","description":"Pre-computed context the sub-agent needs (file paths, prior decisions). Pre-computing here avoids re-discovery cost."}
+  "context":{"type":"string","description":"Pre-computed context the sub-agent needs (file paths, prior decisions). Pre-computing here avoids re-discovery cost."},
+  "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."}
 },
 "required":["objective","output_format"]
 }`)
@@ -113,10 +114,10 @@ func (t SendTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	if !ok {
 		return "", fmt.Errorf("no such sub-agent: %s", p.ID)
 	}
-	// v1: send is best-effort. We append to the transcript so the master sees it
-	// reflected on next check; full inbox-injection is v2.
-	s.appendTranscript("master_message: " + p.Message)
-	return fmt.Sprintf("delivered to %s (status=%s); full inbox injection lands in v2", p.ID, s.Status()), nil
+	if !s.Send(p.Message) {
+		return "", fmt.Errorf("could not deliver to %s (status=%s, inbox may be full)", p.ID, s.Status())
+	}
+	return fmt.Sprintf("queued for %s — will be processed at the next turn boundary", p.ID), nil
 }
 
 // KillTool cancels a sub-agent.

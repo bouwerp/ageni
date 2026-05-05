@@ -15,6 +15,7 @@ import (
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/mcp"
 	"github.com/bouwerp/ageni/internal/session"
+	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/bouwerp/ageni/internal/tui"
 )
@@ -39,6 +40,12 @@ func main() {
 			return
 		case "init":
 			if err := runInit(); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
+		case "skills":
+			if err := runSkills(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
 				os.Exit(1)
 			}
@@ -87,6 +94,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  version, -v      print version information")
 	fmt.Fprintln(w, "  init             interactive config wizard")
 	fmt.Fprintln(w, "  doctor           check external CLI dependencies; --install / -y to auto-install")
+	fmt.Fprintln(w, "  skills <cmd>     manage skills (list, install <git-url>, path)")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
 	fmt.Fprintln(w, "  help, -h         show this help")
 }
@@ -142,6 +150,13 @@ func run() error {
 		defer mcpMgr.Close()
 	}
 
+	// Load skills from ~/.ageni/skills/ and ./.ageni/skills/.
+	skillReg, sErr := skills.Load()
+	if sErr != nil {
+		fmt.Fprintf(os.Stderr, "ageni: skills: %v\n", sErr)
+		skillReg = nil
+	}
+
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite) {
 		r.Register(tools.ReadFile{})
 		r.Register(tools.WriteFile{})
@@ -161,6 +176,9 @@ func run() error {
 		r.Register(tools.GitHub{})
 		r.Register(tools.PkgInfo{})
 		r.Register(todo)
+		if skillReg != nil {
+			r.Register(skills.ReadSkill{Registry: skillReg})
+		}
 		for _, t := range mcpTools {
 			r.Register(t)
 		}
@@ -185,6 +203,11 @@ func run() error {
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
+	if skillReg != nil {
+		catalog := skillReg.Catalog()
+		master.SetSkillCatalog(catalog)
+		manager.SetSkillCatalog(catalog)
+	}
 	masterIn := make(chan agent.Event, 16)
 
 	// Forward sub-agent events from the bus into the master inbox so it can react.
