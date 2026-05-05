@@ -33,6 +33,13 @@ type SubagentTask struct {
 	ModelTier       string   `json:"model_tier"` // haiku | sonnet | opus
 	Context         string   `json:"context,omitempty"`
 	UseSkill        string   `json:"use_skill,omitempty"` // master can pin a specific skill for the worker
+
+	// Structured context — Anthropic's published lead-curates pattern. The
+	// master pre-loads what each worker needs so workers don't re-discover
+	// state and parallel workers don't collide. All optional.
+	RepoFacts     []string `json:"repo_facts,omitempty"`     // "path:role" lines master already knows
+	PriorFindings []string `json:"prior_findings,omitempty"` // attributed past worker outputs worth remembering
+	DoNotRevisit  []string `json:"do_not_revisit,omitempty"` // paths/areas other workers are handling
 }
 
 // Subagent runs a single delegated task in its own goroutine.
@@ -465,6 +472,28 @@ func (s *Subagent) userPrompt() string {
 	}
 	if s.Task.UseSkill != "" {
 		sb.WriteString("<use_skill>" + s.Task.UseSkill + "</use_skill>\n")
+	}
+	if len(s.Task.RepoFacts) > 0 {
+		sb.WriteString("<repo_facts>\n")
+		for _, f := range s.Task.RepoFacts {
+			sb.WriteString("- " + f + "\n")
+		}
+		sb.WriteString("</repo_facts>\n")
+	}
+	if len(s.Task.PriorFindings) > 0 {
+		sb.WriteString("<prior_findings>\n")
+		for _, f := range s.Task.PriorFindings {
+			sb.WriteString("- " + f + "\n")
+		}
+		sb.WriteString("</prior_findings>\n")
+	}
+	if len(s.Task.DoNotRevisit) > 0 {
+		sb.WriteString("<do_not_revisit>\n")
+		for _, f := range s.Task.DoNotRevisit {
+			sb.WriteString("- " + f + "\n")
+		}
+		sb.WriteString("</do_not_revisit>\n")
+		sb.WriteString("(other workers are handling these — stay clear)\n")
 	}
 	if s.Task.Context != "" {
 		sb.WriteString("<context>" + s.Task.Context + "</context>\n")

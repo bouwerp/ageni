@@ -34,8 +34,11 @@ func (SpawnTool) Schema() json.RawMessage {
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Whitelist of tool names. Omit for all-tools-allowed."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
   "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 25. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
-  "context":{"type":"string","description":"Pre-computed context the sub-agent needs (file paths, prior decisions). Pre-computing here avoids re-discovery cost."},
-  "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."}
+  "context":{"type":"string","description":"Free-form pre-computed context for one-off info that doesn't fit the structured fields below."},
+  "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."},
+  "repo_facts":{"type":"array","items":{"type":"string"},"description":"File-purpose lines you already know, e.g. 'internal/llm/anthropic.go: prompt-caching adapter'. Saves the worker a discovery round-trip."},
+  "prior_findings":{"type":"array","items":{"type":"string"},"description":"Selected attributed results from earlier workers, e.g. 's3 found auth at internal/auth/jwt.go:42'. Use sparingly — only what THIS worker needs to know."},
+  "do_not_revisit":{"type":"array","items":{"type":"string"},"description":"Paths/areas other parallel workers are handling. Anti-collision: tells THIS worker to stay clear so multiple parallel workers don't redo the same change."}
 },
 "required":["objective","output_format"]
 }`)

@@ -68,16 +68,8 @@ func (t FindInCodebase) Call(ctx context.Context, args json.RawMessage) (string,
 	}
 
 	task := SubagentTask{
-		Objective: objective,
-		OutputFormat: `<result>
-<summary>One-paragraph plain-English answer (e.g. "The SubagentTask struct is defined in internal/agent/subagent.go:24 and used by Manager.Spawn at manager.go:73; it carries the contract: objective, output_format, allowed_tools, ...").</summary>
-<locations>
-- path:line — short description of what's there
-- path:line — ...
-</locations>
-<related_files>Optional: 2–4 files the user might also want to know about.</related_files>
-</result>
-<reasoning>Brief notes on what you searched for and why these are the relevant locations.</reasoning>`,
+		Objective:       objective,
+		OutputFormat:    CanonicalWorkerOutputFormat,
 		AllowedTools:    []string{"grep", "glob", "read_file", "list_dir"},
 		BudgetToolCalls: 10,
 		ModelTier:       "haiku",

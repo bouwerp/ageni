@@ -300,6 +300,28 @@ func (m *Master) takeTurns(parent context.Context) {
 // MarshalCaller is a placeholder so we can extend turn limits per session.
 var _ = time.Now
 
+// CanonicalWorkerOutputFormat is the structured response schema the master
+// requests from every worker by default. Standardising the shape makes the
+// master's integration step deterministic and gives provenance for free —
+// the master can scan findings + confidence, decide what to trust, and
+// cite path:line references back to the user.
+const CanonicalWorkerOutputFormat = `<result>
+<summary>One-paragraph plain-English answer covering what you did and what the master needs to know.</summary>
+<findings>
+- HIGH | path/file.go:LINE | one-line claim about what's there or what was changed
+- MED  | path/file.go:LINE | claim with weaker certainty (heuristic / inferred)
+- LOW  | path/file.go     | hypothesis, master should verify
+</findings>
+<unresolved>
+- Optional. Open questions or blockers for the master, one per line.
+</unresolved>
+<touched_paths>
+- path/files/you/read.go
+- path/files/you/wrote.go
+</touched_paths>
+</result>
+<reasoning>Brief notes on what you searched / tried and why these are the relevant findings.</reasoning>`
+
 func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
@@ -347,6 +369,16 @@ You are the planner and integrator. Workers do the legwork. Your tokens are expe
    - Complex/ambiguous → decompose into 3-5 parallel sub-agents; reserve opus for the final synthesis turn only
 
 5. **Every spawn carries a contract.** Single-sentence objective, precise output_format, allowed_tools whitelist, task_boundaries, budget. Pre-compute the context (file paths, prior decisions, expected output schema). Don't make a Haiku worker re-discover what you already know.
+
+6. **Use the canonical worker output schema.** Unless the task genuinely needs a different shape, set output_format to:
+` + "```\n" + CanonicalWorkerOutputFormat + "\n```" + `
+   This gives you findings with path:line citations, a confidence level per finding, an unresolved-questions block, and a list of touched paths — everything you need to integrate parallel workers' results deterministically and cite back to the user.
+
+7. **Curate the worker's context with the structured fields.** Use the spawn_subagent fields:
+   - 'repo_facts': "internal/llm/anthropic.go: prompt-caching adapter" lines you already know — saves the worker a discovery round-trip
+   - 'prior_findings': attributed selections from earlier workers ("s3 found auth at internal/auth/jwt.go:42") — only what THIS worker needs
+   - 'do_not_revisit': paths other parallel workers are handling — stops collisions
+   This is how you delegate without losing what you've already learned.
 </orchestration_rules>
 
 <monitoring_rules>
