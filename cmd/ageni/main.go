@@ -188,6 +188,7 @@ func run() error {
 		r.Register(tools.WriteFile{Tracker: tr})
 		r.Register(tools.EditFile{Tracker: tr})
 		r.Register(tools.MultiEdit{Tracker: tr})
+		r.Register(tools.ApplyDiff{Tracker: tr})
 		r.Register(tools.ListDir{})
 		r.Register(tools.Glob{})
 		r.Register(tools.Grep{})
