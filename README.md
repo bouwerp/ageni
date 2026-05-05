@@ -375,3 +375,13 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 - MCP server support
 - Sandboxed sub-agent working directories
 - Sub-agent tool-call permissioning (e.g., read-only sub-agents)
+
+### Roadmap (post-research, see `research.md`)
+
+- **Sandbox tiers via Landlock (Linux) + Seatbelt (macOS).** `read-only` / `workspace-write` / `danger-full-access` modes with `writable_roots` and `network_access` config keys. Reuse Codex's vocabulary for muscle memory. Real safety, no Docker, fits the single-binary constraint.
+- **Recipes — parameterised, executable agent workflows in YAML.** `ageni run recipe.yaml --param target=foo`. Skills are read-only docs; recipes are repeatable team knowledge. Distro story for ageni-in-a-team.
+- **Polyglot benchmark harness.** Fork Aider's 225-exercise polyglot suite, add `make bench`, publish a leaderboard for ageni against its supported providers. Run on every release tag.
+- **Mode-enforced Plan / Act / Auto split** gated at the tool layer. In Plan, `write_file` / `edit_file` / `run_bash` return refusals.
+- **`ageni exec "<prompt>"` headless mode + GitHub Action** that wraps it. Structured JSON output for CI / PR-bot use.
+- **Reverse MCP** — `ageni mcp-server` so other agents can call into ageni.
+- **Context condenser** — explicit memory compression strategy when the master fills, beyond Anthropic's auto-compaction.
