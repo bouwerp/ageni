@@ -67,6 +67,10 @@ type App struct {
 	settingsState *settingsState
 	flashMessage  string
 
+	// mouseOn tracks whether Bubble Tea's mouse capture is enabled.
+	// Toggled with F2 so the user can drag-select text in the terminal.
+	mouseOn bool
+
 	// Markdown renderer for master + sub-agent final output. Re-initialised
 	// when the chat-pane width changes.
 	glam      *glamour.TermRenderer
@@ -111,6 +115,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		subStatus:      make(map[string]agent.SubagentStatus),
 		history:        LoadHistory(),
 		historyIdx:     -1,
+		mouseOn:        true,
 		ctx:            cctx,
 		cancel:         cancel,
 	}
@@ -226,6 +231,8 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case msg.String() == "ctrl+,", msg.String() == "ctrl+s":
 			return a, a.openSettings()
+		case msg.Type == tea.KeyF2:
+			return a, a.toggleMouse()
 		case msg.Type == tea.KeyPgUp, msg.Type == tea.KeyPgDown,
 			msg.String() == "ctrl+u", msg.String() == "ctrl+d":
 			// Always route page-scroll keys to the chat viewport.
@@ -325,6 +332,21 @@ func (a *App) historyNext() {
 		a.input.SetValue(items[a.historyIdx])
 	}
 	a.input.CursorEnd()
+}
+
+// toggleMouse flips Bubble Tea's mouse capture so the user can drag-select
+// text in the terminal and copy with the platform's native shortcut. When
+// capture is off, mouse-wheel scrolling within the chat pane stops working
+// — re-enable with F2 to get it back. Shift+drag bypasses capture in most
+// modern terminals as a one-shot alternative.
+func (a *App) toggleMouse() tea.Cmd {
+	a.mouseOn = !a.mouseOn
+	if a.mouseOn {
+		a.flashMessage = "mouse capture ON — wheel scrolls chat"
+		return tea.EnableMouseCellMotion
+	}
+	a.flashMessage = "mouse capture OFF — drag to select, F2 to resume"
+	return tea.DisableMouse
 }
 
 func (a *App) stopGeneration() {
@@ -684,7 +706,11 @@ func (a *App) statusLine() string {
 	if a.flashMessage != "" {
 		flash = "  │  " + a.flashMessage
 	}
-	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
+	mouseStr := "ON"
+	if !a.mouseOn {
+		mouseStr = "OFF"
+	}
+	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, mouseStr, flash)
 }
 
 func renderUsage(snap llm.TrackerSnapshot) string {

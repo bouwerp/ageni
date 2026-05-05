@@ -90,6 +90,13 @@ Tools are unified internally as Go structs implementing a `Tool` interface, then
 - `send_to_subagent(id, msg)`
 - `kill_subagent(id)`
 
+### Selecting and copying text
+
+Bubble Tea captures mouse events for wheel-scrolling the chat pane, which blocks the terminal's native click-drag selection. Two ways around it:
+
+- **Shift+drag** — works in most modern terminals (iTerm2, kitty, Alacritty, GNOME Terminal, Windows Terminal). The terminal bypasses application mouse capture while Shift is held.
+- **F2** — toggles mouse capture off entirely. Drag-select normally, copy with your platform shortcut, then F2 again to re-enable wheel-scroll. Status bar shows `mouse(ON|OFF)`.
+
 ### External CLI dependencies
 
 `grep` shells out to `rg`, `git_*` to `git`, `github` to `gh`. Run `ageni doctor` to check what's installed and `ageni doctor --install` to install missing ones via your platform package manager (brew / apt / dnf / yum / pacman / apk). The `install.sh` one-liner runs this automatically; pass `--install-deps` for non-interactive auto-install or `--skip-deps` to bypass.
