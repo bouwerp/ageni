@@ -530,8 +530,12 @@ func (a *App) stopGeneration() {
 	}
 }
 
+// settingsHeaderLines is the number of lines rendered above the huh form in
+// View() so we can pass the correct usable height to newSettingsForm.
+const settingsHeaderLines = 3
+
 func (a *App) openSettings() tea.Cmd {
-	form, st, err := newSettingsForm()
+	form, st, err := newSettingsForm(a.height - settingsHeaderLines)
 	if err != nil {
 		a.flashMessage = "settings: " + err.Error()
 		return nil
@@ -553,6 +557,15 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.mode = ModeChat
 			a.flashMessage = "settings: cancelled"
 			return a, nil
+		}
+	}
+
+	// Keep the form viewport sized to the usable height whenever the
+	// terminal is resized (subtract our header lines from the full height).
+	if ws, ok := msg.(tea.WindowSizeMsg); ok {
+		usable := ws.Height - settingsHeaderLines
+		if usable > 0 && a.settingsForm != nil {
+			a.settingsForm.WithHeight(usable)
 		}
 	}
 

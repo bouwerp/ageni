@@ -55,7 +55,11 @@ type settingsState struct {
 
 const leadDisabled = ""
 
-func newSettingsForm() (*huh.Form, *settingsState, error) {
+// newSettingsForm builds the settings form. Pass the terminal height (minus
+// any header lines the caller renders above the form) so the group viewport
+// is sized correctly from the start rather than waiting for the async
+// WindowSizeMsg round-trip that fires after the first render.
+func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
 		return nil, nil, err
@@ -103,7 +107,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Options(allProviderOptions()...).
 			Value(&st.enabled).
 			Filterable(true).
-			Height(10),
+			Height(5),
 	}
 
 	// Per-provider key inputs — one per provider that needs a key.
@@ -133,7 +137,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			}, &st.enabled).
 			Value(&st.masterProvider).
 			Filtering(true).
-			Height(8),
+			Height(4),
 		huh.NewSelect[string]().
 			Title("Master · Model").
 			OptionsFunc(func() []huh.Option[string] {
@@ -141,7 +145,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			}, &st.masterProvider).
 			Value(&st.masterModel).
 			Filtering(true).
-			Height(10),
+			Height(5),
 
 		huh.NewSelect[string]().
 			Title("Sub-agent · Provider").
@@ -159,7 +163,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			}, &st.subProvider).
 			Value(&st.subModel).
 			Filtering(true).
-			Height(10),
+			Height(5),
 
 		huh.NewSelect[string]().
 			Title("Lead · Provider  (optional)").
@@ -181,7 +185,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			}, &st.leadProvider).
 			Value(&st.leadModel).
 			Filtering(true).
-			Height(10),
+			Height(5),
 
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Master").
@@ -217,6 +221,9 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 	form := huh.NewForm(huh.NewGroup(fields...)).
 		WithShowHelp(true).
 		WithShowErrors(true)
+	if termHeight > 0 {
+		form.WithHeight(termHeight)
+	}
 	return form, st, nil
 }
 
