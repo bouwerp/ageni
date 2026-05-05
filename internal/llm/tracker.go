@@ -136,6 +136,31 @@ func (t *Tracker) SessionCost() (cost float64, hasUnknown bool) {
 	return cost, hasUnknown
 }
 
+// SessionCacheSavings sums USD saved this session by prompt caching, vs
+// the same workload billed at full input rate for every cache read /
+// creation. Computed against the indicative price sheet so free-tier
+// users see "what caching would have saved you on paid" — not zero.
+//
+// Net of cache-creation overhead: Anthropic charges 1.25x for writes
+// and 0.1x for reads, so a one-shot conversation pays a small write
+// premium and only later reads turn that into net savings.
+func (t *Tracker) SessionCacheSavings() float64 {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	var saved float64
+	for k, u := range t.entries {
+		if u.CacheReadTokens == 0 && u.CacheCreationTokens == 0 {
+			continue
+		}
+		p := IndicativePricingFor(k.Model)
+		if p.InputPer1M == 0 {
+			continue
+		}
+		saved += p.CostWithoutCache(u) - p.Cost(u)
+	}
+	return saved
+}
+
 // SessionCostBreakdown returns both the actual cost (what was billed) and
 // an indicative cost (what would have been billed if every free / local
 // model used in the session were charged at its hosted-equivalent rate).

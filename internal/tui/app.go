@@ -760,7 +760,7 @@ func (a *App) renderUsageFromTracker() string {
 	subs := a.tracker.StatsByRolePrefix("subagent:")
 	actual, indicative, hasUnknown := a.tracker.SessionCostBreakdown()
 	return fmt.Sprintf("%s  M:%s/%s c=%s  S:%s/%s c=%s",
-		fmtCostBreakdown(actual, indicative, hasUnknown),
+		a.fmtCostBreakdown(actual, indicative, hasUnknown),
 		fmtTokens(master.InputTokens+master.CacheReadTokens),
 		fmtTokens(master.OutputTokens),
 		fmtRate(master),
@@ -771,14 +771,19 @@ func (a *App) renderUsageFromTracker() string {
 }
 
 // fmtCostBreakdown renders actual, optionally followed by the indicative
-// paid-equivalent when the two diverge enough to be worth showing.
-func fmtCostBreakdown(actual, indicative float64, hasUnknown bool) string {
+// paid-equivalent when the two diverge enough to be worth showing, and an
+// inline "(saved $X)" tally for prompt caching savings.
+func (a *App) fmtCostBreakdown(actual, indicative float64, hasUnknown bool) string {
 	actualStr := fmtCost(actual, hasUnknown)
 	gap := indicative - actual
+	out := actualStr
 	if gap > 0.01 || (actual > 0 && gap/actual > 0.1) {
-		return fmt.Sprintf("%s / ≈%s paid", actualStr, fmtCost(indicative, false))
+		out = fmt.Sprintf("%s / ≈%s paid", actualStr, fmtCost(indicative, false))
 	}
-	return actualStr
+	if cacheSaved := a.tracker.SessionCacheSavings(); cacheSaved > 0.001 {
+		out += " (saved " + fmtCost(cacheSaved, false) + " via cache)"
+	}
+	return out
 }
 
 // fmtCost renders a session cost. For very small amounts it falls back to

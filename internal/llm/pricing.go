@@ -53,6 +53,14 @@ func (p Pricing) Cost(u Usage) float64 {
 		float64(u.CacheCreationTokens)*cw) / 1_000_000
 }
 
+// CostWithoutCache returns what u would cost if every cache read and
+// cache creation token were billed at the full input rate (i.e. no prompt
+// caching). Used to compute caching savings.
+func (p Pricing) CostWithoutCache(u Usage) float64 {
+	return (float64(u.InputTokens+u.CacheReadTokens+u.CacheCreationTokens)*p.InputPer1M +
+		float64(u.OutputTokens)*p.OutputPer1M) / 1_000_000
+}
+
 // PricingFor returns the pricing entry for a given model ID.
 //
 // Lookup order:
