@@ -33,6 +33,7 @@ type Master struct {
 
 	skillCatalog    string // optional: appended to the cached system prompt
 	repoMap         string // optional: rendered repository map appended to the cached prefix
+	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
 	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
 
 	messages   []llm.Message
@@ -68,6 +69,17 @@ func (m *Master) SetSkillCatalog(catalog string) {
 func (m *Master) SetRepoMap(rendered string) {
 	m.mu.Lock()
 	m.repoMap = rendered
+	m.mu.Unlock()
+}
+
+// SetAgentsMD injects the project's AGENTS.md content (cross-vendor
+// instruction format used by Codex, Cursor, Amp, Factory, Jules,
+// Copilot — see https://agents.md). The rendered string is one or more
+// <agents_md scope="..."> blocks pre-formatted by internal/agentsmd.
+// Pass an empty string to clear.
+func (m *Master) SetAgentsMD(rendered string) {
+	m.mu.Lock()
+	m.agentsMD = rendered
 	m.mu.Unlock()
 }
 
@@ -368,6 +380,7 @@ func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
 	repoMap := m.repoMap
+	agentsMD := m.agentsMD
 	m.mu.RUnlock()
 
 	skillsBlock := ""
@@ -378,9 +391,13 @@ func (m *Master) systemPrompt() string {
 	if repoMap != "" {
 		repoMapBlock = "\n\n<repo_map>\n" + repoMap + "\n\nUse this map BEFORE calling grep/glob/read_file. It tells you which files exist and what they contain — use it to plan which files to read, then read them with read_file. The map is intentionally compact; if a file you need isn't listed, fall back to glob/grep.\n</repo_map>"
 	}
+	agentsBlock := ""
+	if agentsMD != "" {
+		agentsBlock = "\n\n<project_instructions source=\"AGENTS.md\">\n" + agentsMD + "\n\nThese are the project's authoritative agent instructions (cross-vendor convention shared with Codex, Cursor, Amp, Factory, Jules, Copilot). Honour them as if they were given by the user. When multiple <agents_md> scopes apply to a file, the deepest matching scope wins — root-level rules apply unless a nested scope overrides them.\n</project_instructions>"
+	}
 
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + repoMapBlock + `
+	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + repoMapBlock + agentsBlock + `
 
 <orchestration_rules>
 You are the planner and integrator. Workers do the legwork. Your tokens are expensive; theirs are cheap. Two rules dominate everything else:

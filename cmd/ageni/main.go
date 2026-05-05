@@ -16,6 +16,7 @@ import (
 	"github.com/muesli/termenv"
 
 	"github.com/bouwerp/ageni/internal/agent"
+	"github.com/bouwerp/ageni/internal/agentsmd"
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/mcp"
@@ -283,6 +284,17 @@ func run() error {
 		}
 		master.SetRepoMap(m.Rendered)
 	}()
+
+	// Load AGENTS.md (cross-vendor project-instruction format used by
+	// Codex, Cursor, Amp, Factory, Jules, Copilot — see https://agents.md).
+	// Fast enough to do synchronously; the user wants their project rules
+	// to bind from turn 1, not turn N.
+	if root := detectRepoRoot(); root != "" {
+		if res, err := agentsmd.Load(root); err == nil && res.Rendered != "" {
+			master.SetAgentsMD(res.Rendered)
+			fmt.Printf("Loaded %d AGENTS.md file(s) from %s\n", len(res.Paths), root)
+		}
+	}
 	masterIn := make(chan agent.Event, 16)
 
 	// Forward sub-agent events from the bus into the master inbox so it can react.
