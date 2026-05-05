@@ -16,15 +16,13 @@ import (
 )
 
 // settingsState holds the in-progress edit values bound to the form.
-// The form is a single huh.Group → all fields render at once and Tab
-// navigates between them. Provider configuration (which providers are
-// enabled, what their API keys are) is handled separately from role
-// selection (master / sub-agent / lead use which provider+model).
+// The form is a single huh.Group so all fields render at once and Tab
+// navigates between them. Each field Title carries a "Section · Field"
+// prefix so the user always knows where they are regardless of scroll.
 //
-// keyPtrs[providerName] is a stable address bound to a huh.NewInput,
-// so the form can edit each provider's key independently. We can't put
-// the keys in a map field of the struct because huh needs *string
-// pointers that don't move.
+// keyPtrs[providerName] is a stable *string bound to a huh.NewInput.
+// We can't put keys in a map field because huh needs addresses that
+// don't move between renders.
 type settingsState struct {
 	envPath string
 
@@ -94,14 +92,14 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 		}
 	}
 
-	// Build the form. A single Group renders all fields at once.
+	// Build the form. A single Group renders all fields at once; each
+	// field Title carries its section prefix so it's readable regardless
+	// of scroll position ("Master · Provider" rather than a separate Note
+	// that drifts off-screen when tabbing).
 	fields := []huh.Field{
-		// Section 1: provider configuration
-		huh.NewNote().
-			Title("1. Providers").
-			Description("Tick (space) the providers you want to use. Keys are pulled from each provider's standard env var (ANTHROPIC_API_KEY, GROQ_API_KEY, …) on save and verified against the provider's /v1/models endpoint."),
 		huh.NewMultiSelect[string]().
-			Title("Enabled providers").
+			Title("Providers · Enabled").
+			Description("Space to tick. Keys are pulled from each provider's standard env var on save and verified against /v1/models.").
 			Options(allProviderOptions()...).
 			Value(&st.enabled).
 			Filterable(true).
@@ -109,15 +107,12 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 	}
 
 	// Per-provider key inputs — one per provider that needs a key.
-	// Always shown so the user can enter / replace any key in any
-	// order without first ticking the box.
 	for _, p := range llm.AllProviders() {
 		if !p.NeedsKey {
 			continue
 		}
-		title := p.Label + " API key"
+		title := "Providers · " + p.Label + " key"
 		if v := *st.keyPtrs[p.Name]; v != "" {
-			// Pre-existing key — show a hint, don't echo plaintext.
 			title += "  [set]"
 		}
 		fields = append(fields, huh.NewInput().
@@ -128,13 +123,11 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 		)
 	}
 
-	// Section 2: role selection — only shows enabled providers
+	// Role selection — only shows enabled providers.
 	fields = append(fields,
-		huh.NewNote().
-			Title("2. Master agent").
-			Description("The agent you talk to. Best model you can afford. Picks from enabled providers."),
 		huh.NewSelect[string]().
-			Title("Master provider").
+			Title("Master · Provider").
+			Description("The agent you talk to. Use the best model you can afford.").
 			OptionsFunc(func() []huh.Option[string] {
 				return enabledProviderOptions(st.enabled)
 			}, &st.enabled).
@@ -142,7 +135,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(8),
 		huh.NewSelect[string]().
-			Title("Master model").
+			Title("Master · Model").
 			OptionsFunc(func() []huh.Option[string] {
 				return modelOptionsFor(st.masterProvider, st.masterModel)
 			}, &st.masterProvider).
@@ -150,11 +143,9 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(10),
 
-		huh.NewNote().
-			Title("3. Sub-agents").
-			Description("Workers spawned by the master. Cheaper / free-tier is fine."),
 		huh.NewSelect[string]().
-			Title("Sub-agent provider").
+			Title("Sub-agent · Provider").
+			Description("Workers spawned by the master. Cheaper / free-tier is fine.").
 			OptionsFunc(func() []huh.Option[string] {
 				return enabledProviderOptions(st.enabled)
 			}, &st.enabled).
@@ -162,7 +153,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(8),
 		huh.NewSelect[string]().
-			Title("Sub-agent model").
+			Title("Sub-agent · Model").
 			OptionsFunc(func() []huh.Option[string] {
 				return modelOptionsFor(st.subProvider, st.subModel)
 			}, &st.subProvider).
@@ -170,11 +161,9 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(10),
 
-		huh.NewNote().
-			Title("4. Lead model (optional)").
-			Description("Used on the FIRST master turn after each user message (planning); subsequent execution turns use the regular master model. Saves tokens at equivalent quality. Pick (disabled) to use the master model for every turn."),
 		huh.NewSelect[string]().
-			Title("Lead provider").
+			Title("Lead · Provider  (optional)").
+			Description("Used only on the first master turn (planning). (disabled) = master model every turn.").
 			OptionsFunc(func() []huh.Option[string] {
 				opts := enabledProviderOptions(st.enabled)
 				return append([]huh.Option[string]{huh.NewOption("(disabled — every turn uses master model)", leadDisabled)}, opts...)
@@ -183,7 +172,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(8),
 		huh.NewSelect[string]().
-			Title("Lead model").
+			Title("Lead · Model  (optional)").
 			OptionsFunc(func() []huh.Option[string] {
 				if st.leadProvider == leadDisabled {
 					return nil
@@ -194,11 +183,9 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filtering(true).
 			Height(10),
 
-		huh.NewNote().
-			Title("5. Fallback chains").
-			Description("On 429 / 5xx / timeout / network failure, ageni rolls over in order. Tick (space) the providers to use as fallbacks for each role. Each fallback uses the provider's default model."),
 		huh.NewMultiSelect[string]().
-			Title("Master fallback providers").
+			Title("Fallbacks · Master").
+			Description("On 429 / 5xx / timeout, ageni tries these providers in order. Each uses its default model.").
 			OptionsFunc(func() []huh.Option[string] {
 				return fallbackOptions(st.enabled, st.masterProvider)
 			}, &st.enabled).
@@ -206,7 +193,8 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filterable(true).
 			Height(8),
 		huh.NewMultiSelect[string]().
-			Title("Sub-agent fallback providers").
+			Title("Fallbacks · Sub-agent").
+			Description("Same fallback behaviour for sub-agent workers.").
 			OptionsFunc(func() []huh.Option[string] {
 				return fallbackOptions(st.enabled, st.subProvider)
 			}, &st.enabled).
@@ -214,17 +202,14 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 			Filterable(true).
 			Height(8),
 
-		huh.NewNote().
-			Title("6. Limits").
-			Description("Concurrency caps parallel workers; budget caps tool calls per worker."),
 		huh.NewInput().
-			Title("Max concurrent sub-agents").
-			Description("Lower this on rate-limited free tiers.").
+			Title("Limits · Max concurrent sub-agents").
+			Description("Lower on rate-limited free tiers.").
 			Value(&st.maxSubagents).
 			Validate(positiveInt),
 		huh.NewInput().
-			Title("Default tool-call budget per sub-agent").
-			Description("Soft cap. The master can override per-spawn.").
+			Title("Limits · Budget per sub-agent").
+			Description("Soft tool-call cap. The master can override per-spawn.").
 			Value(&st.subagentBudget).
 			Validate(positiveInt),
 	)
