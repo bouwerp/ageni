@@ -93,6 +93,56 @@ func PricingFor(model string) Pricing {
 	return Pricing{}
 }
 
+// IndicativePricingFor returns "what this model would cost if you were
+// paying for it" — useful for showing free-tier users the value they're
+// getting. For paid models, returns the same as PricingFor. For :free
+// suffix models, strips the suffix and looks up the paid variant. For
+// local Ollama tags, maps to the closest cloud equivalent.
+func IndicativePricingFor(model string) Pricing {
+	actual := PricingFor(model)
+	if actual.Known && (actual.InputPer1M > 0 || actual.OutputPer1M > 0) {
+		return actual
+	}
+
+	// OpenRouter ":free" suffix → look up the paid variant.
+	if strings.HasSuffix(model, ":free") {
+		base := strings.TrimSuffix(model, ":free")
+		if p := PricingFor(base); p.Known {
+			return p
+		}
+	}
+
+	// Local Ollama tag → guess a cloud equivalent.
+	if equiv := localToCloud(model); equiv != "" {
+		if p := PricingFor(equiv); p.Known {
+			return p
+		}
+	}
+
+	return actual
+}
+
+// localToCloud maps Ollama-style local tags to the model ID of a hosted
+// equivalent we have pricing for. Returns "" when no good guess exists.
+func localToCloud(model string) string {
+	low := strings.ToLower(model)
+	switch {
+	case strings.HasPrefix(low, "llama3.3"), strings.HasPrefix(low, "llama-3.3-70b"):
+		return "llama-3.3-70b-versatile" // Groq's price
+	case strings.HasPrefix(low, "llama3.1:8b"), strings.HasPrefix(low, "llama-3.1-8b"):
+		return "llama-3.1-8b-instant"
+	case strings.HasPrefix(low, "deepseek-r"):
+		return "deepseek-reasoner"
+	case strings.HasPrefix(low, "deepseek-v"), strings.HasPrefix(low, "deepseek-chat"):
+		return "deepseek-chat"
+	case strings.HasPrefix(low, "mistral-large"):
+		return "mistral-large-latest"
+	case strings.HasPrefix(low, "codestral"):
+		return "codestral-latest"
+	}
+	return ""
+}
+
 func isLocalSentinel(s string) bool {
 	switch s {
 	case "default", // llamacpp / vllm placeholder

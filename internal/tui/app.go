@@ -751,14 +751,16 @@ func (a *App) statusLine() string {
 }
 
 // renderUsageFromTracker shows master + sub-agent token usage with cache
-// hit rate per role plus a session cost estimate, so the user can see what
-// they've spent and when caching is working.
+// hit rate per role plus a session cost estimate. When free / local models
+// did real work, the cost shows actual followed by indicative ("$0 / ≈$0.018
+// paid") so the user can see what the same session would have cost on paid
+// rates.
 func (a *App) renderUsageFromTracker() string {
 	master := a.tracker.StatsByRolePrefix("master")
 	subs := a.tracker.StatsByRolePrefix("subagent:")
-	cost, hasUnknown := a.tracker.SessionCost()
+	actual, indicative, hasUnknown := a.tracker.SessionCostBreakdown()
 	return fmt.Sprintf("%s  M:%s/%s c=%s  S:%s/%s c=%s",
-		fmtCost(cost, hasUnknown),
+		fmtCostBreakdown(actual, indicative, hasUnknown),
 		fmtTokens(master.InputTokens+master.CacheReadTokens),
 		fmtTokens(master.OutputTokens),
 		fmtRate(master),
@@ -766,6 +768,17 @@ func (a *App) renderUsageFromTracker() string {
 		fmtTokens(subs.OutputTokens),
 		fmtRate(subs),
 	)
+}
+
+// fmtCostBreakdown renders actual, optionally followed by the indicative
+// paid-equivalent when the two diverge enough to be worth showing.
+func fmtCostBreakdown(actual, indicative float64, hasUnknown bool) string {
+	actualStr := fmtCost(actual, hasUnknown)
+	gap := indicative - actual
+	if gap > 0.01 || (actual > 0 && gap/actual > 0.1) {
+		return fmt.Sprintf("%s / ≈%s paid", actualStr, fmtCost(indicative, false))
+	}
+	return actualStr
 }
 
 // fmtCost renders a session cost. For very small amounts it falls back to
