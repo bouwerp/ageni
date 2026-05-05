@@ -7,7 +7,6 @@ import (
 	"net"
 	"net/http"
 	"net/url"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -146,14 +145,7 @@ func pickRole(role string, existing map[string]string, prefix string, probed map
 	spec, _ := llm.LookupProvider(chosenName)
 	cs.spec = spec
 
-	// Model select.
-	model := existing[prefix+"_MODEL"]
-	if err := selectModel(role, &spec, &model); err != nil {
-		return cs, err
-	}
-	cs.model = model
-
-	// Custom: ask for base URL if missing.
+	// Custom: ask for base URL FIRST so model fetch knows where to look.
 	if spec.Name == "custom" {
 		base := existing[prefix+"_BASE_URL"]
 		if err := huh.NewInput().
@@ -165,9 +157,11 @@ func pickRole(role string, existing map[string]string, prefix string, probed map
 			return cs, err
 		}
 		cs.baseURL = strings.TrimSpace(base)
+		spec.BaseURL = cs.baseURL
 	}
 
-	// API key prompt.
+	// API key prompt — moved BEFORE model select so we can fetch the live
+	// model list using the key.
 	if spec.NeedsKey {
 		key := existing[spec.APIKeyEnv]
 		if key == "" {
@@ -218,12 +212,25 @@ func pickRole(role string, existing map[string]string, prefix string, probed map
 		}
 	}
 
+	// Model select — happens AFTER the API key so we can fetch the live
+	// catalog from the provider's /v1/models endpoint.
+	apiKey := cs.providerKey
+	if apiKey == "" {
+		apiKey = cs.roleKey
+	}
+	model := existing[prefix+"_MODEL"]
+	if err := selectModel(role, &spec, apiKey, &model); err != nil {
+		return cs, err
+	}
+	cs.model = model
+
 	return cs, nil
 }
 
-func selectModel(role string, spec *llm.ProviderSpec, current *string) error {
+func selectModel(role string, spec *llm.ProviderSpec, apiKey string, current *string) error {
 	models := append([]llm.ModelSuggestion(nil), spec.RecommendedModels...)
-	// For Ollama, fetch installed models live and prepend.
+
+	// Ollama: list locally installed models via the /api/tags endpoint.
 	if spec.Name == "ollama" {
 		if live := fetchOllamaModels(); len(live) > 0 {
 			seen := map[string]bool{}
@@ -240,13 +247,24 @@ func selectModel(role string, spec *llm.ProviderSpec, current *string) error {
 		}
 	}
 
-	// Sort: free first, then alpha by label.
-	sort.SliceStable(models, func(i, j int) bool {
-		if models[i].Free != models[j].Free {
-			return models[i].Free
+	// Live catalog from the provider's /v1/models endpoint, when applicable.
+	// Skips llamacpp/vllm/custom (heuristic: we don't trust their /models),
+	// and Anthropic (special-cased to curated since SDK doesn't expose it).
+	switch spec.Name {
+	case "llamacpp", "vllm", "custom", "anthropic", "ollama":
+		// skip
+	default:
+		fmt.Printf("Fetching %s model catalogue...\n", spec.Label)
+		ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		live, err := llm.FetchModels(ctx, *spec, apiKey)
+		cancel()
+		if err == nil && len(live) > 0 {
+			models = llm.MergeModels(models, live)
+			fmt.Printf("  loaded %d models from %s\n\n", len(live), spec.Label)
+		} else if err != nil {
+			fmt.Printf("  (couldn't fetch live list: %v — falling back to curated)\n\n", err)
 		}
-		return models[i].Label < models[j].Label
-	})
+	}
 
 	options := make([]huh.Option[string], 0, len(models)+1)
 	for _, m := range models {

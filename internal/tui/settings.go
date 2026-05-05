@@ -1,8 +1,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
+	"os"
 	"strconv"
+	"strings"
+	"time"
 
 	"github.com/charmbracelet/huh"
 
@@ -170,7 +174,9 @@ func providerSelectOptions() []huh.Option[string] {
 
 // modelOptionsFor returns Select options for a provider, with the
 // currently-configured value (if any) pinned at the top so users with custom
-// models still see them. Type to filter; arrows to navigate.
+// models still see them. For OpenAI-compatible providers we also fetch the
+// live /v1/models list so the picker covers everything the provider offers,
+// not just our curated subset.
 func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
@@ -179,20 +185,45 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 		}
 		return nil
 	}
-	opts := make([]huh.Option[string], 0, len(spec.RecommendedModels)+1)
+
+	// Try to load a live catalogue. apiKey lookup mirrors what config.Load
+	// would do — role-specific override first, then provider default env.
+	apiKey := os.Getenv(spec.APIKeyEnv)
+	models := append([]llm.ModelSuggestion(nil), spec.RecommendedModels...)
+	if shouldFetchLive(spec.Name) {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if live, err := llm.FetchModels(ctx, spec, apiKey); err == nil && len(live) > 0 {
+			models = llm.MergeModels(models, live)
+		}
+		cancel()
+	}
+
+	opts := make([]huh.Option[string], 0, len(models)+1)
 	seen := map[string]bool{}
 	if currentValue != "" {
 		opts = append(opts, huh.NewOption("(current) "+currentValue, currentValue))
 		seen[currentValue] = true
 	}
-	for _, m := range spec.RecommendedModels {
+	for _, m := range models {
 		if seen[m.ID] {
 			continue
 		}
-		label := m.Label + " — " + m.ID
+		seen[m.ID] = true
+		label := m.Label
+		if !strings.Contains(label, m.ID) {
+			label = m.Label + " — " + m.ID
+		}
 		opts = append(opts, huh.NewOption(label, m.ID))
 	}
 	return opts
+}
+
+func shouldFetchLive(name string) bool {
+	switch name {
+	case "anthropic", "ollama", "llamacpp", "vllm", "custom":
+		return false
+	}
+	return true
 }
 
 func orDefault(v, def string) string {
