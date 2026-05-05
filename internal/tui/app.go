@@ -88,12 +88,22 @@ type App struct {
 	historyIdx   int    // -1 = not browsing, otherwise index into history items
 	historyDraft string // input text saved when the user enters history mode
 
-	// Activity indicator state. masterBusy is true while master generation
-	// is in flight (between user submit and master_turn_done). spinFrame
-	// advances on each tickMsg; renderers index into spinnerFrames with it.
+	// Activity indicator state.
+	//
+	// masterBusy is true while master generation is in flight: set on
+	// EvMasterTurnStart (the moment the LLM call goes out) and cleared on
+	// EvMasterTurnDone. Driving it from the bus event — rather than the
+	// user's Enter press — means the indicator also lights up when a
+	// sub-agent completion triggers a follow-up master turn.
+	//
+	// masterToolIn is the name of the master tool currently executing.
+	// subActivity[id] is one of "" / "thinking" / "tool:NAME" — what each
+	// running sub-agent is doing right now, used by the side-pane label.
+	// spinFrame advances on every tickMsg.
 	masterBusy   bool
 	spinFrame    int
-	masterToolIn string // name of the master tool currently executing, if any
+	masterToolIn string
+	subActivity  map[string]string
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -130,6 +140,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		subBufs:        make(map[string]*strings.Builder),
 		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
+		subActivity:    make(map[string]string),
 		history:        LoadHistory(),
 		historyIdx:     -1,
 		mouseOn:        true,
@@ -319,10 +330,15 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tickMsg:
 		a.spinFrame++
 		// Re-render the side pane each tick so the running-sub-agent marker
-		// animates. The chat pane and status bar pull from the same frame
-		// counter via the View() call that follows this Update.
+		// animates. The chat pane also needs a redraw when the inline
+		// "thinking…" indicator is showing — otherwise the spinner there
+		// freezes. The status bar pulls from the same frame counter via the
+		// View() call that follows this Update.
 		if a.anyAnimationActive() {
 			a.refreshSide()
+			if a.shouldShowInlineIndicator() {
+				a.refreshChat()
+			}
 		}
 		cmds = append(cmds, tickCmd())
 	}
@@ -535,6 +551,12 @@ func (a *App) layout() {
 
 func (a *App) handleEvent(ev agent.Event) {
 	switch ev.Kind {
+	case agent.EvMasterTurnStart:
+		// LLM call is in flight. Indicator lights up regardless of who
+		// triggered the turn (user submit, sub-agent completion, retry).
+		a.masterBusy = true
+		a.masterToolIn = ""
+		a.refreshSide()
 	case agent.EvMasterText:
 		a.currentMaster.WriteString(ev.Text)
 		a.appendMasterRender()
@@ -544,6 +566,7 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.masterToolIn = ev.ToolCall.Name
 			a.refreshChat()
+			a.refreshSide()
 		}
 	case agent.EvMasterToolDone:
 		if ev.ToolResult != nil {
@@ -562,12 +585,16 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvSubagentSpawn:
 		a.subBufs[ev.SubagentID] = &strings.Builder{}
 		a.subStatus[ev.SubagentID] = agent.StatusRunning
+		a.subActivity[ev.SubagentID] = "spawning"
 		a.subOrder = append(a.subOrder, ev.SubagentID)
 		header := titleStyle.Render(ev.SubagentID+" — "+ev.SubagentModel) + "\n" +
 			toolArgsStyle.Render(ev.SubagentTask) + "\n\n"
 		a.subBufs[ev.SubagentID].WriteString(header)
 		a.refreshSide()
 		a.refreshChat()
+	case agent.EvSubagentTurnStart:
+		a.subActivity[ev.SubagentID] = "thinking"
+		a.refreshSide()
 	case agent.EvSubagentText:
 		// Stream raw to a per-sub-agent in-progress buffer; refreshChat
 		// shows it live at the bottom of the sub-agent pane.
@@ -585,8 +612,10 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.flushSubText(ev.SubagentID)
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
 			b.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
+			a.subActivity[ev.SubagentID] = "tool:" + ev.ToolCall.Name
 		}
 		a.refreshChat()
+		a.refreshSide()
 	case agent.EvSubagentToolDone:
 		if ev.ToolResult != nil {
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
@@ -599,6 +628,9 @@ func (a *App) handleEvent(ev agent.Event) {
 					toolErrStyle.Render(compactSnippetTUI(ev.ToolResult.Content, 160)) + "\n")
 			}
 		}
+		// Tool finished — back to "thinking" until the next stream-start
+		// event, which will set it again (idempotent).
+		a.subActivity[ev.SubagentID] = "thinking"
 		a.refreshChat()
 		// Sub-agent may have written to the shared todo list — refresh.
 		a.refreshSide()
@@ -618,6 +650,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentDone:
 		a.subStatus[ev.SubagentID] = agent.StatusDone
+		delete(a.subActivity, ev.SubagentID)
 		// ev.Text is the authoritative final assistant turn — drop any
 		// in-progress streamed copy and render the canonical version once.
 		if cur, ok := a.currentSubText[ev.SubagentID]; ok {
@@ -633,6 +666,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentError:
 		a.subStatus[ev.SubagentID] = agent.StatusError
+		delete(a.subActivity, ev.SubagentID)
 		errText := "(unknown)"
 		if ev.Err != nil {
 			errText = ev.Err.Error()
@@ -754,6 +788,8 @@ func (a *App) refreshChat() {
 			// turn boundary.
 			if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
 				body += titleStyle.Render(a.viewSub+" ❯ ") + cur.String()
+			} else if line := a.subInlineIndicator(a.viewSub); line != "" {
+				body += line
 			}
 			a.chat.SetContent(body)
 			if atBottom {
@@ -765,11 +801,48 @@ func (a *App) refreshChat() {
 	body := a.chatBuf.String()
 	if a.currentMaster.Len() > 0 {
 		body += titleStyle.Render("master ❯ ") + a.currentMaster.String()
+	} else if line := a.masterInlineIndicator(); line != "" {
+		body += line
 	}
 	a.chat.SetContent(body)
 	if atBottom {
 		a.chat.GotoBottom()
 	}
+}
+
+// masterInlineIndicator renders a Claude-Code-style "✻ thinking…" line at
+// the bottom of the chat pane while the master is generating but hasn't
+// emitted any text yet (so the user has *something* moving on screen
+// during the gap between LLM request and first byte). Returns "" when
+// there's nothing to show.
+func (a *App) masterInlineIndicator() string {
+	switch {
+	case a.masterToolIn != "":
+		return mutedStyle.Render(fmt.Sprintf("%s master · running %s…", a.spinner(), a.masterToolIn))
+	case a.masterBusy:
+		return mutedStyle.Render(fmt.Sprintf("%s master · thinking…", a.spinner()))
+	}
+	return ""
+}
+
+// subInlineIndicator is the per-sub-agent equivalent: shown at the bottom
+// of a sub-agent pane while the worker is alive but not currently streaming
+// text. Reflects subActivity ("thinking" / "tool:NAME" / "spawning").
+func (a *App) subInlineIndicator(id string) string {
+	if a.subStatus[id] != agent.StatusRunning {
+		return ""
+	}
+	act := a.subActivity[id]
+	if act == "" {
+		return ""
+	}
+	label := act
+	if strings.HasPrefix(act, "tool:") {
+		label = "running " + strings.TrimPrefix(act, "tool:") + "…"
+	} else {
+		label += "…"
+	}
+	return mutedStyle.Render(fmt.Sprintf("%s %s · %s", a.spinner(), id, label))
 }
 
 func (a *App) refreshSide() {
@@ -783,9 +856,13 @@ func (a *App) refreshSide() {
 		st := a.subStatus[id]
 		marker := "•"
 		st2 := subRunningStyle
+		label := string(st)
 		switch st {
 		case agent.StatusRunning:
 			marker = frame
+			if act := a.subActivity[id]; act != "" {
+				label = act
+			}
 		case agent.StatusDone:
 			st2 = subDoneStyle
 			marker = "✓"
@@ -793,7 +870,7 @@ func (a *App) refreshSide() {
 			st2 = subErrStyle
 			marker = "✗"
 		}
-		line := fmt.Sprintf("%s %s  %s", marker, id, st)
+		line := fmt.Sprintf("%s %s  %s", marker, id, label)
 		if id == a.viewSub {
 			line = lipgloss.NewStyle().Reverse(true).Render(line)
 		}
@@ -828,6 +905,26 @@ func (a *App) refreshSide() {
 	}
 
 	a.side.SetContent(sb.String())
+}
+
+// shouldShowInlineIndicator returns true when the visible chat pane needs
+// the inline "thinking…" line to be redrawn each tick. Master pane: any
+// time the master is busy and has no in-progress text. Sub-agent pane:
+// when the viewed sub-agent has activity but no streamed text yet.
+func (a *App) shouldShowInlineIndicator() bool {
+	if a.viewSub != "" {
+		if a.subStatus[a.viewSub] != agent.StatusRunning {
+			return false
+		}
+		if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
+			return false
+		}
+		return a.subActivity[a.viewSub] != ""
+	}
+	if a.currentMaster.Len() > 0 {
+		return false
+	}
+	return a.masterBusy || a.masterToolIn != ""
 }
 
 // anyAnimationActive returns true when something on screen needs the spinner

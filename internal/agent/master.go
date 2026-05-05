@@ -267,6 +267,10 @@ func (m *Master) takeTurns(parent context.Context) {
 			Messages: m.messages,
 			Tools:    m.tools.Definitions(),
 		}
+		// Mark the moment the LLM call goes out so the TUI can light up the
+		// "thinking" indicator regardless of what triggered the turn (user
+		// submit, sub-agent completion, retry).
+		m.bus.Publish(Event{Kind: EvMasterTurnStart})
 		stream, err := adapter.Stream(ctx, req)
 		if err != nil {
 			m.bus.Publish(Event{Kind: EvError, Err: err})

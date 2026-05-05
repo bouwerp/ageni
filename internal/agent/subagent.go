@@ -374,6 +374,10 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 
 // runOneTurn does a single Stream call and accumulates the result.
 func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []llm.ToolCall, error) {
+	// Mirror the master: emit a turn-start event so the TUI can show the
+	// sub-agent as "thinking" while the LLM call is in flight, distinct
+	// from the running-a-tool state.
+	s.bus.Publish(Event{Kind: EvSubagentTurnStart, SubagentID: s.ID})
 	stream, err := s.Adapter.Stream(ctx, req)
 	if err != nil {
 		return "", nil, err
