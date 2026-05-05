@@ -7,6 +7,7 @@
 package skills
 
 import (
+	"embed"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -15,6 +16,9 @@ import (
 	"sort"
 	"strings"
 )
+
+//go:embed all:embedded
+var embeddedFS embed.FS
 
 // Skill is one loaded SKILL.md.
 type Skill struct {
@@ -33,10 +37,23 @@ type Registry struct {
 	order  []string
 }
 
-// Load walks the standard search paths and parses every SKILL.md found.
-// Returns an empty registry if no skills are present (skills are optional).
+// Load walks the search sources in priority order (lowest to highest):
+//
+//  1. Embedded base skills (bundled with the binary at build time)
+//  2. ~/.ageni/skills/                (global user overrides)
+//  3. ./.ageni/skills/                (per-project overrides)
+//
+// Later sources win on name collision so users can shadow a bundled skill
+// without removing it from the binary.
 func Load() (*Registry, error) {
 	r := &Registry{skills: map[string]*Skill{}}
+
+	// 1. Embedded.
+	if err := r.loadEmbedded(); err != nil {
+		fmt.Fprintf(os.Stderr, "ageni: failed to load embedded skills: %v\n", err)
+	}
+
+	// 2 + 3. On-disk paths.
 	for _, root := range searchPaths() {
 		if err := r.loadFrom(root); err != nil && !errors.Is(err, fs.ErrNotExist) {
 			return nil, err
@@ -44,6 +61,68 @@ func Load() (*Registry, error) {
 	}
 	r.rebuildOrder()
 	return r, nil
+}
+
+func (r *Registry) loadEmbedded() error {
+	entries, err := embeddedFS.ReadDir("embedded")
+	if err != nil {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() {
+			continue
+		}
+		s, err := parseEmbeddedSkillDir(filepath.ToSlash(filepath.Join("embedded", e.Name())))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "ageni: embedded skill %s skipped: %v\n", e.Name(), err)
+			continue
+		}
+		r.skills[s.Name] = s
+	}
+	return nil
+}
+
+func parseEmbeddedSkillDir(dir string) (*Skill, error) {
+	skillPath := dir + "/SKILL.md"
+	b, err := embeddedFS.ReadFile(skillPath)
+	if err != nil {
+		return nil, err
+	}
+	name, desc, version, body, err := parseFrontmatter(string(b))
+	if err != nil {
+		return nil, err
+	}
+	if name == "" {
+		name = filepath.Base(dir)
+	}
+	s := &Skill{
+		Name:        name,
+		Description: desc,
+		Version:     version,
+		Body:        body,
+		Path:        "embedded:" + skillPath,
+		Topics:      map[string]string{},
+	}
+	// Walk the embedded subtree for .md sub-references.
+	_ = fs.WalkDir(embeddedFS, dir, func(p string, d fs.DirEntry, err error) error {
+		if err != nil || d.IsDir() {
+			return nil
+		}
+		if !strings.HasSuffix(p, ".md") {
+			return nil
+		}
+		rel := strings.TrimPrefix(p, dir+"/")
+		if rel == "SKILL.md" {
+			return nil
+		}
+		body, err := embeddedFS.ReadFile(p)
+		if err != nil {
+			return nil
+		}
+		s.Topics[strings.TrimSuffix(rel, ".md")] = string(body)
+		return nil
+	})
+	return s, nil
 }
 
 func searchPaths() []string {
@@ -99,18 +178,29 @@ func parseSkillDir(dir string) (*Skill, error) {
 		Topics:      map[string]string{},
 	}
 
-	// Topics live in topics/<name>.md — cheap to enumerate without reading.
-	topicsDir := filepath.Join(dir, "topics")
-	if entries, err := os.ReadDir(topicsDir); err == nil {
-		for _, e := range entries {
-			if !e.IsDir() && strings.HasSuffix(e.Name(), ".md") {
-				tname := strings.TrimSuffix(e.Name(), ".md")
-				if tb, err := os.ReadFile(filepath.Join(topicsDir, e.Name())); err == nil { //nolint:gosec
-					s.Topics[tname] = string(tb)
-				}
-			}
+	// Index any .md file under the skill dir (other than SKILL.md) as a
+	// topic. The topic name is the relative path with the .md suffix
+	// stripped — e.g. 'topics/conflicts' or 'services/lambda'. Skills are
+	// free to organise sub-references however they like.
+	_ = filepath.Walk(dir, func(p string, info os.FileInfo, err error) error {
+		if err != nil || info.IsDir() {
+			return nil
 		}
-	}
+		if !strings.HasSuffix(p, ".md") {
+			return nil
+		}
+		rel, err := filepath.Rel(dir, p)
+		if err != nil || rel == "SKILL.md" {
+			return nil
+		}
+		body, err := os.ReadFile(p) //nolint:gosec
+		if err != nil {
+			return nil
+		}
+		topicName := strings.TrimSuffix(filepath.ToSlash(rel), ".md")
+		s.Topics[topicName] = string(body)
+		return nil
+	})
 	return s, nil
 }
 

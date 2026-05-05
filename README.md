@@ -82,6 +82,7 @@ Tools are unified internally as Go structs implementing a `Tool` interface, then
 | **GitHub** | `github` (PRs, issues, code search via `gh` CLI) |
 | **Registries** | `pkg_info` (npm / PyPI / Go modules / crates.io) |
 | **MCP** | Any tools exported by servers in `~/.ageni/mcp.json` (prefixed `<server>__<tool>`) |
+| **Skills** | `read_skill(name, topic?)` loads on-demand instructions; ~21 skills bundled from [realfi-co/agent-skills](https://github.com/realfi-co/agent-skills) (MIT) + anything in `~/.ageni/skills/` or `./.ageni/skills/` |
 
 **Master-only tools:**
 - `spawn_subagent(task, context)` → `subagent_id`

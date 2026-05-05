@@ -1,0 +1,4 @@
+The with_server.py helper and the structure of this skill follow the webapp-testing skill in
+https://github.com/Prat011/awesome-llm-skills/tree/master/webapp-testing
+
+Refer to the LICENSE.txt in that repository for the original license applying to upstream files.
