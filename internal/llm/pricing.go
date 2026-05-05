@@ -1,6 +1,27 @@
 package llm
 
-import "strings"
+import (
+	"strings"
+	"sync"
+)
+
+// dynamicPrices holds pricing learned at runtime — typically from a
+// provider's /v1/models endpoint. Used for OpenRouter (100+ models we
+// can't realistically pre-table) and any other provider that publishes
+// rates in its catalogue. Lookup order in PricingFor is: dynamic
+// (freshest) → hardcoded → free-suffix detection → unknown.
+var dynamicPrices sync.Map // map[string]Pricing
+
+// RegisterDynamicPricing records a model's rate sheet at runtime. Called
+// by FetchModels after parsing each provider's /v1/models response. Safe
+// for concurrent use.
+func RegisterDynamicPricing(model string, p Pricing) {
+	if model == "" {
+		return
+	}
+	p.Known = true
+	dynamicPrices.Store(model, p)
+}
 
 // Pricing is the per-1M-token rate sheet for one model. Cache rates are
 // optional — when zero, the model is assumed to bill cache reads/writes at
@@ -32,13 +53,25 @@ func (p Pricing) Cost(u Usage) float64 {
 		float64(u.CacheCreationTokens)*cw) / 1_000_000
 }
 
-// PricingFor returns the pricing entry for a given model ID. Free model
-// detection: any ":free" suffix (OpenRouter convention) and a few local-
-// provider sentinels return Known=true with all-zero rates so the caller
-// can attribute "$0 because free" correctly.
+// PricingFor returns the pricing entry for a given model ID.
+//
+// Lookup order:
+//  1. dynamic prices registered at runtime (e.g. from OpenRouter's
+//     /v1/models — covers 100+ models without us shipping a table)
+//  2. hardcoded prices for major direct-provider models
+//  3. free-marker detection: ":free" suffix (OpenRouter convention) and
+//     local-provider sentinels (Ollama tags, "default") return zero
+//     rates with Known=true so callers attribute "$0 because free"
+//  4. otherwise zero with Known=false (the status bar prefixes the
+//     total with "≥" so the user knows it's a floor)
 func PricingFor(model string) Pricing {
 	if model == "" {
 		return Pricing{}
+	}
+	if v, ok := dynamicPrices.Load(model); ok {
+		p := v.(Pricing)
+		p.Known = true
+		return p
 	}
 	low := strings.ToLower(model)
 	if strings.HasSuffix(low, ":free") || isLocalSentinel(low) {

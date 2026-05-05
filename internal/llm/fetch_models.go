@@ -7,9 +7,19 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
+
+// parsePerToken parses an OpenRouter-style per-token rate string like
+// "0.000003". Returns 0 on empty / unparsable input.
+func parsePerToken(s string) (float64, error) {
+	if s == "" || s == "0" {
+		return 0, nil
+	}
+	return strconv.ParseFloat(s, 64)
+}
 
 // FetchModels queries a provider's /models endpoint (OpenAI-compatible
 // shape) and returns the canonical IDs as ModelSuggestions. apiKey may be
@@ -90,6 +100,16 @@ func FetchModels(ctx context.Context, spec ProviderSpec, apiKey string) ([]Model
 			}
 			if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
 				free = true
+			}
+			// Register pricing into the cost estimator. OpenRouter's API
+			// returns rates as USD-per-token strings ("0.000003"), so we
+			// scale to per-1M to match our Pricing struct's units.
+			if pp, parseErr := parsePerToken(m.Pricing.Prompt); parseErr == nil {
+				cp, _ := parsePerToken(m.Pricing.Completion)
+				RegisterDynamicPricing(id, Pricing{
+					InputPer1M:  pp * 1_000_000,
+					OutputPer1M: cp * 1_000_000,
+				})
 			}
 			out = append(out, ModelSuggestion{ID: id, Label: label, Free: free})
 		}
