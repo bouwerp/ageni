@@ -148,8 +148,16 @@ func run() error {
 	defer cancel()
 	go handleSignals(cancel)
 
-	masterAdapter := buildAdapter(cfg.Master)
-	subAdapter := buildAdapter(cfg.Subagent)
+	// Build the primary adapters and wrap each in a fallback chain when
+	// MASTER_FALLBACKS / SUBAGENT_FALLBACKS are configured. Fallbacks
+	// trigger on retryable errors (429, 5xx, timeout, network).
+	onFallback := func(role string) func(from, to, reason string) {
+		return func(from, to, reason string) {
+			fmt.Fprintf(os.Stderr, "ageni: %s fallback %s → %s (%s)\n", role, from, to, reason)
+		}
+	}
+	masterAdapter := buildChain("master", cfg.Master, cfg.MasterFallbacks, onFallback("master"))
+	subAdapter := buildChain("subagent", cfg.Subagent, cfg.SubagentFallbacks, onFallback("subagent"))
 	var masterLeadAdapter llm.Adapter
 	if cfg.MasterLeadActive {
 		masterLeadAdapter = buildAdapter(cfg.MasterLead)
@@ -274,6 +282,26 @@ func run() error {
 			cfg.MasterLead.Provider.Name, cfg.MasterLead.Model,
 			cfg.Master.Provider.Name, cfg.Master.Model)
 	}
+	if len(cfg.MasterFallbacks) > 0 {
+		fmt.Printf("Master fallback chain: ")
+		for i, fb := range cfg.MasterFallbacks {
+			if i > 0 {
+				fmt.Printf(" → ")
+			}
+			fmt.Printf("%s/%s", fb.Provider.Name, fb.Model)
+		}
+		fmt.Println()
+	}
+	if len(cfg.SubagentFallbacks) > 0 {
+		fmt.Printf("Sub-agent fallback chain: ")
+		for i, fb := range cfg.SubagentFallbacks {
+			if i > 0 {
+				fmt.Printf(" → ")
+			}
+			fmt.Printf("%s/%s", fb.Provider.Name, fb.Model)
+		}
+		fmt.Println()
+	}
 	master.SetCorrectionsPath(sess.Path("corrections.jsonl"))
 	if skillReg != nil {
 		catalog := skillReg.Catalog()
@@ -369,8 +397,8 @@ func run() error {
 		if err != nil {
 			return err
 		}
-		newMasterAdapter := buildAdapter(newCfg.Master)
-		newSubAdapter := buildAdapter(newCfg.Subagent)
+		newMasterAdapter := buildChain("master", newCfg.Master, newCfg.MasterFallbacks, onFallback("master"))
+		newSubAdapter := buildChain("subagent", newCfg.Subagent, newCfg.SubagentFallbacks, onFallback("subagent"))
 		newFactory := func(tier string) (llm.Adapter, string) {
 			switch tier {
 			case "opus":
@@ -415,6 +443,32 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 	default:
 		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
 	}
+}
+
+// buildChain wraps the primary RoleConfig + an ordered list of
+// fallback RoleConfigs into a single Adapter. When fallbacks is empty,
+// returns the primary adapter unwrapped (no overhead). The onFallback
+// callback fires once per fall-through with from/to labels and reason.
+func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleConfig, onFallback func(from, to, reason string)) llm.Adapter {
+	if len(fallbacks) == 0 {
+		return buildAdapter(primary)
+	}
+	entries := make([]llm.FallbackEntry, 0, 1+len(fallbacks))
+	entries = append(entries, llm.FallbackEntry{
+		Adapter: buildAdapter(primary),
+		Model:   primary.Model,
+		Label:   llm.FormatLabel(primary.Provider.Name, primary.Model),
+	})
+	for _, fb := range fallbacks {
+		entries = append(entries, llm.FallbackEntry{
+			Adapter: buildAdapter(fb),
+			Model:   fb.Model,
+			Label:   llm.FormatLabel(fb.Provider.Name, fb.Model),
+		})
+	}
+	chain := llm.NewFallbackAdapter(name, entries...)
+	chain.OnFallback = onFallback
+	return chain
 }
 
 // openOrCreateSession parses os.Args for "--session <id>" / "--session=<id>"

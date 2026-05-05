@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/joho/godotenv"
 
@@ -34,6 +35,17 @@ type Config struct {
 	// uses Master.
 	MasterLead       RoleConfig
 	MasterLeadActive bool
+
+	// MasterFallbacks / SubagentFallbacks are ordered chains tried in
+	// sequence when the primary fails with a retryable error
+	// (429 / 5xx / timeout / network). Entries are specified in the
+	// MASTER_FALLBACKS / SUBAGENT_FALLBACKS env var as a comma list of
+	// "<provider>" or "<provider>/<model>" pairs. API keys are pulled
+	// from the provider's standard env var (ANTHROPIC_API_KEY,
+	// GROQ_API_KEY, etc.); entries whose key is missing are silently
+	// dropped — fallbacks must never make the launch fail.
+	MasterFallbacks   []RoleConfig
+	SubagentFallbacks []RoleConfig
 
 	MaxSubagents int
 	// SubagentBudget is the default cap on tool calls per sub-agent when
@@ -90,7 +102,57 @@ func Load() (*Config, error) {
 			cfg.MasterLeadActive = true
 		}
 	}
+
+	cfg.MasterFallbacks = parseFallbacks(os.Getenv("MASTER_FALLBACKS"))
+	cfg.SubagentFallbacks = parseFallbacks(os.Getenv("SUBAGENT_FALLBACKS"))
 	return cfg, nil
+}
+
+// parseFallbacks reads a comma-separated list of "<provider>" or
+// "<provider>/<model>" entries and resolves each into a RoleConfig.
+// API keys are pulled from the provider's standard env var. Entries
+// that can't be authenticated or whose provider is unknown are
+// silently dropped — a misconfigured fallback must NEVER block the
+// launch, since the primary still works.
+func parseFallbacks(spec string) []RoleConfig {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	var out []RoleConfig
+	for _, raw := range strings.Split(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		provName, modelOverride := entry, ""
+		if idx := strings.IndexByte(entry, '/'); idx > 0 {
+			provName = entry[:idx]
+			modelOverride = entry[idx+1:]
+		}
+		spec, ok := llm.LookupProvider(provName)
+		if !ok {
+			continue
+		}
+		rc := RoleConfig{Provider: spec, BaseURL: spec.BaseURL}
+		rc.Model = modelOverride
+		if rc.Model == "" {
+			rc.Model = spec.DefaultModel
+		}
+		if rc.Model == "" {
+			continue
+		}
+		if spec.NeedsKey {
+			if spec.APIKeyEnv != "" {
+				rc.APIKey = os.Getenv(spec.APIKeyEnv)
+			}
+			if rc.APIKey == "" {
+				continue // can't auth — drop silently
+			}
+		}
+		out = append(out, rc)
+	}
+	return out
 }
 
 // ErrNotConfigured indicates no provider has been chosen anywhere — caller
