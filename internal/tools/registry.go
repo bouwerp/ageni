@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"sort"
+	"strings"
 
 	"github.com/bouwerp/ageni/internal/llm"
 )
@@ -59,12 +60,15 @@ func (r *Registry) Definitions() []llm.ToolDef {
 }
 
 // Execute runs a tool by name with the given JSON args. Returns a ToolResult.
+// Unknown-tool errors include the full available-tool list and a hint to use
+// run_bash for arbitrary shell commands, so the model can self-correct on
+// the next turn instead of repeating the same mistake.
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResult {
 	t, ok := r.tools[call.Name]
 	if !ok {
 		return llm.ToolResult{
 			ToolCallID: call.ID,
-			Content:    fmt.Sprintf("unknown tool: %s", call.Name),
+			Content:    r.unknownToolMessage(call.Name),
 			IsError:    true,
 		}
 	}
@@ -77,6 +81,50 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 		}
 	}
 	return llm.ToolResult{ToolCallID: call.ID, Content: out}
+}
+
+func (r *Registry) unknownToolMessage(name string) string {
+	names := make([]string, 0, len(r.tools))
+	for n := range r.tools {
+		names = append(names, n)
+	}
+	sort.Strings(names)
+	var sb strings.Builder
+	fmt.Fprintf(&sb, "unknown tool: %q.\n\n", name)
+	if hint := guessAlternative(name); hint != "" {
+		sb.WriteString(hint + "\n\n")
+	}
+	sb.WriteString("Available tools:\n")
+	for _, n := range names {
+		sb.WriteString("  - " + n + "\n")
+	}
+	sb.WriteString("\nFor any shell command not in this list (e.g. mv, cp, rm, find, tree), use run_bash.")
+	return sb.String()
+}
+
+// guessAlternative maps common hallucinated tool names to the correct one.
+func guessAlternative(name string) string {
+	switch strings.ToLower(name) {
+	case "mkdir":
+		return `Did you mean make_dir? Or run_bash with "mkdir -p <path>".`
+	case "ls", "dir", "tree", "print_tree", "list":
+		return `Did you mean list_dir or glob? glob supports recursive ** patterns.`
+	case "rm", "delete", "remove", "unlink":
+		return "Did you mean delete_file?"
+	case "mv", "move", "rename":
+		return "Did you mean move_file?"
+	case "cp", "copy":
+		return `Did you mean run_bash with "cp <src> <dst>"?`
+	case "cat", "head", "tail":
+		return "Did you mean read_file? It supports offset+limit for line ranges."
+	case "grep", "search", "rg", "ripgrep":
+		return "Did you mean grep? It uses ripgrep with --json output."
+	case "find":
+		return "Did you mean glob? Or run_bash with find."
+	case "edit", "patch", "apply_patch":
+		return "Did you mean edit_file (single replacement) or multi_edit (atomic batch)?"
+	}
+	return ""
 }
 
 // Subset returns a new Registry containing only the named tools. Used to

@@ -88,7 +88,9 @@ type WriteFile struct{}
 
 func (WriteFile) Name() string { return "write_file" }
 func (WriteFile) Description() string {
-	return "Write a file with the given contents. Creates the file if it doesn't exist; overwrites if it does. Use edit_file for partial updates."
+	return `Write the full contents of a file. Use this for NEW files, or when you want to overwrite an existing file from scratch. Parent directories are created as needed.
+
+For partial changes to an existing file, prefer edit_file (single replacement) or multi_edit (batch). Don't use write_file to "edit" — you'll lose any content you don't include.`
 }
 func (WriteFile) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
@@ -119,7 +121,9 @@ type EditFile struct{}
 
 func (EditFile) Name() string { return "edit_file" }
 func (EditFile) Description() string {
-	return "Replace exactly one occurrence of old_string with new_string in a file. Fails if old_string is missing or not unique. Use this for targeted edits instead of rewriting the whole file."
+	return `Replace exactly one occurrence of old_string with new_string in an EXISTING file. Fails if old_string is missing or appears more than once. Use this for targeted edits instead of rewriting the whole file.
+
+Cannot create new files — use write_file for that.`
 }
 func (EditFile) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}`)

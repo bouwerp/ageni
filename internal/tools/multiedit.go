@@ -16,7 +16,9 @@ type MultiEdit struct{}
 
 func (MultiEdit) Name() string { return "multi_edit" }
 func (MultiEdit) Description() string {
-	return `Apply multiple edits to a file atomically. Each edit replaces one occurrence of old_string with new_string. Edits are applied in order; later edits see earlier edits' results. Set replace_all=true on an edit to replace every occurrence (otherwise old_string must occur exactly once). The file is only written if ALL edits succeed.`
+	return `Apply multiple edits to an EXISTING file atomically. Each edit replaces one occurrence of old_string with new_string. Edits are applied in order; later edits see earlier edits' results. Set replace_all=true on an edit to replace every occurrence (otherwise old_string must occur exactly once). The file is only written if ALL edits succeed.
+
+Cannot create new files — for new files use write_file. To prepend to a file, read the current contents and pass the whole new body to write_file.`
 }
 func (MultiEdit) Schema() json.RawMessage {
 	return json.RawMessage(`{
