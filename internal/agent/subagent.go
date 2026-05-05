@@ -42,10 +42,15 @@ type Subagent struct {
 	Model   string
 	Adapter llm.Adapter
 
-	bus      *Bus
-	tools    *tools.Registry
-	tracker  *llm.Tracker
-	maxTurns int
+	bus     *Bus
+	tools   *tools.Registry
+	tracker *llm.Tracker
+
+	// Budget on actual tool calls executed (not turns). Default 25.
+	maxToolCalls int
+	// Hard ceiling on turns regardless of budget — protects against an LLM
+	// stuck in a no-tool-no-result loop. Should be > maxToolCalls.
+	hardTurnCap int
 
 	skillCatalog string
 
@@ -70,9 +75,9 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
 	}
-	maxTurns := task.BudgetToolCalls
-	if maxTurns <= 0 {
-		maxTurns = 10
+	budget := task.BudgetToolCalls
+	if budget <= 0 {
+		budget = 25
 	}
 	return &Subagent{
 		ID:           id,
@@ -82,7 +87,8 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		bus:          bus,
 		tools:        allowed,
 		tracker:      tracker,
-		maxTurns:     maxTurns,
+		maxToolCalls: budget,
+		hardTurnCap:  budget * 2,
 		skillCatalog: skillCatalog,
 		inbox:        make(chan string, 16),
 		turnTimeout:  5 * time.Minute,
@@ -175,7 +181,10 @@ func (s *Subagent) Run(parent context.Context) {
 		SubagentModel: s.Model,
 	})
 
-	for turn := 0; turn < s.maxTurns; turn++ {
+	toolCallsUsed := 0
+	wrappingUp := false
+
+	for turn := 0; turn < s.hardTurnCap; turn++ {
 		// Drain inbox messages from the master before this turn.
 		messages = s.drainInbox(messages)
 
@@ -183,7 +192,11 @@ func (s *Subagent) Run(parent context.Context) {
 			Model:    s.Model,
 			System:   system,
 			Messages: messages,
-			Tools:    s.tools.Definitions(),
+		}
+		// During wrap-up turns we strip tools so the model is forced to
+		// produce its final text. Outside wrap-up, tools are available.
+		if !wrappingUp {
+			req.Tools = s.tools.Definitions()
 		}
 
 		assistantText, toolCalls, err := s.runTurnWithRetry(ctx, req)
@@ -221,14 +234,34 @@ func (s *Subagent) Run(parent context.Context) {
 				Role:        llm.RoleTool,
 				ToolResults: []llm.ToolResult{result},
 			})
+			toolCallsUsed++
+		}
+
+		// Soft budget: when we've hit the cap, request a wrap-up turn next
+		// instead of erroring out. The master gets a real <result>/<reasoning>
+		// block from the worker rather than a useless "budget exhausted".
+		if !wrappingUp && toolCallsUsed >= s.maxToolCalls {
+			wrappingUp = true
+			s.appendTranscript(fmt.Sprintf("budget exhausted (%d/%d tool calls); requesting wrap-up", toolCallsUsed, s.maxToolCalls))
+			s.bus.Publish(Event{
+				Kind:       EvSubagentRetry,
+				SubagentID: s.ID,
+				Text:       fmt.Sprintf("budget exhausted (%d tool calls used) — requesting wrap-up", toolCallsUsed),
+			})
+			messages = append(messages, llm.Message{
+				Role: llm.RoleUser,
+				Text: fmt.Sprintf("<system-reminder>\nYou have used your full tool-call budget (%d). Stop calling tools. Produce your final answer NOW: a single assistant turn with the requested <result>...</result> block followed by <reasoning>...</reasoning>. Summarise what you accomplished and what remains incomplete.\n</system-reminder>", s.maxToolCalls),
+			})
 		}
 	}
 
-	// Budget exhausted.
+	// Hard turn cap reached without the model producing a text-only turn.
+	// Shouldn't happen in practice (wrap-up turn has Tools=nil so the model
+	// has nothing to call), but error out cleanly if it does.
 	s.mu.Lock()
 	s.status = StatusError
 	s.mu.Unlock()
-	err := fmt.Errorf("budget_tool_calls (%d) exhausted", s.maxTurns)
+	err := fmt.Errorf("hard turn cap (%d) reached without a final response", s.hardTurnCap)
 	s.appendTranscript("error: " + err.Error())
 	s.bus.Publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: err})
 }

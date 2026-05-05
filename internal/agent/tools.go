@@ -33,7 +33,7 @@ func (SpawnTool) Schema() json.RawMessage {
   "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Default sonnet."},
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Whitelist of tool names. Omit for all-tools-allowed."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
-  "budget_tool_calls":{"type":"integer","description":"Hard cap on tool calls. Default 10."},
+  "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 25. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
   "context":{"type":"string","description":"Pre-computed context the sub-agent needs (file paths, prior decisions). Pre-computing here avoids re-discovery cost."},
   "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."}
 },
