@@ -262,8 +262,12 @@ func (m *Master) systemPrompt() string {
 </orchestration_rules>
 
 <monitoring_rules>
-- After spawning, you receive sub-agent events via system-reminders. React: inspect via check_subagent, correct via send_to_subagent, kill if hopeless, or proceed.
-- Do not rubber-stamp weak work. If a sub-agent's output doesn't match the requested format or appears wrong, send a correction or kill and re-spawn with sharper instructions.
+- Sub-agents run ASYNCHRONOUSLY in their own goroutines. spawn_subagent returns an ID immediately; the worker is just starting up at that point.
+- DO NOT call check_subagent, send_to_subagent, or kill_subagent in the same turn as the spawn. Spawn and end your turn — you'll get a <system-reminder> event when the sub-agent reports back.
+- "No transcript yet" is NOT a reason to kill. A worker that just spawned hasn't run any tools yet; that's normal. Wait for an actual EvSubagentDone, EvSubagentError, or substantive tool-call activity before judging.
+- Reasonable triggers for kill_subagent: the worker has clearly gone off-task (wrong files, wrong approach), is stuck in a tool-call loop visible in check_subagent, or has explicitly errored out and re-spawning with sharper instructions is the better path.
+- Reasonable triggers for send_to_subagent: the worker is running but you noticed a constraint or correction that will help it finish faster.
+- Do not rubber-stamp weak work. If a sub-agent's final <result> doesn't match the requested format or appears wrong, send a correction or kill and re-spawn with sharper instructions.
 - You must understand findings before directing follow-up work. Never hand off understanding to another worker.
 </monitoring_rules>
 

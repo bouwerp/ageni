@@ -270,8 +270,41 @@ func (s *Subagent) fail(err error) {
 	s.mu.Lock()
 	s.status = StatusError
 	s.mu.Unlock()
-	s.appendTranscript("error: " + err.Error())
-	s.bus.Publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: err})
+	// Decorate the error so the TUI / session log can see what kind of
+	// failure this was — context.Canceled vs context.DeadlineExceeded vs
+	// SDK errors look different to the user.
+	tag := classifyErr(err)
+	wrapped := fmt.Errorf("[%s] %w", tag, err)
+	s.appendTranscript("error(" + tag + "): " + err.Error())
+	s.bus.Publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: wrapped})
+}
+
+// classifyErr returns a short tag describing the error class for diagnostics.
+func classifyErr(err error) string {
+	if err == nil {
+		return "nil"
+	}
+	if errors.Is(err, context.Canceled) {
+		return "context-cancelled"
+	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return "deadline-exceeded"
+	}
+	msg := strings.ToLower(err.Error())
+	switch {
+	case strings.Contains(msg, "401"), strings.Contains(msg, "unauthorized"):
+		return "auth"
+	case strings.Contains(msg, "404"):
+		return "not-found"
+	case strings.Contains(msg, "429"), strings.Contains(msg, "rate"):
+		return "rate-limit"
+	case strings.Contains(msg, "500"), strings.Contains(msg, "502"),
+		strings.Contains(msg, "503"), strings.Contains(msg, "504"):
+		return "server-error"
+	case strings.Contains(msg, "connection"), strings.Contains(msg, "timeout"), strings.Contains(msg, "eof"):
+		return "network"
+	}
+	return "other"
 }
 
 func errMark(b bool) string {
