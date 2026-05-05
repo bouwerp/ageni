@@ -96,6 +96,11 @@ linters:
       # URL and copies SKILL.md trees — both intentional.
       - path: cmd/ageni/skills\.go
         linters: [gosec]
+      # 'sessions rm' removes a session dir under ~/.ageni/sessions; the
+      # path is constructed from session.ResolveID + SessionsRoot, not raw
+      # user input.
+      - path: cmd/ageni/sessions\.go
+        linters: [gosec]
       # MCP loads command + args from user config; subprocess construction is
       # the documented usage of the SDK's CommandTransport.
       - path: internal/mcp/mcp\.go

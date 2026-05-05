@@ -11,6 +11,10 @@ import (
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
+// activeCorrectionsMax is how many of the most-recent corrections from the
+// session log get rendered into the master's active-context tail block.
+const activeCorrectionsMax = 8
+
 // Master is the user-facing agent. It runs a single loop that:
 //   - waits for a user message
 //   - takes one or more turns until the model produces text without tool calls
@@ -27,8 +31,9 @@ type Master struct {
 	manager  *Manager
 	maxTurns int
 
-	skillCatalog string // optional: appended to the cached system prompt
-	repoMap      string // optional: rendered repository map appended to the cached prefix
+	skillCatalog    string // optional: appended to the cached system prompt
+	repoMap         string // optional: rendered repository map appended to the cached prefix
+	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
@@ -63,6 +68,14 @@ func (m *Master) SetSkillCatalog(catalog string) {
 func (m *Master) SetRepoMap(rendered string) {
 	m.mu.Lock()
 	m.repoMap = rendered
+	m.mu.Unlock()
+}
+
+// SetCorrectionsPath tells the master where to read session corrections
+// from when refreshing its active-context tail block.
+func (m *Master) SetCorrectionsPath(path string) {
+	m.mu.Lock()
+	m.correctionsPath = path
 	m.mu.Unlock()
 }
 
@@ -177,13 +190,27 @@ func (m *Master) refreshActiveContext() {
 	}
 
 	subs := m.manager.List()
-	if len(subs) == 0 && len(m.pendingEvs) == 0 {
+	corrections := tools.LoadCorrections(m.correctionsPath, activeCorrectionsMax)
+	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 {
 		return
 	}
 
 	var sb strings.Builder
 	sb.WriteString(activeContextMarker)
 	sb.WriteString("\n<active_context>\n")
+
+	if len(corrections) > 0 {
+		sb.WriteString("Corrections in effect (most recent first — honour these over older statements in this conversation):\n")
+		for i := len(corrections) - 1; i >= 0; i-- {
+			c := corrections[i]
+			line := fmt.Sprintf("- WAS: %s | NOW: %s", c.Was, c.Now)
+			if c.Why != "" {
+				line += " (" + c.Why + ")"
+			}
+			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n")
+	}
 
 	if len(subs) > 0 {
 		sb.WriteString("Sub-agents (current state):\n")

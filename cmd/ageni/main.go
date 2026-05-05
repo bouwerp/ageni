@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"syscall"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -51,6 +52,12 @@ func main() {
 			return
 		case "skills":
 			if err := runSkills(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
+		case "sessions":
+			if err := runSessions(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
 				os.Exit(1)
 			}
@@ -100,8 +107,12 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  init             interactive config wizard")
 	fmt.Fprintln(w, "  doctor           check external CLI dependencies; --install / -y to auto-install")
 	fmt.Fprintln(w, "  skills <cmd>     manage skills (list, install <git-url>, path)")
+	fmt.Fprintln(w, "  sessions <cmd>   manage sessions (list, show, resume, rm)")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
 	fmt.Fprintln(w, "  help, -h         show this help")
+	fmt.Fprintln(w)
+	fmt.Fprintln(w, "Flags (when starting the TUI):")
+	fmt.Fprintln(w, "  --session <id>   resume an existing session instead of starting a new one")
 }
 
 func run() error {
@@ -200,10 +211,10 @@ func run() error {
 		}
 	}
 
-	// Open a fresh session. Per-instance state (log, todo, future
-	// corrections) lives under ~/.ageni/sessions/<id>/, so multiple ageni
-	// instances in the same repo never collide.
-	sess, sessErr := session.New(detectRepoRoot())
+	// Open a session — either resume an existing one (--session <id>) or
+	// start fresh. Per-instance state lives under ~/.ageni/sessions/<id>/
+	// so multiple instances in the same repo never collide.
+	sess, sessErr := openOrCreateSession()
 	if sessErr != nil {
 		return fmt.Errorf("session init: %w", sessErr)
 	}
@@ -225,6 +236,8 @@ func run() error {
 
 	masterReg := tools.NewRegistry()
 	registerBase(masterReg, todo)
+	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
+	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
 	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})
@@ -233,6 +246,7 @@ func run() error {
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
+	master.SetCorrectionsPath(sess.Path("corrections.jsonl"))
 	if skillReg != nil {
 		catalog := skillReg.Catalog()
 		master.SetSkillCatalog(catalog)
@@ -310,7 +324,7 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess.ID)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err
@@ -325,6 +339,57 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 		return llm.NewAnthropicAdapter(rc.APIKey)
 	default:
 		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
+	}
+}
+
+// openOrCreateSession parses os.Args for "--session <id>" / "--session=<id>"
+// and resumes that session if found; otherwise creates a fresh one. The
+// flag is removed from os.Args so other parsers don't see it.
+func openOrCreateSession() (*session.Session, error) {
+	args := os.Args[1:]
+	var resumeID string
+	cleaned := make([]string, 0, len(args))
+	for i := 0; i < len(args); i++ {
+		switch {
+		case args[i] == "--session":
+			if i+1 < len(args) {
+				resumeID = args[i+1]
+				i++
+			}
+		case strings.HasPrefix(args[i], "--session="):
+			resumeID = strings.TrimPrefix(args[i], "--session=")
+		default:
+			cleaned = append(cleaned, args[i])
+		}
+	}
+	os.Args = append(os.Args[:1], cleaned...)
+
+	if resumeID == "" {
+		return session.New(detectRepoRoot())
+	}
+	id, err := session.ResolveID(resumeID)
+	if err != nil {
+		return nil, err
+	}
+	s, err := session.Open(id)
+	if err != nil {
+		return nil, err
+	}
+	fmt.Printf("Resuming session %s (last used %s)\n", s.ID, humaniseTime(s.LastUsed))
+	return s, nil
+}
+
+func humaniseTime(t time.Time) string {
+	d := time.Since(t)
+	switch {
+	case d < time.Minute:
+		return "just now"
+	case d < time.Hour:
+		return fmt.Sprintf("%dm ago", int(d.Minutes()))
+	case d < 24*time.Hour:
+		return fmt.Sprintf("%dh ago", int(d.Hours()))
+	default:
+		return t.Format("2006-01-02 15:04")
 	}
 }
 

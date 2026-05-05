@@ -43,6 +43,7 @@ type App struct {
 	masterIn       chan<- agent.Event
 	reload         ReloadFunc
 	cancelInFlight CancelFunc
+	sessionID      string
 
 	chat   viewport.Model
 	side   viewport.Model
@@ -86,7 +87,7 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sessionID string) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -108,6 +109,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		masterIn:       masterIn,
 		reload:         reload,
 		cancelInFlight: cancelInFlight,
+		sessionID:      sessionID,
 		chat:           chat,
 		side:           side,
 		input:          ta,
@@ -739,6 +741,15 @@ func (a *App) statusLine() string {
 	if a.viewSub != "" {
 		view = "view: " + a.viewSub
 	}
+	sess := ""
+	if a.sessionID != "" {
+		// Short prefix for the status bar; full ID is in the session log path.
+		short := a.sessionID
+		if len(short) > 13 {
+			short = short[:13]
+		}
+		sess = "  │  s:" + short
+	}
 	flash := ""
 	if a.flashMessage != "" {
 		flash = "  │  " + a.flashMessage
@@ -747,7 +758,7 @@ func (a *App) statusLine() string {
 	if !a.mouseOn {
 		mouseStr = "OFF"
 	}
-	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, sess, a.usage, mouseStr, flash)
 }
 
 // renderUsageFromTracker shows master + sub-agent token usage with cache

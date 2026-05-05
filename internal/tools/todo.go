@@ -23,9 +23,10 @@ const (
 
 // TodoItem is a single planned task.
 type TodoItem struct {
-	ID      int        `json:"id"`
-	Content string     `json:"content"`
-	Status  TodoStatus `json:"status"`
+	ID        int        `json:"id"`
+	Content   string     `json:"content"`
+	Status    TodoStatus `json:"status"`
+	ClaimedBy string     `json:"claimed_by,omitempty"` // sub-agent ID, "master", or empty
 }
 
 // TodoWrite is a session-scoped task list. Used by the master to plan
@@ -62,6 +63,8 @@ Actions:
 - update: change a single item's status (provide 'id' and 'status')
 - replace: clear and rewrite the list (provide 'items')
 - clear: empty the list
+- claim: assign one or more items to a worker (provide 'ids' and 'claimed_by'). Use this when you fan out parallel sub-agents — claim the items each will own so workers don't collide.
+- release: clear the claim on items (provide 'ids'). Used when a worker errors or you reassign.
 
 Mark an item 'in_progress' when you start it, 'completed' when done. Keep items short and outcome-oriented.`
 }
@@ -69,9 +72,11 @@ func (*TodoWrite) Schema() json.RawMessage {
 	return json.RawMessage(`{
 "type":"object",
 "properties":{
-  "action":{"type":"string","enum":["list","add","update","replace","clear"]},
+  "action":{"type":"string","enum":["list","add","update","replace","clear","claim","release"]},
   "content":{"type":"string","description":"For action=add: a single todo's content."},
   "id":{"type":"integer","description":"For action=update."},
+  "ids":{"type":"array","items":{"type":"integer"},"description":"For action=claim or action=release: the item IDs to operate on."},
+  "claimed_by":{"type":"string","description":"For action=claim: who's claiming the items (sub-agent ID like 's3' or 'master')."},
   "status":{"type":"string","enum":["pending","in_progress","completed"],"description":"For action=update."},
   "items":{
     "type":"array",
@@ -100,11 +105,13 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 	}
 
 	var p struct {
-		Action  string     `json:"action"`
-		Content string     `json:"content"`
-		ID      int        `json:"id"`
-		Status  TodoStatus `json:"status"`
-		Items   []struct {
+		Action    string     `json:"action"`
+		Content   string     `json:"content"`
+		ID        int        `json:"id"`
+		IDs       []int      `json:"ids"`
+		ClaimedBy string     `json:"claimed_by"`
+		Status    TodoStatus `json:"status"`
+		Items     []struct {
 			Content string     `json:"content"`
 			Status  TodoStatus `json:"status"`
 		} `json:"items"`
@@ -167,6 +174,43 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 	case "clear":
 		t.items = nil
 		t.nextID = 0
+	case "claim":
+		if len(p.IDs) == 0 {
+			return "", errors.New("claim requires 'ids'")
+		}
+		if p.ClaimedBy == "" {
+			return "", errors.New("claim requires 'claimed_by'")
+		}
+		claimed := 0
+		for _, id := range p.IDs {
+			for i := range t.items {
+				if t.items[i].ID == id {
+					if t.items[i].ClaimedBy != "" && t.items[i].ClaimedBy != p.ClaimedBy {
+						return "", fmt.Errorf("todo #%d already claimed by %q", id, t.items[i].ClaimedBy)
+					}
+					t.items[i].ClaimedBy = p.ClaimedBy
+					t.items[i].Status = TodoInProgress
+					claimed++
+				}
+			}
+		}
+		if claimed == 0 {
+			return "", fmt.Errorf("none of the supplied ids %v matched existing todos", p.IDs)
+		}
+	case "release":
+		if len(p.IDs) == 0 {
+			return "", errors.New("release requires 'ids'")
+		}
+		for _, id := range p.IDs {
+			for i := range t.items {
+				if t.items[i].ID == id {
+					t.items[i].ClaimedBy = ""
+					if t.items[i].Status == TodoInProgress {
+						t.items[i].Status = TodoPending
+					}
+				}
+			}
+		}
 	default:
 		return "", fmt.Errorf("unknown action: %s", p.Action)
 	}
@@ -230,7 +274,11 @@ func (t *TodoWrite) render() string {
 		case TodoCompleted:
 			mark = "[x]"
 		}
-		sb.WriteString(fmt.Sprintf("%s #%d %s\n", mark, it.ID, it.Content))
+		owner := ""
+		if it.ClaimedBy != "" {
+			owner = " (→ " + it.ClaimedBy + ")"
+		}
+		sb.WriteString(fmt.Sprintf("%s #%d %s%s\n", mark, it.ID, it.Content, owner))
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }
