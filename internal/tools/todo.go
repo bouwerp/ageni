@@ -221,6 +221,20 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 	return t.render(), nil
 }
 
+// Items returns a snapshot of the current todo list. Lazy-loads from disk on
+// first call. Safe for concurrent use; callers receive a copy they can mutate.
+func (t *TodoWrite) Items() []TodoItem {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.loaded {
+		t.load()
+		t.loaded = true
+	}
+	out := make([]TodoItem, len(t.items))
+	copy(out, t.items)
+	return out
+}
+
 func (t *TodoWrite) load() {
 	if t.path == "" {
 		return

@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -16,6 +18,8 @@ import (
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/session"
+	"github.com/bouwerp/ageni/internal/tools"
 )
 
 // Mode toggles between the chat UI and the settings form.
@@ -43,7 +47,8 @@ type App struct {
 	masterIn       chan<- agent.Event
 	reload         ReloadFunc
 	cancelInFlight CancelFunc
-	sessionID      string
+	session        *session.Session
+	todo           *tools.TodoWrite
 
 	chat   viewport.Model
 	side   viewport.Model
@@ -83,11 +88,18 @@ type App struct {
 	historyIdx   int    // -1 = not browsing, otherwise index into history items
 	historyDraft string // input text saved when the user enters history mode
 
+	// Activity indicator state. masterBusy is true while master generation
+	// is in flight (between user submit and master_turn_done). spinFrame
+	// advances on each tickMsg; renderers index into spinnerFrames with it.
+	masterBusy   bool
+	spinFrame    int
+	masterToolIn string // name of the master tool currently executing, if any
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sessionID string) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -109,7 +121,8 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		masterIn:       masterIn,
 		reload:         reload,
 		cancelInFlight: cancelInFlight,
-		sessionID:      sessionID,
+		session:        sess,
+		todo:           todo,
 		chat:           chat,
 		side:           side,
 		input:          ta,
@@ -132,13 +145,33 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 // Tea Msg types
 type busEvtMsg agent.Event
 type usageMsg llm.TrackerSnapshot
+type tickMsg time.Time
+
+// spinnerFrames is a 10-frame braille animation. Picked over dots because it
+// reads as motion at the 120ms tick rate and renders correctly in a single
+// terminal cell. Used for both the master "thinking" indicator and the
+// per-sub-agent "running" marker.
+var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
+
+const spinnerInterval = 120 * time.Millisecond
+
+func tickCmd() tea.Cmd {
+	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
+}
 
 func (a *App) Init() tea.Cmd {
 	return tea.Batch(
 		a.subscribeBus(),
 		a.subscribeUsage(),
 		textarea.Blink,
+		tickCmd(),
 	)
+}
+
+// spinner returns the current animation frame; cycles independently of any
+// particular activity so master and sub-agents pulse in sync.
+func (a *App) spinner() string {
+	return spinnerFrames[a.spinFrame%len(spinnerFrames)]
 }
 
 func (a *App) subscribeBus() tea.Cmd {
@@ -237,6 +270,9 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.openSettings()
 		case msg.Type == tea.KeyF2:
 			return a, a.toggleMouse()
+		case msg.Type == tea.KeyF3:
+			a.dumpSession()
+			return a, nil
 		case msg.Type == tea.KeyPgUp, msg.Type == tea.KeyPgDown,
 			msg.String() == "ctrl+u", msg.String() == "ctrl+d":
 			// Always route page-scroll keys to the chat viewport.
@@ -261,7 +297,9 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				}
 				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + text + "\n\n")
 				a.currentMaster.Reset()
+				a.masterBusy = true
 				a.refreshChat()
+				a.refreshSide()
 				select {
 				case a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: text}:
 				default:
@@ -277,6 +315,16 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case relayUsageMsg:
 		a.usage = a.renderUsageFromTracker()
 		cmds = append(cmds, a.subscribeUsageOne(msg.sub))
+
+	case tickMsg:
+		a.spinFrame++
+		// Re-render the side pane each tick so the running-sub-agent marker
+		// animates. The chat pane and status bar pull from the same frame
+		// counter via the View() call that follows this Update.
+		if a.anyAnimationActive() {
+			a.refreshSide()
+		}
+		cmds = append(cmds, tickCmd())
 	}
 
 	if a.focusInput {
@@ -351,6 +399,29 @@ func (a *App) toggleMouse() tea.Cmd {
 	}
 	a.flashMessage = "mouse capture OFF — drag to select, F2 to resume"
 	return tea.DisableMouse
+}
+
+// dumpSession writes a human-readable transcript of the current session
+// (master + every sub-agent + tool calls + results) to a file in /tmp and
+// flashes the path in the status bar so the user can grab it for debugging.
+// Bound to F3.
+func (a *App) dumpSession() {
+	if a.session == nil {
+		a.flashMessage = "dump: no session attached"
+		return
+	}
+	path := filepath.Join(os.TempDir(), "ageni-session-"+a.session.ID+".txt")
+	f, err := os.Create(path) //nolint:gosec
+	if err != nil {
+		a.flashMessage = "dump failed: " + err.Error()
+		return
+	}
+	defer f.Close()
+	if err := session.FormatLog(a.session, f); err != nil {
+		a.flashMessage = "dump failed: " + err.Error()
+		return
+	}
+	a.flashMessage = "dumped → " + path
 }
 
 func (a *App) stopGeneration() {
@@ -471,6 +542,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		if ev.ToolCall != nil {
 			a.flushMasterText() // commit any in-progress text before the tool block
 			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
+			a.masterToolIn = ev.ToolCall.Name
 			a.refreshChat()
 		}
 	case agent.EvMasterToolDone:
@@ -478,9 +550,15 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.chatBuf.WriteString(renderToolResult(ev.ToolResult) + "\n\n")
 			a.refreshChat()
 		}
+		a.masterToolIn = ""
+		// todo_write may have mutated the list — refresh the side pane.
+		a.refreshSide()
 	case agent.EvMasterTurnDone:
 		a.flushMasterText()
+		a.masterBusy = false
+		a.masterToolIn = ""
 		a.refreshChat()
+		a.refreshSide()
 	case agent.EvSubagentSpawn:
 		a.subBufs[ev.SubagentID] = &strings.Builder{}
 		a.subStatus[ev.SubagentID] = agent.StatusRunning
@@ -522,6 +600,8 @@ func (a *App) handleEvent(ev agent.Event) {
 			}
 		}
 		a.refreshChat()
+		// Sub-agent may have written to the shared todo list — refresh.
+		a.refreshSide()
 	case agent.EvSubagentRetry:
 		// Surface transient errors + retries in chat so the user can see why
 		// a sub-agent is taking longer than expected.
@@ -698,11 +778,14 @@ func (a *App) refreshSide() {
 	if len(a.subOrder) == 0 {
 		sb.WriteString(mutedStyle.Render("(none yet)\n"))
 	}
+	frame := a.spinner()
 	for _, id := range a.subOrder {
 		st := a.subStatus[id]
 		marker := "•"
 		st2 := subRunningStyle
 		switch st {
+		case agent.StatusRunning:
+			marker = frame
 		case agent.StatusDone:
 			st2 = subDoneStyle
 			marker = "✓"
@@ -716,7 +799,58 @@ func (a *App) refreshSide() {
 		}
 		sb.WriteString(st2.Render(line) + "\n")
 	}
+
+	// Todo list — shared between master and sub-agents. Each item shows its
+	// status mark plus, when claimed, the worker that owns it. This is the
+	// single canonical view of "what's planned, what's in flight, who's on it."
+	if a.todo != nil {
+		items := a.todo.Items()
+		if len(items) > 0 {
+			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
+			for _, it := range items {
+				mark := "[ ]"
+				style := mutedStyle
+				switch it.Status {
+				case tools.TodoInProgress:
+					mark = "[" + frame + "]"
+					style = subRunningStyle
+				case tools.TodoCompleted:
+					mark = "[✓]"
+					style = subDoneStyle
+				}
+				owner := ""
+				if it.ClaimedBy != "" {
+					owner = mutedStyle.Render(" → " + it.ClaimedBy)
+				}
+				sb.WriteString(style.Render(fmt.Sprintf("%s %s", mark, it.Content)) + owner + "\n")
+			}
+		}
+	}
+
 	a.side.SetContent(sb.String())
+}
+
+// anyAnimationActive returns true when something on screen needs the spinner
+// to advance — master generating, master tool in flight, or any sub-agent
+// running. When everything is idle, ticks still fire (the loop never stops)
+// but the side pane doesn't need re-rendering.
+func (a *App) anyAnimationActive() bool {
+	if a.masterBusy || a.masterToolIn != "" {
+		return true
+	}
+	for _, st := range a.subStatus {
+		if st == agent.StatusRunning {
+			return true
+		}
+	}
+	if a.todo != nil {
+		for _, it := range a.todo.Items() {
+			if it.Status == tools.TodoInProgress {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (a *App) View() string {
@@ -741,10 +875,11 @@ func (a *App) statusLine() string {
 	if a.viewSub != "" {
 		view = "view: " + a.viewSub
 	}
+	state := a.masterStateLabel()
 	sess := ""
-	if a.sessionID != "" {
+	if a.session != nil && a.session.ID != "" {
 		// Short prefix for the status bar; full ID is in the session log path.
-		short := a.sessionID
+		short := a.session.ID
 		if len(short) > 13 {
 			short = short[:13]
 		}
@@ -758,7 +893,41 @@ func (a *App) statusLine() string {
 	if !a.mouseOn {
 		mouseStr = "OFF"
 	}
-	return fmt.Sprintf("%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, sess, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s  │  %s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, a.usage, mouseStr, flash)
+}
+
+// masterStateLabel returns a short string describing what the master is
+// doing right now. Three observable states: thinking (LLM is generating or
+// running a tool), waiting (master is between turns but at least one
+// sub-agent is still running), idle (nothing in flight). The spinner frame
+// is only emitted in the active states so the status bar visibly animates
+// only when something's actually happening.
+func (a *App) masterStateLabel() string {
+	frame := a.spinner()
+	switch {
+	case a.masterToolIn != "":
+		return frame + " master:" + a.masterToolIn + "…"
+	case a.masterBusy:
+		return frame + " master thinking…"
+	}
+	running := a.runningSubIDs()
+	if len(running) > 0 {
+		return frame + " master waiting on " + strings.Join(running, ",")
+	}
+	return mutedStyle.Render("master idle")
+}
+
+// runningSubIDs returns the IDs of sub-agents currently in StatusRunning,
+// in the order they were spawned. Used by the status bar to tell the user
+// who the master is waiting on.
+func (a *App) runningSubIDs() []string {
+	out := make([]string, 0, len(a.subOrder))
+	for _, id := range a.subOrder {
+		if a.subStatus[id] == agent.StatusRunning {
+			out = append(out, id)
+		}
+	}
+	return out
 }
 
 // renderUsageFromTracker shows master + sub-agent token usage with cache

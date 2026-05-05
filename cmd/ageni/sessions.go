@@ -16,12 +16,13 @@ import (
 //	ageni sessions show <id|prefix>
 //	ageni sessions resume <id|prefix>     # prints a resume command line
 //	ageni sessions rm <id|prefix>
+//	ageni sessions dump <id|prefix> [-o file]
 //
 // `ageni --session <id>` is the actual resume entry point — sessions
 // resume just helps the user find the right ID and prints what to run.
 func runSessions(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ageni sessions <list|show|resume|rm>")
+		fmt.Fprintln(os.Stderr, "usage: ageni sessions <list|show|resume|rm|dump>")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -42,6 +43,11 @@ func runSessions(args []string) error {
 			return fmt.Errorf("usage: ageni sessions rm <id|prefix>")
 		}
 		return sessionsRemove(args[1])
+	case "dump":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: ageni sessions dump <id|prefix> [-o file]")
+		}
+		return sessionsDump(args[1:])
 	default:
 		return fmt.Errorf("unknown sessions subcommand: %s", args[0])
 	}
@@ -115,6 +121,46 @@ func sessionsResume(prefix string) error {
 		exe = "ageni"
 	}
 	fmt.Printf("Run: %s --session %s\n", filepath.Base(exe), id)
+	return nil
+}
+
+// sessionsDump formats the resolved session's log.jsonl as a human-readable
+// transcript. Output goes to stdout by default, or to -o <file> if given.
+func sessionsDump(args []string) error {
+	prefix := args[0]
+	out := ""
+	for i := 1; i < len(args); i++ {
+		switch args[i] {
+		case "-o", "--out":
+			if i+1 >= len(args) {
+				return fmt.Errorf("-o requires a path")
+			}
+			out = args[i+1]
+			i++
+		default:
+			return fmt.Errorf("unknown flag: %s", args[i])
+		}
+	}
+	id, err := session.ResolveID(prefix)
+	if err != nil {
+		return err
+	}
+	s, err := session.Open(id)
+	if err != nil {
+		return err
+	}
+	if out == "" {
+		return session.FormatLog(s, os.Stdout)
+	}
+	f, err := os.Create(out) //nolint:gosec
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if err := session.FormatLog(s, f); err != nil {
+		return err
+	}
+	fmt.Printf("Wrote %s\n", out)
 	return nil
 }
 

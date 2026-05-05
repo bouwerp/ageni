@@ -324,7 +324,7 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess.ID)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err

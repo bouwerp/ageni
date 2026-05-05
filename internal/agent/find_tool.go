@@ -29,7 +29,7 @@ func (FindInCodebase) Description() string {
 
 The worker uses grep, glob, and read_file to locate what you're after, then returns a synthesised summary with file paths, line numbers, and brief context — instead of dumping raw grep output into your context window. Use this for "where is X defined?", "what files use Y?", "how is Z implemented?" — anything that would otherwise need multiple grep + read_file rounds.
 
-The worker runs at the haiku tier with a 10-call budget, so this is cheap. Bounded to 3 minutes; cancels itself if you cancel the master.`
+The worker runs at the haiku tier with a 10-call budget, so this is cheap. Bounded to 10 minutes; cancels itself if you cancel the master.`
 }
 
 func (FindInCodebase) Schema() json.RawMessage {
@@ -80,7 +80,11 @@ func (t FindInCodebase) Call(ctx context.Context, args json.RawMessage) (string,
 	// event. The buffered channel catches anything fired in the gap.
 	sub := t.Bus.Subscribe(128)
 
-	findCtx, cancel := context.WithTimeout(ctx, 3*time.Minute)
+	// 10-minute outer cap. The worker's own 10-call budget is the real
+	// limiter; this exists only to free find_in_codebase if the worker
+	// hangs (e.g. an LLM stream that never completes). 3 minutes was too
+	// tight for non-trivial searches and surfaced as spurious cancellations.
+	findCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
 	id, err := t.M.Spawn(findCtx, task)

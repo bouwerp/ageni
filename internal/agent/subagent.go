@@ -274,12 +274,25 @@ func (s *Subagent) Run(parent context.Context) {
 }
 
 func (s *Subagent) fail(err error) {
+	// Cancellation is an explicit decision (user hit Esc, master killed the
+	// worker, or the parent context was torn down on shutdown). It's not an
+	// error — don't surface it as one. Mark the worker cancelled and emit a
+	// terminal Done event with empty text so anything waiting on the bus
+	// (find_in_codebase, master integration loop) unblocks cleanly.
+	if errors.Is(err, context.Canceled) {
+		s.mu.Lock()
+		s.status = StatusCancelled
+		s.mu.Unlock()
+		s.appendTranscript("cancelled")
+		s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: ""})
+		return
+	}
 	s.mu.Lock()
 	s.status = StatusError
 	s.mu.Unlock()
 	// Decorate the error so the TUI / session log can see what kind of
-	// failure this was — context.Canceled vs context.DeadlineExceeded vs
-	// SDK errors look different to the user.
+	// failure this was — context.DeadlineExceeded vs SDK errors look
+	// different to the user.
 	tag := classifyErr(err)
 	wrapped := fmt.Errorf("[%s] %w", tag, err)
 	s.appendTranscript("error(" + tag + "): " + err.Error())
