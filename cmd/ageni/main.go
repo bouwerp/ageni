@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"os/exec"
 	"os/signal"
+	"strings"
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -16,6 +18,7 @@ import (
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/mcp"
+	"github.com/bouwerp/ageni/internal/repomap"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
@@ -222,6 +225,21 @@ func run() error {
 		master.SetSkillCatalog(catalog)
 		manager.SetSkillCatalog(catalog)
 	}
+
+	// Build the Aider-style repo map asynchronously so the TUI starts
+	// instantly. The map gets installed as soon as it's ready; until then
+	// the master runs without it.
+	go func() {
+		root := detectRepoRoot()
+		if root == "" {
+			return
+		}
+		m, err := repomap.LoadOrBuild(ctx, root, repomap.Options{MaxTokens: 2000})
+		if err != nil || m == nil || m.Rendered == "" {
+			return
+		}
+		master.SetRepoMap(m.Rendered)
+	}()
 	masterIn := make(chan agent.Event, 16)
 
 	// Forward sub-agent events from the bus into the master inbox so it can react.
@@ -294,6 +312,24 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 	default:
 		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
 	}
+}
+
+// detectRepoRoot returns the absolute path to the current git repo's root,
+// or the cwd if not inside a git repo. Empty string on error.
+func detectRepoRoot() string {
+	cmd := exec.Command("git", "rev-parse", "--show-toplevel")
+	out, err := cmd.Output()
+	if err == nil {
+		root := strings.TrimSpace(string(out))
+		if root != "" {
+			return root
+		}
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return ""
+	}
+	return cwd
 }
 
 // clearAgeniEnv unsets all ageni-managed env vars so a subsequent

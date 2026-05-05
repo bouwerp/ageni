@@ -29,6 +29,8 @@ func installHint(name string) string {
 			return "brew install gh"
 		case "git":
 			return "brew install git"
+		case "ctags":
+			return "brew install universal-ctags"
 		}
 	case "linux":
 		switch name {
@@ -38,6 +40,8 @@ func installHint(name string) string {
 			return "https://github.com/cli/cli#installation"
 		case "git":
 			return "apt-get install -y git  # or: dnf install git / pacman -S git"
+		case "ctags":
+			return "apt-get install -y universal-ctags  # or: dnf install ctags-universal / pacman -S ctags"
 		}
 	case "windows":
 		switch name {
@@ -65,4 +69,5 @@ var KnownCLIDeps = []CLIDep{
 	{Name: "rg", Description: "ripgrep — fast code search", Required: true},
 	{Name: "git", Description: "git — diff, status, log", Required: true},
 	{Name: "gh", Description: "GitHub CLI — PRs, issues, code search", Required: false},
+	{Name: "ctags", Description: "universal-ctags — repo map symbol extraction", Required: false},
 }

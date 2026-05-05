@@ -112,3 +112,7 @@ linters:
       # History file lives at $HOME/.ageni/history.txt — intentional.
       - path: internal/tui/history\.go
         linters: [gosec]
+      # repomap shells out to a CLI binary path discovered via LookPath; the
+      # arg list is constant. Cache files written to ~/.ageni/cache.
+      - path: internal/repomap/repomap\.go
+        linters: [gosec]

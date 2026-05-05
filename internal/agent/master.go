@@ -28,6 +28,7 @@ type Master struct {
 	maxTurns int
 
 	skillCatalog string // optional: appended to the cached system prompt
+	repoMap      string // optional: rendered repository map appended to the cached prefix
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
@@ -54,6 +55,14 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 func (m *Master) SetSkillCatalog(catalog string) {
 	m.mu.Lock()
 	m.skillCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetRepoMap injects a "<repo_map>...</repo_map>" block into the master's
+// cached system prompt. Pass an empty string to clear.
+func (m *Master) SetRepoMap(rendered string) {
+	m.mu.Lock()
+	m.repoMap = rendered
 	m.mu.Unlock()
 }
 
@@ -266,15 +275,20 @@ var _ = time.Now
 func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
+	repoMap := m.repoMap
 	m.mu.RUnlock()
 
 	skillsBlock := ""
 	if catalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + catalog + "\n\nWhen a user request matches a skill's trigger phrases or domain, call read_skill(name=\"...\") to load its full instructions before proceeding. Pass topic=\"...\" for sub-references when listed.\n</available_skills>"
 	}
+	repoMapBlock := ""
+	if repoMap != "" {
+		repoMapBlock = "\n\n<repo_map>\n" + repoMap + "\n\nUse this map BEFORE calling grep/glob/read_file. It tells you which files exist and what they contain — use it to plan which files to read, then read them with read_file. The map is intentionally compact; if a file you need isn't listed, fall back to glob/grep.\n</repo_map>"
+	}
 
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + `
+	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + repoMapBlock + `
 
 <orchestration_rules>
 - You direct, sub-agents execute. Default to delegating; do work yourself only for trivial single-step tasks or final synthesis.

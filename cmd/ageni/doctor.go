@@ -97,6 +97,12 @@ func platformInstallCommand(missing []tools.CLIDep) string {
 		switch dep.Name {
 		case "rg":
 			pkgs = append(pkgs, "ripgrep")
+		case "ctags":
+			// Most platforms package universal-ctags under this name; some
+			// older distros still ship Exuberant Ctags as 'ctags', which
+			// won't support --output-format=json. The doctor leaves the
+			// version check to the user.
+			pkgs = append(pkgs, "universal-ctags")
 		default:
 			pkgs = append(pkgs, dep.Name)
 		}
