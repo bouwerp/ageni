@@ -20,18 +20,25 @@ type Logger struct {
 	path string
 }
 
-func NewLogger() (*Logger, error) {
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return nil, err
+// NewLogger creates a JSONL log file inside the given session's directory.
+// Pass nil to fall back to the legacy ~/.ageni/sessions/<timestamp>.jsonl
+// shape — only used by code paths that haven't been ported yet.
+func NewLogger(s *Session) (*Logger, error) {
+	var path string
+	if s != nil {
+		path = s.Path("log.jsonl")
+	} else {
+		home, err := os.UserHomeDir()
+		if err != nil {
+			return nil, err
+		}
+		dir := filepath.Join(home, ".ageni", "sessions")
+		if err := os.MkdirAll(dir, 0o755); err != nil {
+			return nil, err
+		}
+		path = filepath.Join(dir, fmt.Sprintf("%s.jsonl", time.Now().Format("20060102-150405")))
 	}
-	dir := filepath.Join(home, ".ageni", "sessions")
-	if err := os.MkdirAll(dir, 0o755); err != nil {
-		return nil, err
-	}
-	name := fmt.Sprintf("%s.jsonl", time.Now().Format("20060102-150405"))
-	path := filepath.Join(dir, name)
-	f, err := os.Create(path)
+	f, err := os.Create(path) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}

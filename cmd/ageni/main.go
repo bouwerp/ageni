@@ -200,9 +200,20 @@ func run() error {
 		}
 	}
 
+	// Open a fresh session. Per-instance state (log, todo, future
+	// corrections) lives under ~/.ageni/sessions/<id>/, so multiple ageni
+	// instances in the same repo never collide.
+	sess, sessErr := session.New(detectRepoRoot())
+	if sessErr != nil {
+		return fmt.Errorf("session init: %w", sessErr)
+	}
+	sess.SetModels(cfg.Master.Provider.Name, cfg.Master.Model,
+		cfg.Subagent.Provider.Name, cfg.Subagent.Model)
+
 	// One TodoWrite instance shared between master and sub-agents so the
-	// session todo list is a single source of truth.
-	todo := tools.NewTodoWrite()
+	// session todo list is a single source of truth — now scoped to the
+	// session dir.
+	todo := tools.NewTodoWrite(sess.Path("todo.json"))
 
 	registry := tools.NewRegistry()
 	registerBase(registry, todo)
@@ -260,7 +271,7 @@ func run() error {
 	go master.Run(ctx, masterIn)
 
 	// Session log
-	logger, err := session.NewLogger()
+	logger, err := session.NewLogger(sess)
 	if err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}

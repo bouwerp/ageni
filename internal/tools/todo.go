@@ -39,10 +39,15 @@ type TodoWrite struct {
 	nextID int
 }
 
-func NewTodoWrite() *TodoWrite {
-	t := &TodoWrite{}
-	if cwd, err := os.Getwd(); err == nil {
-		t.path = filepath.Join(cwd, ".ageni", "todo.json")
+// NewTodoWrite returns a tool that persists its list to the given absolute
+// path. Pass an empty string to fall back to <cwd>/.ageni/todo.json (the
+// pre-session-abstraction behaviour).
+func NewTodoWrite(path string) *TodoWrite {
+	t := &TodoWrite{path: path}
+	if t.path == "" {
+		if cwd, err := os.Getwd(); err == nil {
+			t.path = filepath.Join(cwd, ".ageni", "todo.json")
+		}
 	}
 	return t
 }
