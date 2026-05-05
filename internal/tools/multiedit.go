@@ -94,5 +94,9 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", err
 	}
 	m.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
-	return fmt.Sprintf("applied %d edits to %s", applied, p.Path), nil
+	result := fmt.Sprintf("applied %d edits to %s", applied, p.Path)
+	if lint := lintAfterEdit(abs); lint != "" {
+		result += "\n" + lint
+	}
+	return result, nil
 }

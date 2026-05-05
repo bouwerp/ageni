@@ -108,7 +108,11 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 			kind = ChangeEdited
 		}
 		a.Tracker.Record(Change{Path: abs, Kind: kind, Step: step})
-		return fmt.Sprintf("wrote %d bytes to %s (whole)", len(p.Content), p.Path), nil
+		result := fmt.Sprintf("wrote %d bytes to %s (whole)", len(p.Content), p.Path)
+		if lint := lintAfterEdit(abs); lint != "" {
+			result += "\n" + lint
+		}
+		return result, nil
 
 	case "search_replace":
 		body, err := os.ReadFile(p.Path) //nolint:gosec
@@ -146,7 +150,11 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 			return "", err
 		}
 		a.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
-		return fmt.Sprintf("applied %d block(s) to %s (search_replace)", applied, p.Path), nil
+		result := fmt.Sprintf("applied %d block(s) to %s (search_replace)", applied, p.Path)
+		if lint := lintAfterEdit(abs); lint != "" {
+			result += "\n" + lint
+		}
+		return result, nil
 
 	default:
 		return "", fmt.Errorf("unknown format %q (supported: search_replace, whole)", p.Format)

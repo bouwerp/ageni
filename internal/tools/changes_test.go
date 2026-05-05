@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -72,3 +73,32 @@ func TestCheckpointRewind(t *testing.T) {
 		t.Fatalf("new.txt should be deleted after rewind: err=%v", err)
 	}
 }
+
+func TestLintAfterEditGo(t *testing.T) {
+	dir := t.TempDir()
+	good := filepath.Join(dir, "good.go")
+	os.WriteFile(good, []byte("package x\n\nvar V = 1\n"), 0o644)
+	tr := NewChangeTracker(filepath.Join(dir, "changes.jsonl"), filepath.Join(dir, "snap"))
+	wf := WriteFile{Tracker: tr}
+	args, _ := json.Marshal(map[string]any{"path": good, "content": "package x\n\nvar V = 2\n"})
+	out, err := wf.Call(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(out, "[lint] gofmt: ok") {
+		t.Fatalf("expected gofmt ok, got: %s", out)
+	}
+
+	bad := filepath.Join(dir, "bad.go")
+	os.WriteFile(bad, []byte("package x\n"), 0o644)
+	args, _ = json.Marshal(map[string]any{"path": bad, "content": "package x\nvar  V  = 1\n"}) // double spaces
+	out, err = wf.Call(context.Background(), args)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !contains(out, "needs reformat") && !contains(out, "[lint] gofmt") {
+		t.Fatalf("expected lint warning, got: %s", out)
+	}
+}
+
+func contains(s, sub string) bool { return strings.Contains(s, sub) }

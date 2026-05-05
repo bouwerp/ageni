@@ -123,7 +123,11 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 		kind = ChangeEdited
 	}
 	w.Tracker.Record(Change{Path: abs, Kind: kind, Step: step})
-	return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
+	result := fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path)
+	if lint := lintAfterEdit(abs); lint != "" {
+		result += "\n" + lint
+	}
+	return result, nil
 }
 
 // EditFile does a single string replacement in a file. The old_string must
@@ -170,7 +174,11 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	e.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
-	return fmt.Sprintf("replaced 1 occurrence in %s", p.Path), nil
+	result := fmt.Sprintf("replaced 1 occurrence in %s", p.Path)
+	if lint := lintAfterEdit(abs); lint != "" {
+		result += "\n" + lint
+	}
+	return result, nil
 }
 
 // ListDir lists the entries in a directory.
