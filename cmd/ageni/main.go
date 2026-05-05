@@ -217,6 +217,7 @@ func run() error {
 	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
+	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)

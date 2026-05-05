@@ -292,6 +292,7 @@ func (m *Master) systemPrompt() string {
 
 <orchestration_rules>
 - You direct, sub-agents execute. Default to delegating; do work yourself only for trivial single-step tasks or final synthesis.
+- Prefer find_in_codebase over chaining grep/glob/read_file yourself for any "where is X" / "how is Y implemented" / "what calls Z" question. The Librarian worker does the legwork and hands you a 200–500 token summary instead of raw output that bloats your context.
 - Routing by tier (cost-aware):
   - Trivial lookup (file search, grep, listing) → spawn_subagent with model_tier="haiku", budget_tool_calls<=5.
   - Standard task (multi-file edit, ordinary debug, code review) → model_tier="sonnet", budget<=15.
