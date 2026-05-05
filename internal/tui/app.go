@@ -49,6 +49,7 @@ type App struct {
 	cancelInFlight CancelFunc
 	session        *session.Session
 	todo           *tools.TodoWrite
+	changes        *tools.ChangeTracker
 
 	chat   viewport.Model
 	side   viewport.Model
@@ -109,7 +110,7 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -133,6 +134,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		cancelInFlight: cancelInFlight,
 		session:        sess,
 		todo:           todo,
+		changes:        changes,
 		chat:           chat,
 		side:           side,
 		input:          ta,
@@ -283,6 +285,9 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.toggleMouse()
 		case msg.Type == tea.KeyF3:
 			a.dumpSession()
+			return a, nil
+		case msg.Type == tea.KeyF4:
+			a.dumpDiff()
 			return a, nil
 		case msg.Type == tea.KeyPgUp, msg.Type == tea.KeyPgDown,
 			msg.String() == "ctrl+u", msg.String() == "ctrl+d":
@@ -438,6 +443,28 @@ func (a *App) dumpSession() {
 		return
 	}
 	a.flashMessage = "dumped → " + path
+}
+
+// dumpDiff writes a unified diff for every recorded change in the
+// current session to /tmp and flashes the path. Bound to F4.
+// `ageni sessions diff <id>` is the equivalent CLI form.
+func (a *App) dumpDiff() {
+	if a.session == nil {
+		a.flashMessage = "diff: no session attached"
+		return
+	}
+	path := filepath.Join(os.TempDir(), "ageni-diff-"+a.session.ID+".diff")
+	f, err := os.Create(path) //nolint:gosec
+	if err != nil {
+		a.flashMessage = "diff failed: " + err.Error()
+		return
+	}
+	defer f.Close()
+	if err := session.FormatDiff(a.session, "", f); err != nil {
+		a.flashMessage = "diff failed: " + err.Error()
+		return
+	}
+	a.flashMessage = "diff → " + path
 }
 
 func (a *App) stopGeneration() {
@@ -877,6 +904,49 @@ func (a *App) refreshSide() {
 		sb.WriteString(st2.Render(line) + "\n")
 	}
 
+	// Changed files — single source of truth for "what has this session
+	// touched on disk". Refreshed on every refreshSide() call (cheap; just
+	// reads the in-memory list). Most-recent first, capped to the side
+	// pane's reasonable height.
+	if a.changes != nil {
+		summary := a.changes.Summary()
+		if len(summary) > 0 {
+			sb.WriteString("\n" + titleStyle.Render(fmt.Sprintf("changes (%d)", len(summary))) + "\n\n")
+			max := 8
+			start := 0
+			if len(summary) > max {
+				start = len(summary) - max
+			}
+			for i := len(summary) - 1; i >= start; i-- {
+				c := summary[i]
+				display := c.Path
+				if cwd, err := os.Getwd(); err == nil {
+					if rel, relErr := filepath.Rel(cwd, c.Path); relErr == nil && !strings.HasPrefix(rel, "..") {
+						display = rel
+					}
+				}
+				kindMark := "·"
+				kindStyle := mutedStyle
+				switch c.Kind {
+				case tools.ChangeCreated:
+					kindMark = "+"
+					kindStyle = subDoneStyle
+				case tools.ChangeEdited:
+					kindMark = "~"
+					kindStyle = subRunningStyle
+				case tools.ChangeDeleted:
+					kindMark = "-"
+					kindStyle = subErrStyle
+				case tools.ChangeMoved:
+					kindMark = "→"
+					kindStyle = subRunningStyle
+				}
+				sb.WriteString(kindStyle.Render(kindMark) + " " + display + "\n")
+			}
+			sb.WriteString(mutedStyle.Render("F4=dump diff") + "\n")
+		}
+	}
+
 	// Todo list — shared between master and sub-agents. Each item shows its
 	// status mark plus, when claimed, the worker that owns it. This is the
 	// single canonical view of "what's planned, what's in flight, who's on it."
@@ -990,7 +1060,7 @@ func (a *App) statusLine() string {
 	if !a.mouseOn {
 		mouseStr = "OFF"
 	}
-	return fmt.Sprintf("%s  │  %s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s  │  %s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is

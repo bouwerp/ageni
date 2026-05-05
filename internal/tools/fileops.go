@@ -10,7 +10,7 @@ import (
 )
 
 // MakeDir creates a directory and any missing parents.
-type MakeDir struct{}
+type MakeDir struct{ Tracker *ChangeTracker }
 
 func (MakeDir) Name() string { return "make_dir" }
 func (MakeDir) Description() string {
@@ -19,7 +19,7 @@ func (MakeDir) Description() string {
 func (MakeDir) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"}},"required":["path"]}`)
 }
-func (MakeDir) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (md MakeDir) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct{ Path string }
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -27,15 +27,23 @@ func (MakeDir) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	abs, _ := filepath.Abs(p.Path)
+	existed := false
+	if info, err := os.Stat(abs); err == nil && info.IsDir() {
+		existed = true
+	}
 	if err := os.MkdirAll(p.Path, 0o755); err != nil { //nolint:gosec
 		return "", err
+	}
+	if !existed {
+		md.Tracker.Record(Change{Path: abs, Kind: ChangeMkdir})
 	}
 	return fmt.Sprintf("created %s", p.Path), nil
 }
 
 // MoveFile renames or moves a file (or directory) atomically when on the
 // same filesystem.
-type MoveFile struct{}
+type MoveFile struct{ Tracker *ChangeTracker }
 
 func (MoveFile) Name() string { return "move_file" }
 func (MoveFile) Description() string {
@@ -52,7 +60,7 @@ func (MoveFile) Schema() json.RawMessage {
 "required":["src","dst"]
 }`)
 }
-func (MoveFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (mv MoveFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Src       string `json:"src"`
 		Dst       string `json:"dst"`
@@ -75,18 +83,22 @@ func (MoveFile) Call(ctx context.Context, args json.RawMessage) (string, error) 
 			return "", err
 		}
 	}
+	srcAbs, _ := filepath.Abs(p.Src)
+	dstAbs, _ := filepath.Abs(p.Dst)
+	mv.Tracker.Snapshot(srcAbs)
 	if dir := filepath.Dir(p.Dst); dir != "" {
 		_ = os.MkdirAll(dir, 0o755) //nolint:gosec
 	}
 	if err := os.Rename(p.Src, p.Dst); err != nil {
 		return "", err
 	}
+	mv.Tracker.Record(Change{Path: dstAbs, Kind: ChangeMoved, From: srcAbs})
 	return fmt.Sprintf("moved %s -> %s", p.Src, p.Dst), nil
 }
 
 // DeleteFile removes a file. Refuses directories unless recursive=true to
 // keep accidental wipes from happening.
-type DeleteFile struct{}
+type DeleteFile struct{ Tracker *ChangeTracker }
 
 func (DeleteFile) Name() string { return "delete_file" }
 func (DeleteFile) Description() string {
@@ -102,7 +114,7 @@ func (DeleteFile) Schema() json.RawMessage {
 "required":["path"]
 }`)
 }
-func (DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (d DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path      string `json:"path"`
 		Recursive bool   `json:"recursive"`
@@ -120,6 +132,8 @@ func (DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if info.IsDir() && !p.Recursive {
 		return "", fmt.Errorf("%s is a directory; pass recursive=true to delete it and its contents", p.Path)
 	}
+	abs, _ := filepath.Abs(p.Path)
+	d.Tracker.Snapshot(abs)
 	if p.Recursive {
 		if err := os.RemoveAll(p.Path); err != nil {
 			return "", err
@@ -129,5 +143,6 @@ func (DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, error
 			return "", err
 		}
 	}
+	d.Tracker.Record(Change{Path: abs, Kind: ChangeDeleted})
 	return fmt.Sprintf("deleted %s", p.Path), nil
 }

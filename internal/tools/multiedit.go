@@ -6,13 +6,14 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
 // MultiEdit applies a sequence of string replacements atomically. Each edit's
 // old_string must occur exactly once at the time it's applied; if any fail
 // the file is left untouched.
-type MultiEdit struct{}
+type MultiEdit struct{ Tracker *ChangeTracker }
 
 func (MultiEdit) Name() string { return "multi_edit" }
 func (MultiEdit) Description() string {
@@ -50,7 +51,7 @@ type multiEditOp struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
-func (MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path  string        `json:"path"`
 		Edits []multiEditOp `json:"edits"`
@@ -87,8 +88,11 @@ func (MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, error)
 		}
 		applied++
 	}
+	abs, _ := filepath.Abs(p.Path)
+	m.Tracker.Snapshot(abs)
 	if err := os.WriteFile(p.Path, []byte(body), 0o644); err != nil { //nolint:gosec
 		return "", err
 	}
+	m.Tracker.Record(Change{Path: abs, Kind: ChangeEdited})
 	return fmt.Sprintf("applied %d edits to %s", applied, p.Path), nil
 }

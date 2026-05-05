@@ -181,17 +181,17 @@ func run() error {
 		skillReg = nil
 	}
 
-	registerBase := func(r *tools.Registry, todo *tools.TodoWrite) {
+	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
 		r.Register(tools.ReadFile{})
-		r.Register(tools.WriteFile{})
-		r.Register(tools.EditFile{})
-		r.Register(tools.MultiEdit{})
+		r.Register(tools.WriteFile{Tracker: tr})
+		r.Register(tools.EditFile{Tracker: tr})
+		r.Register(tools.MultiEdit{Tracker: tr})
 		r.Register(tools.ListDir{})
 		r.Register(tools.Glob{})
 		r.Register(tools.Grep{})
-		r.Register(tools.MakeDir{})
-		r.Register(tools.MoveFile{})
-		r.Register(tools.DeleteFile{})
+		r.Register(tools.MakeDir{Tracker: tr})
+		r.Register(tools.MoveFile{Tracker: tr})
+		r.Register(tools.DeleteFile{Tracker: tr})
 		r.Register(tools.RunBash{})
 		r.Register(tools.WebFetch{})
 		r.Register(tools.WebSearch{})
@@ -226,8 +226,14 @@ func run() error {
 	// session dir.
 	todo := tools.NewTodoWrite(sess.Path("todo.json"))
 
+	// One ChangeTracker shared between master and sub-agents. Records
+	// every file mutation with a pre-mutation snapshot under
+	// <session_dir>/snapshots so we can produce real diffs later via
+	// `ageni sessions diff`.
+	changes := tools.NewChangeTracker(sess.Path("changes.jsonl"), sess.Path("snapshots"))
+
 	registry := tools.NewRegistry()
-	registerBase(registry, todo)
+	registerBase(registry, todo, changes)
 
 	// Manager + master-only tools. Pass the app-wide ctx so sub-agents
 	// inherit a lifetime that outlives any individual master turn.
@@ -244,7 +250,7 @@ func run() error {
 	registry.Register(agent.FindInCodebase{M: manager, Bus: bus})
 
 	masterReg := tools.NewRegistry()
-	registerBase(masterReg, todo)
+	registerBase(masterReg, todo, changes)
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
@@ -333,7 +339,7 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes)
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err

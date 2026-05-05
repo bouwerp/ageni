@@ -84,7 +84,7 @@ func (ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) 
 }
 
 // WriteFile writes (creating or overwriting) a file.
-type WriteFile struct{}
+type WriteFile struct{ Tracker *ChangeTracker }
 
 func (WriteFile) Name() string { return "write_file" }
 func (WriteFile) Description() string {
@@ -95,7 +95,7 @@ For partial changes to an existing file, prefer edit_file (single replacement) o
 func (WriteFile) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
 }
-func (WriteFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path    string
 		Content string
@@ -106,18 +106,29 @@ func (WriteFile) Call(ctx context.Context, args json.RawMessage) (string, error)
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	abs, _ := filepath.Abs(p.Path)
+	existed := false
+	if _, err := os.Stat(abs); err == nil {
+		existed = true
+	}
+	w.Tracker.Snapshot(abs)
 	if dir := filepath.Dir(p.Path); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
 	if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
 		return "", err
 	}
+	kind := ChangeCreated
+	if existed {
+		kind = ChangeEdited
+	}
+	w.Tracker.Record(Change{Path: abs, Kind: kind})
 	return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
 }
 
 // EditFile does a single string replacement in a file. The old_string must
 // occur exactly once for safety.
-type EditFile struct{}
+type EditFile struct{ Tracker *ChangeTracker }
 
 func (EditFile) Name() string { return "edit_file" }
 func (EditFile) Description() string {
@@ -128,7 +139,7 @@ Cannot create new files — use write_file for that.`
 func (EditFile) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"old_string":{"type":"string"},"new_string":{"type":"string"}},"required":["path","old_string","new_string"]}`)
 }
-func (EditFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path      string
 		OldString string `json:"old_string"`
@@ -152,10 +163,13 @@ func (EditFile) Call(ctx context.Context, args json.RawMessage) (string, error) 
 	if count > 1 {
 		return "", fmt.Errorf("old_string occurs %d times in %s; provide more context to make it unique", count, p.Path)
 	}
+	abs, _ := filepath.Abs(p.Path)
+	e.Tracker.Snapshot(abs)
 	updated := strings.Replace(body, p.OldString, p.NewString, 1)
 	if err := os.WriteFile(p.Path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
+	e.Tracker.Record(Change{Path: abs, Kind: ChangeEdited})
 	return fmt.Sprintf("replaced 1 occurrence in %s", p.Path), nil
 }
 
