@@ -5,6 +5,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
+	"regexp"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/bouwerp/ageni/internal/llm"
@@ -130,4 +133,52 @@ func LoadHistory(s *Session) ([]llm.Message, error) {
 		return nil, fmt.Errorf("read log: %w", err)
 	}
 	return msgs, nil
+}
+
+// spawnedSubagentRE finds sub-agent IDs in spawn_subagent tool results.
+// The result string format is fixed ("spawned sub-agent sN (tier=…, …)")
+// so we can scrape it reliably.
+var spawnedSubagentRE = regexp.MustCompile(`spawned sub-agent (s\d+)`)
+
+// PriorSubagentIDs scans replayed messages for sub-agent IDs that appear
+// in spawn_subagent tool results. Returns the sorted list of unique IDs
+// and the highest numeric suffix seen — the caller uses the latter to
+// bump the manager's spawn counter so fresh workers don't collide with
+// IDs the master remembers from before the restart.
+func PriorSubagentIDs(messages []llm.Message) (ids []string, maxN int) {
+	seen := map[string]bool{}
+	for _, m := range messages {
+		if m.Role != llm.RoleTool {
+			continue
+		}
+		for _, tr := range m.ToolResults {
+			for _, match := range spawnedSubagentRE.FindAllStringSubmatch(tr.Content, -1) {
+				id := match[1]
+				if seen[id] {
+					continue
+				}
+				seen[id] = true
+				ids = append(ids, id)
+				if n, err := strconv.Atoi(strings.TrimPrefix(id, "s")); err == nil && n > maxN {
+					maxN = n
+				}
+			}
+		}
+	}
+	sort.Strings(ids)
+	return
+}
+
+// ResumeReminder builds a system-reminder message warning the master
+// that the listed sub-agent IDs are dead and must not be checked /
+// sent-to / killed. Returns "" when there's nothing to warn about.
+func ResumeReminder(priorIDs []string, nextN int) string {
+	if len(priorIDs) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(`<system-reminder>
+Session resumed from disk; the previous process has exited. ALL sub-agents named in your prior context (%s) are TERMINATED — do not call check_subagent, send_to_subagent, or kill_subagent on those IDs, and do not refer to them as if they're alive. Their final outputs are already in your tool-result history above; work from those.
+
+If more work is needed, spawn fresh sub-agents. The next ID will be s%d.
+</system-reminder>`, strings.Join(priorIDs, ", "), nextN)
 }

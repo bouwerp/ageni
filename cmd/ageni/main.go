@@ -307,11 +307,21 @@ func run() error {
 		hist, herr := session.LoadHistory(sess)
 		if herr != nil {
 			fmt.Fprintf(os.Stderr, "ageni: replay log: %v (continuing without history)\n", herr)
-		} else {
+		} else if len(hist) > 0 {
+			// Sub-agents are gone — the prior process exited. Bump the
+			// manager's spawn counter past the highest ID the master
+			// remembers, then append a system-reminder so the master
+			// doesn't try to check / send-to / kill stale workers.
+			priorIDs, maxN := session.PriorSubagentIDs(hist)
+			manager.SetNextSubagentID(maxN)
+			if reminder := session.ResumeReminder(priorIDs, maxN+1); reminder != "" {
+				hist = append(hist, llm.Message{Role: llm.RoleUser, Text: reminder})
+			}
 			resumeHistory = hist
 			master.LoadHistory(hist)
-			if len(hist) > 0 {
-				fmt.Printf("Replayed %d prior message(s) into master context\n", len(hist))
+			fmt.Printf("Replayed %d prior message(s) into master context\n", len(hist))
+			if len(priorIDs) > 0 {
+				fmt.Printf("Marked %d prior sub-agent(s) as terminated: %s\n", len(priorIDs), strings.Join(priorIDs, ", "))
 			}
 		}
 	}

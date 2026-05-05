@@ -69,6 +69,18 @@ func (m *Manager) SetDefaultBudget(n int) {
 	m.mu.Unlock()
 }
 
+// SetNextSubagentID nudges the spawn counter so the next worker created
+// gets ID s<n+1>. Used on session resume to skip past IDs the master
+// remembers from before the restart — keeps fresh workers' IDs distinct
+// from references in the replayed history.
+func (m *Manager) SetNextSubagentID(n int) {
+	m.mu.Lock()
+	if n > m.nextID {
+		m.nextID = n
+	}
+	m.mu.Unlock()
+}
+
 // Spawn creates and starts a sub-agent. Returns its ID.
 func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) {
 	if task.Objective == "" {
