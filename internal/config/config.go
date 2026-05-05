@@ -25,6 +25,10 @@ type Config struct {
 	Subagent RoleConfig
 
 	MaxSubagents int
+	// SubagentBudget is the default cap on tool calls per sub-agent when
+	// the master doesn't override it via spawn_subagent's
+	// budget_tool_calls argument. Driven by AGENI_SUBAGENT_BUDGET.
+	SubagentBudget int
 }
 
 // Load resolves configuration from (in order, last wins):
@@ -60,9 +64,10 @@ func Load() (*Config, error) {
 	}
 
 	return &Config{
-		Master:       master,
-		Subagent:     sub,
-		MaxSubagents: intOr("AGENI_MAX_SUBAGENTS", 8),
+		Master:         master,
+		Subagent:       sub,
+		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
+		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 40),
 	}, nil
 }
 

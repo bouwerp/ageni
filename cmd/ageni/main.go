@@ -210,6 +210,7 @@ func run() error {
 	// Manager + master-only tools. Pass the app-wide ctx so sub-agents
 	// inherit a lifetime that outlives any individual master turn.
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
+	manager.SetDefaultBudget(cfg.SubagentBudget)
 
 	masterReg := tools.NewRegistry()
 	registerBase(masterReg, todo)
@@ -288,6 +289,7 @@ func run() error {
 		}
 		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
 		manager.UpdateFactory(newFactory)
+		manager.SetDefaultBudget(newCfg.SubagentBudget)
 		return nil
 	}
 
@@ -344,7 +346,7 @@ func clearAgeniEnv() {
 		"ANTHROPIC_API_KEY", "OPENAI_API_KEY", "OPENROUTER_API_KEY", "GROQ_API_KEY",
 		"HF_TOKEN", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "DEEPSEEK_API_KEY",
 		"GEMINI_API_KEY", "OLLAMA_API_KEY", "OPENAI_BASE_URL",
-		"AGENI_MAX_SUBAGENTS",
+		"AGENI_MAX_SUBAGENTS", "AGENI_SUBAGENT_BUDGET",
 	}
 	for _, k := range keys {
 		_ = os.Unsetenv(k)

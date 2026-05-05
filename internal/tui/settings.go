@@ -26,7 +26,8 @@ type settingsState struct {
 	subModel    string
 	subKey      string
 
-	maxSubagents string
+	maxSubagents   string
+	subagentBudget string
 }
 
 // newSettingsForm builds a huh.Form pre-filled with the current ~/.ageni/.env
@@ -47,6 +48,7 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 		subProvider:    orDefault(existing["SUBAGENT_PROVIDER"], "anthropic"),
 		subModel:       existing["SUBAGENT_MODEL"],
 		maxSubagents:   orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
+		subagentBudget: orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
 	}
 	// API keys: blank field means "keep existing". We never display the real
 	// key so secrets don't leak through the form.
@@ -101,17 +103,17 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 				Value(&st.subKey),
 		),
 		huh.NewGroup(
-			huh.NewNote().Title("Concurrency").Description("Cap on parallel sub-agents. Lower this on rate-limited free tiers."),
+			huh.NewNote().Title("Sub-agent limits").Description("Concurrency caps parallel workers; budget caps tool calls per worker."),
 			huh.NewInput().
 				Title("Max concurrent sub-agents").
+				Description("Lower this on rate-limited free tiers.").
 				Value(&st.maxSubagents).
-				Validate(func(s string) error {
-					n, err := strconv.Atoi(s)
-					if err != nil || n < 1 {
-						return fmt.Errorf("must be a positive integer")
-					}
-					return nil
-				}),
+				Validate(positiveInt),
+			huh.NewInput().
+				Title("Default tool-call budget per sub-agent").
+				Description("Soft cap. The master can override per-spawn. 40 is a reasonable default; raise for tasks that need lots of tool rounds.").
+				Value(&st.subagentBudget).
+				Validate(positiveInt),
 		),
 	).WithShowHelp(true).WithShowErrors(true)
 
@@ -136,11 +138,12 @@ func (s *settingsState) save() error {
 	}
 
 	out := config.MergeEnv(existing, map[string]string{
-		"MASTER_PROVIDER":     s.masterProvider,
-		"MASTER_MODEL":        model,
-		"SUBAGENT_PROVIDER":   s.subProvider,
-		"SUBAGENT_MODEL":      subModel,
-		"AGENI_MAX_SUBAGENTS": s.maxSubagents,
+		"MASTER_PROVIDER":       s.masterProvider,
+		"MASTER_MODEL":          model,
+		"SUBAGENT_PROVIDER":     s.subProvider,
+		"SUBAGENT_MODEL":        subModel,
+		"AGENI_MAX_SUBAGENTS":   s.maxSubagents,
+		"AGENI_SUBAGENT_BUDGET": s.subagentBudget,
 	})
 
 	// Only update key env vars when the user typed a new value (blank means
@@ -224,6 +227,14 @@ func shouldFetchLive(name string) bool {
 		return false
 	}
 	return true
+}
+
+func positiveInt(s string) error {
+	n, err := strconv.Atoi(s)
+	if err != nil || n < 1 {
+		return fmt.Errorf("must be a positive integer")
+	}
+	return nil
 }
 
 func orDefault(v, def string) string {

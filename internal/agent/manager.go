@@ -29,6 +29,7 @@ type Manager struct {
 	factory       AdapterFactory
 	skillCatalog  string
 	maxConcurrent int
+	defaultBudget int
 	nextID        int
 
 	// rootCtx is the long-lived context sub-agent goroutines inherit. Must
@@ -60,6 +61,14 @@ func (m *Manager) SetSkillCatalog(catalog string) {
 	m.mu.Unlock()
 }
 
+// SetDefaultBudget updates the default tool-call budget applied to every
+// spawn that doesn't override it. Existing sub-agents are unaffected.
+func (m *Manager) SetDefaultBudget(n int) {
+	m.mu.Lock()
+	m.defaultBudget = n
+	m.mu.Unlock()
+}
+
 // Spawn creates and starts a sub-agent. Returns its ID.
 func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) {
 	if task.Objective == "" {
@@ -73,6 +82,9 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 
 	m.mu.Lock()
+	if task.BudgetToolCalls <= 0 && m.defaultBudget > 0 {
+		task.BudgetToolCalls = m.defaultBudget
+	}
 	running := 0
 	for _, s := range m.subs {
 		if s.Status() == StatusRunning {
