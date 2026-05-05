@@ -8,6 +8,7 @@ import (
 	"github.com/charmbracelet/bubbles/textarea"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
 
@@ -63,6 +64,11 @@ type App struct {
 	settingsForm  *huh.Form
 	settingsState *settingsState
 	flashMessage  string
+
+	// Markdown renderer for master + sub-agent final output. Re-initialised
+	// when the chat-pane width changes.
+	glam      *glamour.TermRenderer
+	glamWidth int
 
 	ctx    context.Context
 	cancel context.CancelFunc
@@ -413,7 +419,17 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentDone:
 		a.subStatus[ev.SubagentID] = agent.StatusDone
+		// Sub-agents stream raw chunks as they go; on completion replace the
+		// streamed plaintext with a markdown-rendered version of the final
+		// answer (where the result/reasoning blocks live).
+		if ev.Text != "" {
+			if b, ok := a.subBufs[ev.SubagentID]; ok {
+				rendered := a.renderMarkdown(ev.Text)
+				b.WriteString("\n\n" + titleStyle.Render("final ❯") + "\n" + rendered + "\n")
+			}
+		}
 		a.refreshSide()
+		a.refreshChat()
 	case agent.EvSubagentError:
 		a.subStatus[ev.SubagentID] = agent.StatusError
 		errText := "(unknown)"
@@ -441,10 +457,48 @@ func (a *App) appendMasterRender() {
 }
 
 func (a *App) flushMasterText() {
-	if a.currentMaster.Len() > 0 {
-		a.chatBuf.WriteString(titleStyle.Render("master ❯ ") + a.currentMaster.String() + "\n\n")
-		a.currentMaster.Reset()
+	if a.currentMaster.Len() == 0 {
+		return
 	}
+	rendered := a.renderMarkdown(a.currentMaster.String())
+	a.chatBuf.WriteString(titleStyle.Render("master ❯") + "\n" + rendered + "\n\n")
+	a.currentMaster.Reset()
+}
+
+// ensureGlamour rebuilds the markdown renderer when the chat-pane width
+// changes. Returns nil silently if construction fails (renderer is optional —
+// raw text is fine).
+func (a *App) ensureGlamour() {
+	w := a.chat.Width - 2
+	if w < 20 {
+		w = 80
+	}
+	if a.glam != nil && a.glamWidth == w {
+		return
+	}
+	r, err := glamour.NewTermRenderer(
+		glamour.WithAutoStyle(),
+		glamour.WithWordWrap(w),
+	)
+	if err != nil {
+		return
+	}
+	a.glam = r
+	a.glamWidth = w
+}
+
+// renderMarkdown formats a markdown string with glamour. On any failure it
+// returns the input unchanged so output is never lost.
+func (a *App) renderMarkdown(s string) string {
+	a.ensureGlamour()
+	if a.glam == nil {
+		return s
+	}
+	out, err := a.glam.Render(s)
+	if err != nil {
+		return s
+	}
+	return strings.TrimRight(out, "\n")
 }
 
 func (a *App) refreshChat() {
