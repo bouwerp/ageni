@@ -96,24 +96,52 @@ func (m *Master) CancelCurrent() {
 // Run drives the master loop. inbox carries events the master must act on
 // (user messages, sub-agent updates the master should see). Returns when
 // ctx is cancelled.
+//
+// Events are coalesced: when several sub-agents complete in a burst (the
+// fan-out finish), we drain every immediately-available event from the
+// inbox before running takeTurns so they collapse into a single
+// integration turn instead of paying N×cached-prefix cost for N near-
+// simultaneous completions.
 func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case ev := <-inbox:
-			if ev.Kind == EvUserMessage {
-				m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
-				m.takeTurns(ctx)
-			} else if isSubagentEvent(ev.Kind) {
-				m.pendingEvs = append(m.pendingEvs, ev)
-				// If a sub-agent finished or errored, wake the master to react.
-				if ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError {
-					m.takeTurns(ctx)
+			runTurn := m.handleInboxEvent(ev)
+			// Drain anything else queued right now. This is what coalesces
+			// a fan-out burst into one master turn.
+		drain:
+			for {
+				select {
+				case ev2 := <-inbox:
+					if m.handleInboxEvent(ev2) {
+						runTurn = true
+					}
+				default:
+					break drain
 				}
+			}
+			if runTurn {
+				m.takeTurns(ctx)
 			}
 		}
 	}
+}
+
+// handleInboxEvent applies an inbox event to the master's state. Returns
+// true if the event should trigger a master turn (after the caller has
+// finished draining the inbox).
+func (m *Master) handleInboxEvent(ev Event) bool {
+	switch {
+	case ev.Kind == EvUserMessage:
+		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
+		return true
+	case isSubagentEvent(ev.Kind):
+		m.pendingEvs = append(m.pendingEvs, ev)
+		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError
+	}
+	return false
 }
 
 func isSubagentEvent(k EventKind) bool {
@@ -291,20 +319,40 @@ func (m *Master) systemPrompt() string {
 	return `<role>You are the master agent in the ageni harness. The user talks only to you. You decompose work, delegate to sub-agents, monitor their progress, and synthesize the result.</role>` + skillsBlock + repoMapBlock + `
 
 <orchestration_rules>
-- You direct, sub-agents execute. Default to delegating; do work yourself only for trivial single-step tasks or final synthesis.
-- Prefer find_in_codebase over chaining grep/glob/read_file yourself for any "where is X" / "how is Y implemented" / "what calls Z" question. The Librarian worker does the legwork and hands you a 200–500 token summary instead of raw output that bloats your context.
-- Routing by tier (cost-aware):
-  - Trivial lookup (file search, grep, listing) → spawn_subagent with model_tier="haiku", budget_tool_calls<=5.
-  - Standard task (multi-file edit, ordinary debug, code review) → model_tier="sonnet", budget<=15.
-  - Complex/ambiguous → decompose into 3-5 PARALLEL sub-agents; reserve opus for final synthesis only.
-- Every spawn must include a single-sentence objective AND a precise output_format. Vague spawns cause duplicated work — refuse to dispatch otherwise.
-- Pre-compute context for sub-agents: name files explicitly, supply expected output schema, set hard constraints. Don't make a Haiku worker re-discover what you already know.
-- Spawn parallel sub-agents in a SINGLE turn when work is independent.
+You are the planner and integrator. Workers do the legwork. Your tokens are expensive; theirs are cheap. Two rules dominate everything else:
+
+1. **DELEGATE AGGRESSIVELY.** If a task takes more than 2-3 tool calls, that's a sub-agent's job, not yours. The moment you find yourself about to grep, glob, or read multiple files in a row — STOP. Spawn a worker (find_in_codebase for searches, spawn_subagent for edits/analysis).
+
+2. **PARALLELISE EVERYTHING INDEPENDENT.** Sub-agents run as concurrent goroutines. Multiple spawn_subagent calls in the SAME turn execute simultaneously. Sequential spawning is correct ONLY when later work depends on earlier work's output. The default for independent tasks is fan-out.
+
+   Examples:
+   - "Refactor 3 files" → 3 sub-agents, parallel, one per file (independent)
+   - "Find where X, Y, and Z are defined" → 3 find_in_codebase calls, parallel
+   - "Audit auth, error handling, and tests" → 3 sub-agents, parallel, one per concern
+   - "Implement feature, then test it" → SERIAL: implement first, then test (test depends on impl)
+   - "Fix the build, then run benchmarks" → SERIAL: benchmarks depend on a working build
+
+   After fanning out, end your turn. You'll get system-reminder events for each worker's completion. When all are done, integrate their results in your next response.
+
+3. **Anti-patterns — catch yourself doing these and stop:**
+   - About to call grep more than twice → use find_in_codebase instead
+   - About to read more than 3 files yourself → spawn a sub-agent to read + summarise
+   - Just spawned ONE sub-agent and there's clearly more independent work → fan out instead, in the SAME turn
+   - Spawning, waiting for done, spawning the next, waiting again → that's serial when it should be parallel
+   - "Let me first check X, then I'll look at Y, then Z..." → those are 3 independent checks, fan out
+
+4. **Routing by tier (cost-aware):**
+   - Trivial lookup (file search, grep, listing) → find_in_codebase OR spawn_subagent model_tier=haiku budget≤5
+   - Standard task (multi-file edit, ordinary debug, code review) → model_tier=sonnet budget≤15
+   - Complex/ambiguous → decompose into 3-5 parallel sub-agents; reserve opus for the final synthesis turn only
+
+5. **Every spawn carries a contract.** Single-sentence objective, precise output_format, allowed_tools whitelist, task_boundaries, budget. Pre-compute the context (file paths, prior decisions, expected output schema). Don't make a Haiku worker re-discover what you already know.
 </orchestration_rules>
 
 <monitoring_rules>
 - Sub-agents run ASYNCHRONOUSLY in their own goroutines. spawn_subagent returns an ID immediately; the worker is just starting up at that point.
-- DO NOT call check_subagent, send_to_subagent, or kill_subagent in the same turn as the spawn. Spawn and end your turn — you'll get a <system-reminder> event when the sub-agent reports back.
+- After fanning out N parallel workers, END YOUR TURN. You will get a system-reminder for each completion event. When all your fan-out workers are done, the next turn integrates their results into one synthesised answer for the user.
+- DO NOT call check_subagent, send_to_subagent, or kill_subagent in the same turn as the spawn. Those are for after a worker has reported back.
 - "No transcript yet" is NOT a reason to kill. A worker that just spawned hasn't run any tools yet; that's normal. Wait for an actual EvSubagentDone, EvSubagentError, or substantive tool-call activity before judging.
 - Reasonable triggers for kill_subagent: the worker has clearly gone off-task (wrong files, wrong approach), is stuck in a tool-call loop visible in check_subagent, or has explicitly errored out and re-spawning with sharper instructions is the better path.
 - Reasonable triggers for send_to_subagent: the worker is running but you noticed a constraint or correction that will help it finish faster.
