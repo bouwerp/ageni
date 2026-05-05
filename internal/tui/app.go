@@ -750,12 +750,15 @@ func (a *App) statusLine() string {
 	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, mouseStr, flash)
 }
 
-// renderUsageFromTracker shows master + sub-agent token usage with cache hit
-// rate per role, so the user can see when caching is working.
+// renderUsageFromTracker shows master + sub-agent token usage with cache
+// hit rate per role plus a session cost estimate, so the user can see what
+// they've spent and when caching is working.
 func (a *App) renderUsageFromTracker() string {
 	master := a.tracker.StatsByRolePrefix("master")
 	subs := a.tracker.StatsByRolePrefix("subagent:")
-	return fmt.Sprintf("M:%s/%s c=%s  S:%s/%s c=%s",
+	cost, hasUnknown := a.tracker.SessionCost()
+	return fmt.Sprintf("%s  M:%s/%s c=%s  S:%s/%s c=%s",
+		fmtCost(cost, hasUnknown),
 		fmtTokens(master.InputTokens+master.CacheReadTokens),
 		fmtTokens(master.OutputTokens),
 		fmtRate(master),
@@ -763,6 +766,27 @@ func (a *App) renderUsageFromTracker() string {
 		fmtTokens(subs.OutputTokens),
 		fmtRate(subs),
 	)
+}
+
+// fmtCost renders a session cost. For very small amounts it falls back to
+// 4 decimal places so the user can see fractions of a cent. The "?" prefix
+// indicates that some tokens were spent on a model we don't have pricing
+// for, so the figure is a floor.
+func fmtCost(cost float64, hasUnknown bool) string {
+	prefix := ""
+	if hasUnknown {
+		prefix = "≥"
+	}
+	switch {
+	case cost == 0:
+		return prefix + "$0"
+	case cost < 0.01:
+		return fmt.Sprintf("%s$%.4f", prefix, cost)
+	case cost < 1:
+		return fmt.Sprintf("%s$%.3f", prefix, cost)
+	default:
+		return fmt.Sprintf("%s$%.2f", prefix, cost)
+	}
 }
 
 func fmtRate(s llm.RoleStats) string {

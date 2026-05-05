@@ -127,6 +127,23 @@ func hasPrefix(s, prefix string) bool {
 	return s[:len(prefix)] == prefix
 }
 
+// SessionCost sums USD cost across every (role, model) pair in the tracker.
+// HasUnknown is true if any (role, model) entry consumed tokens but the
+// model wasn't in our pricing table — in that case the returned cost is a
+// floor, not the true total.
+func (t *Tracker) SessionCost() (cost float64, hasUnknown bool) {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	for k, u := range t.entries {
+		p := PricingFor(k.Model)
+		if !p.Known && (u.InputTokens+u.OutputTokens+u.CacheReadTokens+u.CacheCreationTokens) > 0 {
+			hasUnknown = true
+		}
+		cost += p.Cost(u)
+	}
+	return cost, hasUnknown
+}
+
 // Subscribe returns a buffered channel that receives a snapshot on every Add.
 // The channel is non-blocking on the sender side: if the subscriber is slow,
 // updates are dropped.
