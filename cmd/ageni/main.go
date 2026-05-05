@@ -9,6 +9,8 @@ import (
 	"syscall"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/config"
@@ -100,6 +102,14 @@ func printUsage(w *os.File) {
 }
 
 func run() error {
+	// Force lipgloss + termenv to TrueColor before Bubble Tea starts. Auto-
+	// detection inside the alt-screen sometimes lands on the Ascii profile
+	// (most commonly when stdout's TTY query fails), which strips every
+	// styled escape and leaves users with unstyled markdown and plain
+	// borders. Modern terminals all accept TrueColor escapes; older ones
+	// degrade gracefully.
+	lipgloss.SetColorProfile(termenv.TrueColor)
+
 	cfg, err := config.Load()
 	if err != nil {
 		// First-run UX: drop into the wizard if no provider is configured.

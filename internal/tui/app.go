@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/glamour"
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/llm"
@@ -442,20 +443,13 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.appendMasterRender()
 	case agent.EvMasterToolCall:
 		if ev.ToolCall != nil {
-			a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("• tool: %s(%s)\n", ev.ToolCall.Name, compactArgs(ev.ToolCall.Arguments))))
+			a.flushMasterText() // commit any in-progress text before the tool block
+			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.refreshChat()
 		}
 	case agent.EvMasterToolDone:
 		if ev.ToolResult != nil {
-			snip := ev.ToolResult.Content
-			if len(snip) > 200 {
-				snip = snip[:200] + "…"
-			}
-			mark := ""
-			if ev.ToolResult.IsError {
-				mark = " [ERROR]"
-			}
-			a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("  ↳%s %s\n", mark, oneLine(snip))))
+			a.chatBuf.WriteString(renderToolResult(ev.ToolResult) + "\n\n")
 			a.refreshChat()
 		}
 	case agent.EvMasterTurnDone:
@@ -475,26 +469,19 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentToolCall:
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
-			b.WriteString(fmt.Sprintf("\n• tool: %s(%s)\n", ev.ToolCall.Name, compactArgs(ev.ToolCall.Arguments)))
+			b.WriteString("\n" + renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentToolDone:
-		// Always log to the sub-agent detail pane, and surface tool errors
-		// to the master chat so they're not silently buried.
 		if ev.ToolResult != nil {
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
-				snip := ev.ToolResult.Content
-				if len(snip) > 200 {
-					snip = snip[:200] + "…"
-				}
-				mark := ""
-				if ev.ToolResult.IsError {
-					mark = " [ERROR]"
-				}
-				b.WriteString(fmt.Sprintf("  ↳%s %s\n", mark, oneLine(snip)))
+				b.WriteString(renderToolResult(ev.ToolResult) + "\n")
 			}
+			// Tool errors also bubble up to the master chat — easy to miss
+			// in the sub-agent pane otherwise.
 			if ev.ToolResult.IsError {
-				a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s tool error] %s\n", ev.SubagentID, oneLine(ev.ToolResult.Content))))
+				a.chatBuf.WriteString(toolErrStyle.Render(fmt.Sprintf("[%s tool error] ", ev.SubagentID)) +
+					toolErrStyle.Render(compactSnippetTUI(ev.ToolResult.Content, 160)) + "\n")
 			}
 		}
 		a.refreshChat()
@@ -583,16 +570,21 @@ func (a *App) ensureGlamour() {
 		}
 	}
 
+	// Force TrueColor profile. termenv's auto-detection inside Bubble Tea's
+	// alt-screen sometimes returns Ascii (no escapes), which produces
+	// unstyled markdown — which is exactly the symptom users report.
 	r, err := glamour.NewTermRenderer(
 		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(w),
 		glamour.WithEmoji(),
+		glamour.WithColorProfile(termenv.TrueColor),
 	)
 	if err != nil {
 		// Fall back to auto in case the requested style is unknown.
 		r, err = glamour.NewTermRenderer(
 			glamour.WithAutoStyle(),
 			glamour.WithWordWrap(w),
+			glamour.WithColorProfile(termenv.TrueColor),
 		)
 		if err != nil {
 			return
@@ -704,14 +696,6 @@ func renderUsage(snap llm.TrackerSnapshot) string {
 	}
 	return fmt.Sprintf("tokens in=%d out=%d cache=%d (%.0f%% hit) created=%d",
 		t.InputTokens, t.OutputTokens, t.CacheReadTokens, cacheRate, t.CacheCreationTokens)
-}
-
-func compactArgs(b []byte) string {
-	s := string(b)
-	if len(s) > 80 {
-		return s[:80] + "…"
-	}
-	return s
 }
 
 func oneLine(s string) string {
