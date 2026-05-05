@@ -31,6 +31,12 @@ type Master struct {
 	manager  *Manager
 	maxTurns int
 
+	// leadAdapter / leadModel are an optional separate adapter used for
+	// the FIRST iteration of each takeTurns call (planning / integration).
+	// When unset, every iteration uses adapter / model. See SetLead.
+	leadAdapter llm.Adapter
+	leadModel   string
+
 	skillCatalog    string // optional: appended to the cached system prompt
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
@@ -112,9 +118,32 @@ func (m *Master) UpdateAdapter(adapter llm.Adapter, model string) {
 	m.mu.Unlock()
 }
 
-func (m *Master) currentAdapter() (llm.Adapter, string) {
+// SetLead installs an optional separate adapter for the FIRST iteration
+// of each takeTurns call (planning / integration). Subsequent
+// iterations within the same takeTurns invocation use the regular
+// (worker) adapter set via UpdateAdapter / NewMaster. Pass nil + "" to
+// disable lead routing — every iteration then uses the worker adapter.
+//
+// This is the lead/worker pattern (Goose's GOOSE_LEAD_MODEL): use the
+// expensive model for the plan, the cheap one for the tool-execution
+// turns that follow. Saves ~50% on tokens at equivalent quality on
+// most workloads.
+func (m *Master) SetLead(adapter llm.Adapter, model string) {
+	m.mu.Lock()
+	m.leadAdapter = adapter
+	m.leadModel = model
+	m.mu.Unlock()
+}
+
+// adapterForIter returns the adapter+model to use on the given
+// iteration of takeTurns. Iteration 0 → lead (if set); iteration 1+
+// → worker.
+func (m *Master) adapterForIter(iter int) (llm.Adapter, string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
+	if iter == 0 && m.leadAdapter != nil {
+		return m.leadAdapter, m.leadModel
+	}
 	return m.adapter, m.model
 }
 
@@ -283,7 +312,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
 			return
 		}
-		adapter, model := m.currentAdapter()
+		adapter, model := m.adapterForIter(turn)
 		req := llm.Request{
 			Model:    model,
 			System:   m.systemPrompt(),

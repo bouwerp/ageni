@@ -24,6 +24,17 @@ type Config struct {
 	Master   RoleConfig
 	Subagent RoleConfig
 
+	// MasterLead is an optional separate role used for the FIRST master
+	// turn after each user message ("planning"). When set, the master
+	// uses MasterLead for that initial turn and falls back to Master
+	// for subsequent execution turns. This is the lead/worker pattern
+	// (Goose's GOOSE_LEAD_MODEL): pay opus for the plan, claude-haiku
+	// or gpt-mini for the tool execution that follows. Set
+	// MASTER_LEAD_PROVIDER to enable; if unset, every master turn
+	// uses Master.
+	MasterLead       RoleConfig
+	MasterLeadActive bool
+
 	MaxSubagents int
 	// SubagentBudget is the default cap on tool calls per sub-agent when
 	// the master doesn't override it via spawn_subagent's
@@ -63,12 +74,23 @@ func Load() (*Config, error) {
 		return nil, fmt.Errorf("sub-agent: %w", err)
 	}
 
-	return &Config{
+	cfg := &Config{
 		Master:         master,
 		Subagent:       sub,
 		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
 		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 40),
-	}, nil
+	}
+
+	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.
+	// On any resolution error we silently disable lead routing and fall
+	// back to Master — a misconfigured lead must never refuse to launch.
+	if leadRaw := os.Getenv("MASTER_LEAD_PROVIDER"); leadRaw != "" {
+		if lead, err := resolveRole("MASTER_LEAD", leadRaw); err == nil {
+			cfg.MasterLead = lead
+			cfg.MasterLeadActive = true
+		}
+	}
+	return cfg, nil
 }
 
 // ErrNotConfigured indicates no provider has been chosen anywhere — caller

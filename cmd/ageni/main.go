@@ -150,6 +150,10 @@ func run() error {
 
 	masterAdapter := buildAdapter(cfg.Master)
 	subAdapter := buildAdapter(cfg.Subagent)
+	var masterLeadAdapter llm.Adapter
+	if cfg.MasterLeadActive {
+		masterLeadAdapter = buildAdapter(cfg.MasterLead)
+	}
 
 	// Tier factory. v1: opus → master adapter, others → sub-agent adapter.
 	// (Per-tier model overrides land in v2.)
@@ -264,6 +268,12 @@ func run() error {
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
+	if masterLeadAdapter != nil {
+		master.SetLead(masterLeadAdapter, cfg.MasterLead.Model)
+		fmt.Printf("Master lead model: %s/%s (worker: %s/%s)\n",
+			cfg.MasterLead.Provider.Name, cfg.MasterLead.Model,
+			cfg.Master.Provider.Name, cfg.Master.Model)
+	}
 	master.SetCorrectionsPath(sess.Path("corrections.jsonl"))
 	if skillReg != nil {
 		catalog := skillReg.Catalog()
@@ -370,6 +380,11 @@ func run() error {
 			}
 		}
 		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
+		if newCfg.MasterLeadActive {
+			master.SetLead(buildAdapter(newCfg.MasterLead), newCfg.MasterLead.Model)
+		} else {
+			master.SetLead(nil, "")
+		}
 		manager.UpdateFactory(newFactory)
 		manager.SetDefaultBudget(newCfg.SubagentBudget)
 		return nil
