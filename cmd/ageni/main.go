@@ -113,6 +113,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags (when starting the TUI):")
 	fmt.Fprintln(w, "  --session <id>   resume an existing session instead of starting a new one")
+	fmt.Fprintln(w, "  --new            skip the session picker and start fresh")
 }
 
 func run() error {
@@ -379,13 +380,16 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 }
 
 // openOrCreateSession parses os.Args for "--session <id>" / "--session=<id>"
-// and resumes that session if found; otherwise creates a fresh one. The
-// flag is removed from os.Args so other parsers don't see it. The second
-// return value is true when an existing session was resumed (so the
-// caller can replay history into the master + TUI).
+// and resumes that session if found. With no session flag, the user is
+// shown an interactive picker listing recent sessions; --new bypasses
+// the picker and starts fresh. The flags are removed from os.Args so
+// other parsers don't see them. The second return value is true when
+// an existing session was resumed (so the caller can replay history
+// into the master + TUI).
 func openOrCreateSession() (*session.Session, bool, error) {
 	args := os.Args[1:]
 	var resumeID string
+	forceNew := false
 	cleaned := make([]string, 0, len(args))
 	for i := 0; i < len(args); i++ {
 		switch {
@@ -396,11 +400,23 @@ func openOrCreateSession() (*session.Session, bool, error) {
 			}
 		case strings.HasPrefix(args[i], "--session="):
 			resumeID = strings.TrimPrefix(args[i], "--session=")
+		case args[i] == "--new":
+			forceNew = true
 		default:
 			cleaned = append(cleaned, args[i])
 		}
 	}
 	os.Args = append(os.Args[:1], cleaned...)
+
+	// No explicit choice and no opt-out → show the picker. Returns "" when
+	// the user picks "new session" or aborts (Esc).
+	if resumeID == "" && !forceNew {
+		picked, err := session.Pick()
+		if err != nil {
+			return nil, false, err
+		}
+		resumeID = picked
+	}
 
 	if resumeID == "" {
 		s, err := session.New(detectRepoRoot())
