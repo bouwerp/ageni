@@ -234,6 +234,15 @@ func run() error {
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 	manager.SetDefaultBudget(cfg.SubagentBudget)
 
+	// find_in_codebase is available to sub-agents as well as the master.
+	// The master's prompt promotes it heavily, that vocabulary leaks into
+	// spawn_subagent contexts, and workers were hallucinating the call —
+	// producing "unknown tool find_in_codebase". Recursion is bounded by
+	// each worker's tool-call budget and the manager's max-concurrent cap;
+	// the Librarian sub-agent itself can't recurse because its own
+	// AllowedTools whitelist (in find_tool.go) excludes find_in_codebase.
+	registry.Register(agent.FindInCodebase{M: manager, Bus: bus})
+
 	masterReg := tools.NewRegistry()
 	registerBase(masterReg, todo)
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
