@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -14,44 +15,48 @@ import (
 	"github.com/bouwerp/ageni/internal/llm"
 )
 
-// settingsState holds the in-progress edit values bound to the form fields.
-// All fields are flat — the form renders them as a single page with Tab
-// navigation, not a multi-step wizard.
+// settingsState holds the in-progress edit values bound to the form.
+// The form is a single huh.Group → all fields render at once and Tab
+// navigates between them. Provider configuration (which providers are
+// enabled, what their API keys are) is handled separately from role
+// selection (master / sub-agent / lead use which provider+model).
+//
+// keyPtrs[providerName] is a stable address bound to a huh.NewInput,
+// so the form can edit each provider's key independently. We can't put
+// the keys in a map field of the struct because huh needs *string
+// pointers that don't move.
 type settingsState struct {
 	envPath string
 
+	// enabled is the multi-select result — provider names the user has
+	// ticked. Drives the option lists for role selection + fallbacks.
+	enabled []string
+
+	// keyPtrs holds per-provider API key inputs. Pre-populated from
+	// the current env file; blank values are skipped on save.
+	keyPtrs map[string]*string
+
 	masterProvider string
 	masterModel    string
-	masterKey      string
+	subProvider    string
+	subModel       string
+	leadProvider   string
+	leadModel      string
 
-	subProvider string
-	subModel    string
-	subKey      string
-
-	// Optional lead/worker split: lead model used on the FIRST master turn
-	// after each user message, regular master model on follow-up
-	// execution turns. leadProvider == "" disables the split.
-	leadProvider string
-	leadModel    string
-	leadKey      string
-
-	// Fallback chains: comma-separated "<provider>" or "<provider>/<model>"
-	// entries. API keys are pulled from the standard provider env var.
-	masterFallbacks string
-	subFallbacks    string
+	masterFallbacks []string // provider names; multi-select
+	subFallbacks    []string // provider names; multi-select
 
 	maxSubagents   string
 	subagentBudget string
+
+	// verifyResults is populated by save() with one entry per enabled
+	// provider showing the outcome of a quick auth probe. Surfaced to
+	// the user as a flash message after save.
+	verifyResults []string
 }
 
-// leadDisabled is the sentinel value for "(no lead model)". Stored in the
-// state as the empty string so save() omits MASTER_LEAD_PROVIDER entirely.
 const leadDisabled = ""
 
-// newSettingsForm builds the settings form pre-filled with the current
-// ~/.ageni/.env contents. Single huh.Group → every field is visible
-// simultaneously and Tab navigates between them. Returns the state by
-// reference; huh mutates it in place as the user edits.
 func newSettingsForm() (*huh.Form, *settingsState, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
@@ -61,192 +66,258 @@ func newSettingsForm() (*huh.Form, *settingsState, error) {
 
 	st := &settingsState{
 		envPath:         envPath,
+		keyPtrs:         make(map[string]*string),
 		masterProvider:  orDefault(existing["MASTER_PROVIDER"], "anthropic"),
 		masterModel:     existing["MASTER_MODEL"],
 		subProvider:     orDefault(existing["SUBAGENT_PROVIDER"], "anthropic"),
 		subModel:        existing["SUBAGENT_MODEL"],
 		leadProvider:    existing["MASTER_LEAD_PROVIDER"],
 		leadModel:       existing["MASTER_LEAD_MODEL"],
-		masterFallbacks: existing["MASTER_FALLBACKS"],
-		subFallbacks:    existing["SUBAGENT_FALLBACKS"],
+		masterFallbacks: parseFallbackProviders(existing["MASTER_FALLBACKS"]),
+		subFallbacks:    parseFallbackProviders(existing["SUBAGENT_FALLBACKS"]),
 		maxSubagents:    orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
 	}
 
-	provOpts := providerSelectOptions(false)
-	leadOpts := providerSelectOptions(true) // includes a "(disabled)" option
+	// Pre-populate keyPtrs and the enabled list. A provider counts as
+	// enabled if it has a key in the env (or if it's a local provider
+	// that doesn't need one).
+	for _, p := range llm.AllProviders() {
+		key := ""
+		if p.APIKeyEnv != "" {
+			key = existing[p.APIKeyEnv]
+		}
+		k := key
+		st.keyPtrs[p.Name] = &k
+		if !p.NeedsKey || key != "" {
+			st.enabled = append(st.enabled, p.Name)
+		}
+	}
 
-	form := huh.NewForm(
-		huh.NewGroup(
-			// Master role
-			huh.NewNote().Title("Master agent").Description("The agent you talk to. Best model you can afford."),
-			huh.NewSelect[string]().
-				Title("Provider").
-				Options(provOpts...).
-				Value(&st.masterProvider).
-				Filtering(true).
-				Height(8),
-			huh.NewSelect[string]().
-				Title("Model").
-				OptionsFunc(func() []huh.Option[string] {
-					return modelOptionsFor(st.masterProvider, st.masterModel)
-				}, &st.masterProvider).
-				Value(&st.masterModel).
-				Filtering(true).
-				Height(8),
-			huh.NewInput().
-				Title("API key (blank = keep existing)").
-				EchoMode(huh.EchoModePassword).
-				Value(&st.masterKey),
+	// Build the form. A single Group renders all fields at once.
+	fields := []huh.Field{
+		// Section 1: provider configuration
+		huh.NewNote().
+			Title("1. Providers").
+			Description("Tick (space) the providers you want to use. Keys are pulled from each provider's standard env var (ANTHROPIC_API_KEY, GROQ_API_KEY, …) on save and verified against the provider's /v1/models endpoint."),
+		huh.NewMultiSelect[string]().
+			Title("Enabled providers").
+			Options(allProviderOptions()...).
+			Value(&st.enabled).
+			Filterable(true).
+			Height(10),
+	}
 
-			// Sub-agent role
-			huh.NewNote().Title("Sub-agents").Description("Workers spawned by the master. Cheaper / free-tier is fine."),
-			huh.NewSelect[string]().
-				Title("Provider").
-				Options(provOpts...).
-				Value(&st.subProvider).
-				Filtering(true).
-				Height(8),
-			huh.NewSelect[string]().
-				Title("Model").
-				OptionsFunc(func() []huh.Option[string] {
-					return modelOptionsFor(st.subProvider, st.subModel)
-				}, &st.subProvider).
-				Value(&st.subModel).
-				Filtering(true).
-				Height(8),
-			huh.NewInput().
-				Title("API key (blank = keep existing)").
-				EchoMode(huh.EchoModePassword).
-				Value(&st.subKey),
+	// Per-provider key inputs — one per provider that needs a key.
+	// Always shown so the user can enter / replace any key in any
+	// order without first ticking the box.
+	for _, p := range llm.AllProviders() {
+		if !p.NeedsKey {
+			continue
+		}
+		title := p.Label + " API key"
+		if v := *st.keyPtrs[p.Name]; v != "" {
+			// Pre-existing key — show a hint, don't echo plaintext.
+			title += "  [set]"
+		}
+		fields = append(fields, huh.NewInput().
+			Title(title).
+			Description("blank = keep existing").
+			EchoMode(huh.EchoModePassword).
+			Value(st.keyPtrs[p.Name]),
+		)
+	}
 
-			// Optional lead model — first master turn after each user message
-			huh.NewNote().
-				Title("Lead model (optional)").
-				Description("If set, the FIRST master turn after each user message uses the lead model (planning); subsequent execution turns use the regular master model. Saves tokens at equivalent quality. Pick (disabled) to use the master model for every turn."),
-			huh.NewSelect[string]().
-				Title("Lead provider").
-				Options(leadOpts...).
-				Value(&st.leadProvider).
-				Filtering(true).
-				Height(8),
-			huh.NewSelect[string]().
-				Title("Lead model").
-				OptionsFunc(func() []huh.Option[string] {
-					if st.leadProvider == leadDisabled {
-						return nil
-					}
-					return modelOptionsFor(st.leadProvider, st.leadModel)
-				}, &st.leadProvider).
-				Value(&st.leadModel).
-				Filtering(true).
-				Height(8),
-			huh.NewInput().
-				Title("Lead API key (blank = keep existing or use provider default)").
-				EchoMode(huh.EchoModePassword).
-				Value(&st.leadKey),
+	// Section 2: role selection — only shows enabled providers
+	fields = append(fields,
+		huh.NewNote().
+			Title("2. Master agent").
+			Description("The agent you talk to. Best model you can afford. Picks from enabled providers."),
+		huh.NewSelect[string]().
+			Title("Master provider").
+			OptionsFunc(func() []huh.Option[string] {
+				return enabledProviderOptions(st.enabled)
+			}, &st.enabled).
+			Value(&st.masterProvider).
+			Filtering(true).
+			Height(8),
+		huh.NewSelect[string]().
+			Title("Master model").
+			OptionsFunc(func() []huh.Option[string] {
+				return modelOptionsFor(st.masterProvider, st.masterModel)
+			}, &st.masterProvider).
+			Value(&st.masterModel).
+			Filtering(true).
+			Height(10),
 
-			// Fallback chains
-			huh.NewNote().
-				Title("Fallback chains").
-				Description("On 429 / 5xx / timeout / network failure, ageni rolls over to the next entry. Comma-separated 'provider' or 'provider/model' (e.g. 'anthropic/claude-haiku-4-5-20251001,groq,openrouter'). API keys are pulled from each provider's standard env var."),
-			huh.NewInput().
-				Title("Master fallbacks").
-				Value(&st.masterFallbacks).
-				Validate(validateFallbackSpec),
-			huh.NewInput().
-				Title("Sub-agent fallbacks").
-				Value(&st.subFallbacks).
-				Validate(validateFallbackSpec),
+		huh.NewNote().
+			Title("3. Sub-agents").
+			Description("Workers spawned by the master. Cheaper / free-tier is fine."),
+		huh.NewSelect[string]().
+			Title("Sub-agent provider").
+			OptionsFunc(func() []huh.Option[string] {
+				return enabledProviderOptions(st.enabled)
+			}, &st.enabled).
+			Value(&st.subProvider).
+			Filtering(true).
+			Height(8),
+		huh.NewSelect[string]().
+			Title("Sub-agent model").
+			OptionsFunc(func() []huh.Option[string] {
+				return modelOptionsFor(st.subProvider, st.subModel)
+			}, &st.subProvider).
+			Value(&st.subModel).
+			Filtering(true).
+			Height(10),
 
-			// Limits
-			huh.NewNote().
-				Title("Limits").
-				Description("Concurrency caps parallel workers; budget caps tool calls per worker."),
-			huh.NewInput().
-				Title("Max concurrent sub-agents").
-				Description("Lower this on rate-limited free tiers.").
-				Value(&st.maxSubagents).
-				Validate(positiveInt),
-			huh.NewInput().
-				Title("Default tool-call budget per sub-agent").
-				Description("Soft cap. The master can override per-spawn.").
-				Value(&st.subagentBudget).
-				Validate(positiveInt),
-		),
-	).WithShowHelp(true).WithShowErrors(true)
+		huh.NewNote().
+			Title("4. Lead model (optional)").
+			Description("Used on the FIRST master turn after each user message (planning); subsequent execution turns use the regular master model. Saves tokens at equivalent quality. Pick (disabled) to use the master model for every turn."),
+		huh.NewSelect[string]().
+			Title("Lead provider").
+			OptionsFunc(func() []huh.Option[string] {
+				opts := enabledProviderOptions(st.enabled)
+				return append([]huh.Option[string]{huh.NewOption("(disabled — every turn uses master model)", leadDisabled)}, opts...)
+			}, &st.enabled).
+			Value(&st.leadProvider).
+			Filtering(true).
+			Height(8),
+		huh.NewSelect[string]().
+			Title("Lead model").
+			OptionsFunc(func() []huh.Option[string] {
+				if st.leadProvider == leadDisabled {
+					return nil
+				}
+				return modelOptionsFor(st.leadProvider, st.leadModel)
+			}, &st.leadProvider).
+			Value(&st.leadModel).
+			Filtering(true).
+			Height(10),
 
+		huh.NewNote().
+			Title("5. Fallback chains").
+			Description("On 429 / 5xx / timeout / network failure, ageni rolls over in order. Tick (space) the providers to use as fallbacks for each role. Each fallback uses the provider's default model."),
+		huh.NewMultiSelect[string]().
+			Title("Master fallback providers").
+			OptionsFunc(func() []huh.Option[string] {
+				return fallbackOptions(st.enabled, st.masterProvider)
+			}, &st.enabled).
+			Value(&st.masterFallbacks).
+			Filterable(true).
+			Height(8),
+		huh.NewMultiSelect[string]().
+			Title("Sub-agent fallback providers").
+			OptionsFunc(func() []huh.Option[string] {
+				return fallbackOptions(st.enabled, st.subProvider)
+			}, &st.enabled).
+			Value(&st.subFallbacks).
+			Filterable(true).
+			Height(8),
+
+		huh.NewNote().
+			Title("6. Limits").
+			Description("Concurrency caps parallel workers; budget caps tool calls per worker."),
+		huh.NewInput().
+			Title("Max concurrent sub-agents").
+			Description("Lower this on rate-limited free tiers.").
+			Value(&st.maxSubagents).
+			Validate(positiveInt),
+		huh.NewInput().
+			Title("Default tool-call budget per sub-agent").
+			Description("Soft cap. The master can override per-spawn.").
+			Value(&st.subagentBudget).
+			Validate(positiveInt),
+	)
+
+	form := huh.NewForm(huh.NewGroup(fields...)).
+		WithShowHelp(true).
+		WithShowErrors(true)
 	return form, st, nil
 }
 
-// save writes the edited values back to ~/.ageni/.env, preserving any keys
-// the form doesn't manage (e.g. unrelated env vars the user added by hand).
+// save writes the edited state back to ~/.ageni/.env, preserving
+// unrelated keys, and verifies each enabled provider's API key against
+// the provider's /v1/models endpoint. Verification results are stashed
+// on st.verifyResults for the caller to surface in the flash message.
 func (s *settingsState) save() error {
 	existing := config.LoadEnvFile(s.envPath)
 
-	masterSpec, _ := llm.LookupProvider(s.masterProvider)
-	subSpec, _ := llm.LookupProvider(s.subProvider)
-
-	model := s.masterModel
-	if model == "" {
-		model = masterSpec.DefaultModel
-	}
-	subModel := s.subModel
-	if subModel == "" {
-		subModel = subSpec.DefaultModel
-	}
-
 	out := config.MergeEnv(existing, map[string]string{
 		"MASTER_PROVIDER":       s.masterProvider,
-		"MASTER_MODEL":          model,
 		"SUBAGENT_PROVIDER":     s.subProvider,
-		"SUBAGENT_MODEL":        subModel,
 		"AGENI_MAX_SUBAGENTS":   s.maxSubagents,
 		"AGENI_SUBAGENT_BUDGET": s.subagentBudget,
-		"MASTER_FALLBACKS":      strings.TrimSpace(s.masterFallbacks),
-		"SUBAGENT_FALLBACKS":    strings.TrimSpace(s.subFallbacks),
+		"MASTER_FALLBACKS":      strings.Join(s.masterFallbacks, ","),
+		"SUBAGENT_FALLBACKS":    strings.Join(s.subFallbacks, ","),
 	})
 
-	// Lead model — empty leadProvider means "disabled". MergeEnv treats
-	// an empty value as "delete this key".
+	// Models default to provider defaults when unset.
+	masterSpec, _ := llm.LookupProvider(s.masterProvider)
+	subSpec, _ := llm.LookupProvider(s.subProvider)
+	out["MASTER_MODEL"] = orDefault(s.masterModel, masterSpec.DefaultModel)
+	out["SUBAGENT_MODEL"] = orDefault(s.subModel, subSpec.DefaultModel)
+
 	if s.leadProvider == leadDisabled {
 		out["MASTER_LEAD_PROVIDER"] = ""
 		out["MASTER_LEAD_MODEL"] = ""
 	} else {
 		leadSpec, _ := llm.LookupProvider(s.leadProvider)
-		leadModel := s.leadModel
-		if leadModel == "" {
-			leadModel = leadSpec.DefaultModel
-		}
 		out["MASTER_LEAD_PROVIDER"] = s.leadProvider
-		out["MASTER_LEAD_MODEL"] = leadModel
-		if s.leadKey != "" && leadSpec.APIKeyEnv != "" {
-			out["MASTER_LEAD_API_KEY"] = s.leadKey
+		out["MASTER_LEAD_MODEL"] = orDefault(s.leadModel, leadSpec.DefaultModel)
+	}
+
+	// API keys: write whatever the user typed, blank-skip otherwise.
+	for _, p := range llm.AllProviders() {
+		if !p.NeedsKey || p.APIKeyEnv == "" {
+			continue
+		}
+		key := *s.keyPtrs[p.Name]
+		if key == "" {
+			continue
+		}
+		out[p.APIKeyEnv] = key
+	}
+
+	if err := config.WriteEnvFile(s.envPath, out); err != nil {
+		return err
+	}
+
+	// Verify each enabled provider with a quick auth probe. Results are
+	// best-effort; verification errors don't fail the save (the user
+	// might be on a flaky network and we don't want to lose their edits).
+	s.verifyResults = nil
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+	for _, name := range s.enabled {
+		spec, ok := llm.LookupProvider(name)
+		if !ok {
+			continue
+		}
+		key := ""
+		if ptr := s.keyPtrs[name]; ptr != nil {
+			key = *ptr
+		}
+		if spec.NeedsKey && key == "" {
+			// Maybe the user has it in a separate env var; fall back to that.
+			if spec.APIKeyEnv != "" {
+				key = out[spec.APIKeyEnv]
+			}
+		}
+		if err := llm.VerifyKey(ctx, spec, key); err != nil {
+			s.verifyResults = append(s.verifyResults, fmt.Sprintf("%s: %s", spec.Label, err.Error()))
+		} else {
+			s.verifyResults = append(s.verifyResults, fmt.Sprintf("%s: ok", spec.Label))
 		}
 	}
-
-	// Only update key env vars when the user typed a new value (blank means
-	// "keep existing").
-	if s.masterKey != "" && masterSpec.APIKeyEnv != "" {
-		out[masterSpec.APIKeyEnv] = s.masterKey
-	}
-	if s.subKey != "" && subSpec.APIKeyEnv != "" {
-		out[subSpec.APIKeyEnv] = s.subKey
-	}
-
-	return config.WriteEnvFile(s.envPath, out)
+	return nil
 }
 
-// providerSelectOptions returns the standard provider list for huh
-// Select fields. When includeDisabled is true, prepends a "(disabled —
-// use master model)" entry whose value is the empty string — used by
-// the optional lead-model picker.
-func providerSelectOptions(includeDisabled bool) []huh.Option[string] {
+// allProviderOptions builds the multi-select options for "enabled
+// providers". Each label includes the free/paid/local tag and a short
+// description.
+func allProviderOptions() []huh.Option[string] {
 	specs := llm.AllProviders()
-	opts := make([]huh.Option[string], 0, len(specs)+1)
-	if includeDisabled {
-		opts = append(opts, huh.NewOption("(disabled — use master model for every turn)", leadDisabled))
-	}
+	opts := make([]huh.Option[string], 0, len(specs))
 	for _, p := range specs {
 		tag := "paid"
 		if p.Free {
@@ -261,16 +332,59 @@ func providerSelectOptions(includeDisabled bool) []huh.Option[string] {
 	return opts
 }
 
-// modelOptionsFor returns Select options for a provider, with the
-// currently-configured value (if any) pinned at the top so users with custom
-// models still see them. For OpenAI-compatible providers we also fetch the
-// live /v1/models list so the picker covers everything the provider offers,
-// not just our curated subset.
+// enabledProviderOptions filters the provider catalogue down to the
+// names in `enabled`. Used for role-selection dropdowns so the user
+// can't pick a provider they haven't enabled.
+func enabledProviderOptions(enabled []string) []huh.Option[string] {
+	if len(enabled) == 0 {
+		return nil
+	}
+	set := map[string]bool{}
+	for _, n := range enabled {
+		set[n] = true
+	}
+	specs := llm.AllProviders()
+	opts := make([]huh.Option[string], 0, len(specs))
+	for _, p := range specs {
+		if !set[p.Name] {
+			continue
+		}
+		tag := "paid"
+		if p.Free {
+			tag = "free"
+		}
+		if p.Local {
+			tag = "local"
+		}
+		opts = append(opts, huh.NewOption(fmt.Sprintf("%s [%s]", p.Label, tag), p.Name))
+	}
+	return opts
+}
+
+// fallbackOptions returns enabled providers excluding `primary` (you
+// can't fall back to yourself).
+func fallbackOptions(enabled []string, primary string) []huh.Option[string] {
+	all := enabledProviderOptions(enabled)
+	out := make([]huh.Option[string], 0, len(all))
+	for _, o := range all {
+		if o.Value == primary {
+			continue
+		}
+		out = append(out, o)
+	}
+	return out
+}
+
+// modelOptionsFor returns Select options for a provider's models, with
+// the currently-configured value pinned at the top so users with
+// custom IDs still see them. Each label is enriched with a 0-100
+// blended ranking score (when known) and price-per-1M-tokens (when
+// known), so the picker is informative at a glance.
 func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
 		if currentValue != "" {
-			return []huh.Option[string]{huh.NewOption("(current) "+currentValue, currentValue)}
+			return []huh.Option[string]{huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue)}
 		}
 		return nil
 	}
@@ -285,10 +399,18 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 		cancel()
 	}
 
+	// Sort by ranking desc (unranked at the bottom), so the strongest
+	// model bubbles to the top.
+	sort.SliceStable(models, func(i, j int) bool {
+		ri, _ := llm.RankingFor(models[i].ID)
+		rj, _ := llm.RankingFor(models[j].ID)
+		return ri.Score > rj.Score
+	})
+
 	opts := make([]huh.Option[string], 0, len(models)+1)
 	seen := map[string]bool{}
 	if currentValue != "" {
-		opts = append(opts, huh.NewOption("(current) "+currentValue, currentValue))
+		opts = append(opts, huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue))
 		seen[currentValue] = true
 	}
 	for _, m := range models {
@@ -296,13 +418,62 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 			continue
 		}
 		seen[m.ID] = true
-		label := m.Label
-		if !strings.Contains(label, m.ID) {
-			label = m.Label + " — " + m.ID
-		}
-		opts = append(opts, huh.NewOption(label, m.ID))
+		opts = append(opts, huh.NewOption(decorateModel(m.Label, m.ID), m.ID))
 	}
 	return opts
+}
+
+// decorateModel suffixes a model option label with its blended
+// ranking score and per-1M price so users can pick a tier-appropriate
+// model at a glance. Returns the original label unchanged when no
+// ranking / pricing data exists, so the picker stays clean for less
+// well-known models.
+func decorateModel(label, id string) string {
+	parts := []string{label}
+	if !strings.Contains(label, id) {
+		parts[0] = label + " — " + id
+	}
+	if r, ok := llm.RankingFor(id); ok {
+		parts = append(parts, fmt.Sprintf("rank %d/100", r.Score))
+	}
+	pr := llm.PricingFor(id)
+	switch {
+	case strings.HasSuffix(strings.ToLower(id), ":free"):
+		parts = append(parts, "free")
+	case pr.Known && pr.InputPer1M == 0 && pr.OutputPer1M == 0:
+		parts = append(parts, "free")
+	case pr.Known && pr.InputPer1M > 0:
+		parts = append(parts, fmt.Sprintf("$%.2f in / $%.2f out per 1M", pr.InputPer1M, pr.OutputPer1M))
+	}
+	return strings.Join(parts, "  ·  ")
+}
+
+// parseFallbackProviders extracts the provider-name prefix of each
+// comma-separated entry. Used to round-trip the fallback chain through
+// huh.MultiSelect, which works on []string of provider names —
+// per-fallback model overrides are deferred to a later release.
+func parseFallbackProviders(spec string) []string {
+	if strings.TrimSpace(spec) == "" {
+		return nil
+	}
+	out := []string{}
+	seen := map[string]bool{}
+	for _, raw := range strings.Split(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		name := entry
+		if idx := strings.IndexByte(entry, '/'); idx > 0 {
+			name = entry[:idx]
+		}
+		if seen[name] {
+			continue
+		}
+		seen[name] = true
+		out = append(out, name)
+	}
+	return out
 }
 
 func shouldFetchLive(name string) bool {
@@ -317,31 +488,6 @@ func positiveInt(s string) error {
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 1 {
 		return fmt.Errorf("must be a positive integer")
-	}
-	return nil
-}
-
-// validateFallbackSpec checks that each entry in a comma-separated
-// fallback string names a known provider. Empty input is fine. Helps
-// the user catch typos before save without any of the network /
-// authentication checks that real fallback resolution does.
-func validateFallbackSpec(s string) error {
-	s = strings.TrimSpace(s)
-	if s == "" {
-		return nil
-	}
-	for _, raw := range strings.Split(s, ",") {
-		entry := strings.TrimSpace(raw)
-		if entry == "" {
-			continue
-		}
-		provName := entry
-		if idx := strings.IndexByte(entry, '/'); idx > 0 {
-			provName = entry[:idx]
-		}
-		if _, ok := llm.LookupProvider(provName); !ok {
-			return fmt.Errorf("unknown provider %q in fallback chain", provName)
-		}
 	}
 	return nil
 }

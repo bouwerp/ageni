@@ -568,7 +568,29 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if err := a.reload(); err != nil {
 				a.flashMessage = "settings saved, reload failed: " + err.Error() + " (running adapters unchanged)"
 			} else {
-				a.flashMessage = "settings applied — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel + ", sub-agent: " + a.settingsState.subProvider + "/" + a.settingsState.subModel
+				msg := "settings applied — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel + ", sub-agent: " + a.settingsState.subProvider + "/" + a.settingsState.subModel
+				if vrs := a.settingsState.verifyResults; len(vrs) > 0 {
+					// Surface verification outcomes inline so the user knows
+					// which keys auth'd. Failures go in the flash; the chat
+					// pane gets a longer breakdown.
+					failed := 0
+					for _, vr := range vrs {
+						if !strings.HasSuffix(vr, ": ok") {
+							failed++
+						}
+					}
+					if failed > 0 {
+						msg += fmt.Sprintf("  (%d/%d providers verified)", len(vrs)-failed, len(vrs))
+					} else {
+						msg += fmt.Sprintf("  (all %d providers verified ✓)", len(vrs))
+					}
+					a.chatBuf.WriteString(mutedStyle.Render("[provider verification]") + "\n")
+					for _, vr := range vrs {
+						a.chatBuf.WriteString("  " + vr + "\n")
+					}
+					a.chatBuf.WriteString("\n")
+				}
+				a.flashMessage = msg
 			}
 		} else {
 			a.flashMessage = "settings saved — restart `ageni` to apply"
