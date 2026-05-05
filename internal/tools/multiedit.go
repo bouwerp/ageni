@@ -89,10 +89,10 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 		applied++
 	}
 	abs, _ := filepath.Abs(p.Path)
-	m.Tracker.Snapshot(abs)
+	step := m.Tracker.BeginMutation(abs)
 	if err := os.WriteFile(p.Path, []byte(body), 0o644); err != nil { //nolint:gosec
 		return "", err
 	}
-	m.Tracker.Record(Change{Path: abs, Kind: ChangeEdited})
+	m.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 	return fmt.Sprintf("applied %d edits to %s", applied, p.Path), nil
 }

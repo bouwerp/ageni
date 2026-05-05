@@ -36,7 +36,8 @@ func (md MakeDir) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	if !existed {
-		md.Tracker.Record(Change{Path: abs, Kind: ChangeMkdir})
+		step := md.Tracker.BeginMutation(abs)
+		md.Tracker.Record(Change{Path: abs, Kind: ChangeMkdir, Step: step})
 	}
 	return fmt.Sprintf("created %s", p.Path), nil
 }
@@ -85,14 +86,14 @@ func (mv MoveFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	}
 	srcAbs, _ := filepath.Abs(p.Src)
 	dstAbs, _ := filepath.Abs(p.Dst)
-	mv.Tracker.Snapshot(srcAbs)
+	step := mv.Tracker.BeginMutation(srcAbs)
 	if dir := filepath.Dir(p.Dst); dir != "" {
 		_ = os.MkdirAll(dir, 0o755) //nolint:gosec
 	}
 	if err := os.Rename(p.Src, p.Dst); err != nil {
 		return "", err
 	}
-	mv.Tracker.Record(Change{Path: dstAbs, Kind: ChangeMoved, From: srcAbs})
+	mv.Tracker.Record(Change{Path: dstAbs, Kind: ChangeMoved, From: srcAbs, Step: step})
 	return fmt.Sprintf("moved %s -> %s", p.Src, p.Dst), nil
 }
 
@@ -133,7 +134,7 @@ func (d DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, err
 		return "", fmt.Errorf("%s is a directory; pass recursive=true to delete it and its contents", p.Path)
 	}
 	abs, _ := filepath.Abs(p.Path)
-	d.Tracker.Snapshot(abs)
+	step := d.Tracker.BeginMutation(abs)
 	if p.Recursive {
 		if err := os.RemoveAll(p.Path); err != nil {
 			return "", err
@@ -143,6 +144,6 @@ func (d DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, err
 			return "", err
 		}
 	}
-	d.Tracker.Record(Change{Path: abs, Kind: ChangeDeleted})
+	d.Tracker.Record(Change{Path: abs, Kind: ChangeDeleted, Step: step})
 	return fmt.Sprintf("deleted %s", p.Path), nil
 }

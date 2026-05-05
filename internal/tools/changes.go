@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -30,6 +31,9 @@ type Change struct {
 	At   time.Time  `json:"at"`
 	// From is set on Moved entries — the path the file was renamed away from.
 	From string `json:"from,omitempty"`
+	// Step is the per-session monotonic counter of mutations. Zero on
+	// entries written before step tracking landed (v0.22.0–v0.28.0).
+	Step int `json:"step,omitempty"`
 }
 
 // ChangeTracker records every file mutation a session performs and snapshots
@@ -44,27 +48,35 @@ type Change struct {
 //	snapshots/<sha>    pre-modification content of <abspath> (sha1 of the
 //	                   abspath gives a stable, collision-resistant filename)
 type ChangeTracker struct {
-	mu       sync.Mutex
-	metaPath string
-	snapDir  string
+	mu             sync.Mutex
+	metaPath       string
+	snapDir        string
+	checkpointsDir string
 
 	// seen tracks paths already snapshotted in this session so subsequent
 	// edits don't overwrite the baseline.
 	seen map[string]bool
 
-	items []Change
+	items    []Change
+	nextStep int
 }
 
 // NewChangeTracker opens (or initialises) a tracker rooted at metaPath /
 // snapDir. Existing log entries are loaded so resumed sessions keep their
 // snapshots and the user sees an unbroken change history.
 func NewChangeTracker(metaPath, snapDir string) *ChangeTracker {
+	// checkpointsDir is a sibling of snapDir under the session dir,
+	// holding per-step snapshots (separate from the v0.22 first-touch
+	// baseline snapshots in snapDir).
+	checkpoints := filepath.Join(filepath.Dir(snapDir), "checkpoints")
 	t := &ChangeTracker{
-		metaPath: metaPath,
-		snapDir:  snapDir,
-		seen:     make(map[string]bool),
+		metaPath:       metaPath,
+		snapDir:        snapDir,
+		checkpointsDir: checkpoints,
+		seen:           make(map[string]bool),
 	}
-	_ = os.MkdirAll(snapDir, 0o755) //nolint:gosec
+	_ = os.MkdirAll(snapDir, 0o755)     //nolint:gosec
+	_ = os.MkdirAll(checkpoints, 0o755) //nolint:gosec
 	t.load()
 	return t
 }
@@ -88,6 +100,9 @@ func (t *ChangeTracker) load() {
 		t.seen[c.Path] = true
 		if c.From != "" {
 			t.seen[c.From] = true
+		}
+		if c.Step > t.nextStep {
+			t.nextStep = c.Step
 		}
 	}
 }
@@ -123,6 +138,159 @@ func (t *ChangeTracker) SnapshotPath(absPath string) string {
 		return ""
 	}
 	return t.snapPath(absPath)
+}
+
+// BeginMutation captures the current state of absPath into a fresh
+// per-step checkpoint and returns the step number. Also captures the
+// first-touch baseline if absPath hasn't been seen yet (so diffs against
+// the original session state still work). Tools should call this before
+// mutating, then pass the returned step into Change.Step on Record.
+//
+// If absPath doesn't exist (we're about to create it), the per-step
+// checkpoint is omitted — Rewind uses the change kind to decide whether
+// to delete a path or restore content.
+func (t *ChangeTracker) BeginMutation(absPath string) int {
+	if t == nil || absPath == "" {
+		return 0
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	t.nextStep++
+	step := t.nextStep
+
+	// Baseline (idempotent — first-touch only).
+	if !t.seen[absPath] {
+		t.seen[absPath] = true
+		dst := t.snapPathLocked(absPath)
+		if data, err := os.ReadFile(absPath); err == nil { //nolint:gosec
+			_ = os.WriteFile(dst, data, 0o644) //nolint:gosec
+		} else {
+			_ = os.WriteFile(dst, nil, 0o644) //nolint:gosec
+		}
+	}
+
+	// Per-step checkpoint of current content. Skip if file doesn't exist
+	// — Rewind will infer "didn't exist before" from the change kind.
+	stepDir := filepath.Join(t.checkpointsDir, fmt.Sprintf("step-%05d", step))
+	if data, err := os.ReadFile(absPath); err == nil { //nolint:gosec
+		_ = os.MkdirAll(stepDir, 0o755) //nolint:gosec
+		dst := filepath.Join(stepDir, hashPath(absPath))
+		_ = os.WriteFile(dst, data, 0o644) //nolint:gosec
+	}
+	return step
+}
+
+// snapPathLocked is snapPath without the lock — caller must hold
+// t.mu. Used by BeginMutation since it already locks once.
+func (t *ChangeTracker) snapPathLocked(absPath string) string {
+	return t.snapPath(absPath)
+}
+
+func hashPath(absPath string) string {
+	h := sha256.Sum256([]byte(absPath))
+	return hex.EncodeToString(h[:8])
+}
+
+// Rewind restores the workspace to the state BEFORE the given step. For
+// each path that was first mutated at step >= toStep, the path's
+// pre-mutation content is restored from the corresponding per-step
+// checkpoint. Paths that were CREATED at step >= toStep are deleted.
+//
+// Returns the list of paths actually touched, in stable order. Callers
+// should also truncate the conversation tail (and reset the master's
+// message buffer) — Rewind only handles the workspace.
+func (t *ChangeTracker) Rewind(toStep int) ([]string, error) {
+	if t == nil {
+		return nil, nil
+	}
+	t.mu.Lock()
+	items := make([]Change, len(t.items))
+	copy(items, t.items)
+	t.mu.Unlock()
+
+	// For each path, find its earliest change at step >= toStep. That
+	// step's per-step checkpoint holds the BEFORE-state.
+	earliest := map[string]Change{}
+	for _, c := range items {
+		if c.Step < toStep {
+			continue
+		}
+		if existing, ok := earliest[c.Path]; !ok || c.Step < existing.Step {
+			earliest[c.Path] = c
+		}
+		// Move source path also gets its pre-move state restored.
+		if c.From != "" {
+			if existing, ok := earliest[c.From]; !ok || c.Step < existing.Step {
+				earliest[c.From] = c
+			}
+		}
+	}
+
+	var touched []string
+	for path, c := range earliest {
+		switch c.Kind {
+		case ChangeCreated, ChangeMkdir:
+			// Path didn't exist before this step — remove.
+			_ = os.RemoveAll(path)
+		default:
+			// Restore from the per-step checkpoint.
+			snap := filepath.Join(t.checkpointsDir, fmt.Sprintf("step-%05d", c.Step), hashPath(path))
+			data, err := os.ReadFile(snap) //nolint:gosec
+			if err != nil {
+				continue // no checkpoint for this path at this step
+			}
+			if dir := filepath.Dir(path); dir != "" {
+				_ = os.MkdirAll(dir, 0o755) //nolint:gosec
+			}
+			if err := os.WriteFile(path, data, 0o644); err != nil { //nolint:gosec
+				continue
+			}
+		}
+		touched = append(touched, path)
+	}
+	sort.Strings(touched)
+	return touched, nil
+}
+
+// Checkpoints returns each step number with its associated changes,
+// oldest first. Used by `ageni sessions checkpoints` to show the user
+// what they can rewind to.
+func (t *ChangeTracker) Checkpoints() []CheckpointInfo {
+	if t == nil {
+		return nil
+	}
+	t.mu.Lock()
+	items := make([]Change, len(t.items))
+	copy(items, t.items)
+	t.mu.Unlock()
+
+	bySteps := map[int]*CheckpointInfo{}
+	var order []int
+	for _, c := range items {
+		if c.Step == 0 {
+			continue // pre-step entries (v0.22)
+		}
+		ci, ok := bySteps[c.Step]
+		if !ok {
+			ci = &CheckpointInfo{Step: c.Step, At: c.At}
+			bySteps[c.Step] = ci
+			order = append(order, c.Step)
+		}
+		ci.Changes = append(ci.Changes, c)
+	}
+	sort.Ints(order)
+	out := make([]CheckpointInfo, 0, len(order))
+	for _, s := range order {
+		out = append(out, *bySteps[s])
+	}
+	return out
+}
+
+// CheckpointInfo summarises one per-session checkpoint step.
+type CheckpointInfo struct {
+	Step    int
+	At      time.Time
+	Changes []Change
 }
 
 func (t *ChangeTracker) snapPath(absPath string) string {

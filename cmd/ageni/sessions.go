@@ -4,11 +4,13 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"text/tabwriter"
 	"time"
 
 	"github.com/bouwerp/ageni/internal/session"
+	"github.com/bouwerp/ageni/internal/tools"
 )
 
 // runSessions handles `ageni sessions <subcommand>`. Supported:
@@ -20,12 +22,14 @@ import (
 //	ageni sessions dump <id|prefix> [-o file]
 //	ageni sessions changes <id|prefix>
 //	ageni sessions diff <id|prefix> [path] [-o file]
+//	ageni sessions checkpoints <id|prefix>
+//	ageni sessions rewind <id|prefix> <step>
 //
 // `ageni --session <id>` is the actual resume entry point — sessions
 // resume just helps the user find the right ID and prints what to run.
 func runSessions(args []string) error {
 	if len(args) == 0 {
-		fmt.Fprintln(os.Stderr, "usage: ageni sessions <list|show|resume|rm|dump|changes|diff>")
+		fmt.Fprintln(os.Stderr, "usage: ageni sessions <list|show|resume|rm|dump|changes|diff|checkpoints|rewind>")
 		os.Exit(1)
 	}
 	switch args[0] {
@@ -61,9 +65,96 @@ func runSessions(args []string) error {
 			return fmt.Errorf("usage: ageni sessions diff <id|prefix> [path] [-o file]")
 		}
 		return sessionsDiff(args[1:])
+	case "checkpoints":
+		if len(args) < 2 {
+			return fmt.Errorf("usage: ageni sessions checkpoints <id|prefix>")
+		}
+		return sessionsCheckpoints(args[1])
+	case "rewind":
+		if len(args) < 3 {
+			return fmt.Errorf("usage: ageni sessions rewind <id|prefix> <step>")
+		}
+		return sessionsRewind(args[1], args[2])
 	default:
 		return fmt.Errorf("unknown sessions subcommand: %s", args[0])
 	}
+}
+
+// sessionsCheckpoints lists every per-step checkpoint with its changes.
+// Used to find the step number to rewind to.
+func sessionsCheckpoints(prefix string) error {
+	id, err := session.ResolveID(prefix)
+	if err != nil {
+		return err
+	}
+	s, err := session.Open(id)
+	if err != nil {
+		return err
+	}
+	tr := tools.NewChangeTracker(s.Path("changes.jsonl"), s.Path("snapshots"))
+	cps := tr.Checkpoints()
+	if len(cps) == 0 {
+		fmt.Println("(no checkpoints — session has no per-step records)")
+		return nil
+	}
+	cwd, _ := os.Getwd()
+	for _, cp := range cps {
+		fmt.Printf("step %d  %s\n", cp.Step, humanise(cp.At))
+		for _, c := range cp.Changes {
+			display := c.Path
+			if cwd != "" {
+				if rel, err := filepath.Rel(cwd, c.Path); err == nil && !strings.HasPrefix(rel, "..") {
+					display = rel
+				}
+			}
+			fmt.Printf("    %-8s %s\n", c.Kind, display)
+		}
+	}
+	fmt.Println("\nUse `ageni sessions rewind <id> <step>` to roll back the workspace to before that step.")
+	return nil
+}
+
+// sessionsRewind restores the workspace to the state before the given
+// step. The session log + master message buffer aren't rewound — only
+// the on-disk files. Forensic-only: future ageni run on the same
+// session will still see the prior conversation in log.jsonl.
+func sessionsRewind(prefix, stepStr string) error {
+	step, err := strconv.Atoi(stepStr)
+	if err != nil || step <= 0 {
+		return fmt.Errorf("invalid step %q (must be a positive integer)", stepStr)
+	}
+	id, err := session.ResolveID(prefix)
+	if err != nil {
+		return err
+	}
+	s, err := session.Open(id)
+	if err != nil {
+		return err
+	}
+	tr := tools.NewChangeTracker(s.Path("changes.jsonl"), s.Path("snapshots"))
+	touched, err := tr.Rewind(step)
+	if err != nil {
+		return err
+	}
+	if len(touched) == 0 {
+		fmt.Printf("Nothing to rewind: no changes recorded at step %d or later.\n", step)
+		return nil
+	}
+	fmt.Printf("Rewound to before step %d. Touched %d path(s):\n", step, len(touched))
+	cwd, _ := os.Getwd()
+	for _, p := range touched {
+		display := p
+		if cwd != "" {
+			if rel, err := filepath.Rel(cwd, p); err == nil && !strings.HasPrefix(rel, "..") {
+				display = rel
+			}
+		}
+		fmt.Println("  -", display)
+	}
+	fmt.Println("\nNote: the conversation log + master message buffer are NOT rewound.")
+	fmt.Println("If you resume the session, the master will see its prior history but the")
+	fmt.Println("workspace state below those edits is now gone.")
+	return nil
 }
 
 func sessionsList() error {

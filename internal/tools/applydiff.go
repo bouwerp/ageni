@@ -96,7 +96,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 		if _, err := os.Stat(abs); err == nil {
 			existed = true
 		}
-		a.Tracker.Snapshot(abs)
+		step := a.Tracker.BeginMutation(abs)
 		if dir := filepath.Dir(p.Path); dir != "" {
 			_ = os.MkdirAll(dir, 0o755)
 		}
@@ -107,7 +107,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 		if existed {
 			kind = ChangeEdited
 		}
-		a.Tracker.Record(Change{Path: abs, Kind: kind})
+		a.Tracker.Record(Change{Path: abs, Kind: kind, Step: step})
 		return fmt.Sprintf("wrote %d bytes to %s (whole)", len(p.Content), p.Path), nil
 
 	case "search_replace":
@@ -141,11 +141,11 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 			}
 			applied++
 		}
-		a.Tracker.Snapshot(abs)
+		step := a.Tracker.BeginMutation(abs)
 		if err := os.WriteFile(p.Path, []byte(text), 0o644); err != nil { //nolint:gosec
 			return "", err
 		}
-		a.Tracker.Record(Change{Path: abs, Kind: ChangeEdited})
+		a.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 		return fmt.Sprintf("applied %d block(s) to %s (search_replace)", applied, p.Path), nil
 
 	default:

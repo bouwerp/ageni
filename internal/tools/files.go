@@ -111,7 +111,7 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if _, err := os.Stat(abs); err == nil {
 		existed = true
 	}
-	w.Tracker.Snapshot(abs)
+	step := w.Tracker.BeginMutation(abs)
 	if dir := filepath.Dir(p.Path); dir != "" {
 		_ = os.MkdirAll(dir, 0o755)
 	}
@@ -122,7 +122,7 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if existed {
 		kind = ChangeEdited
 	}
-	w.Tracker.Record(Change{Path: abs, Kind: kind})
+	w.Tracker.Record(Change{Path: abs, Kind: kind, Step: step})
 	return fmt.Sprintf("wrote %d bytes to %s", len(p.Content), p.Path), nil
 }
 
@@ -164,12 +164,12 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", fmt.Errorf("old_string occurs %d times in %s; provide more context to make it unique", count, p.Path)
 	}
 	abs, _ := filepath.Abs(p.Path)
-	e.Tracker.Snapshot(abs)
+	step := e.Tracker.BeginMutation(abs)
 	updated := strings.Replace(body, p.OldString, p.NewString, 1)
 	if err := os.WriteFile(p.Path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
-	e.Tracker.Record(Change{Path: abs, Kind: ChangeEdited})
+	e.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 	return fmt.Sprintf("replaced 1 occurrence in %s", p.Path), nil
 }
 
