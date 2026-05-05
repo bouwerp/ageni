@@ -204,8 +204,9 @@ func run() error {
 	registry := tools.NewRegistry()
 	registerBase(registry, todo)
 
-	// Manager + master-only tools
-	manager := agent.NewManager(bus, registry, tracker, factory, cfg.MaxSubagents)
+	// Manager + master-only tools. Pass the app-wide ctx so sub-agents
+	// inherit a lifetime that outlives any individual master turn.
+	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 
 	masterReg := tools.NewRegistry()
 	registerBase(masterReg, todo)

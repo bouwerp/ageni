@@ -30,10 +30,19 @@ type Manager struct {
 	skillCatalog  string
 	maxConcurrent int
 	nextID        int
+
+	// rootCtx is the long-lived context sub-agent goroutines inherit. Must
+	// outlive any individual master-turn ctx — otherwise a sub-agent gets
+	// cancelled the moment the master's spawning turn returns.
+	rootCtx context.Context
 }
 
-func NewManager(bus *Bus, registry *tools.Registry, tracker *llm.Tracker, factory AdapterFactory, maxConcurrent int) *Manager {
+func NewManager(rootCtx context.Context, bus *Bus, registry *tools.Registry, tracker *llm.Tracker, factory AdapterFactory, maxConcurrent int) *Manager {
+	if rootCtx == nil {
+		rootCtx = context.Background()
+	}
 	return &Manager{
+		rootCtx:       rootCtx,
 		subs:          make(map[string]*Subagent),
 		bus:           bus,
 		tools:         registry,
@@ -83,9 +92,15 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog)
 	m.subs[id] = sub
+	rootCtx := m.rootCtx
 	m.mu.Unlock()
 
-	go sub.Run(ctx)
+	// Use the manager's long-lived root ctx, NOT the caller's. The caller is
+	// usually the master's per-turn ctx, which is cancelled the instant the
+	// master's turn returns — taking every freshly-spawned sub-agent down
+	// with it. Sub-agents must outlive the spawning turn.
+	_ = ctx
+	go sub.Run(rootCtx)
 	return id, nil
 }
 

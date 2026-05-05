@@ -118,7 +118,7 @@ func TestSpawnRequiresContract(t *testing.T) {
 	factory := func(tier string) (llm.Adapter, string) {
 		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m"
 	}
-	mgr := NewManager(bus, reg, tracker, factory, 4)
+	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
 
 	if _, err := mgr.Spawn(context.Background(), SubagentTask{}); err == nil {
 		t.Fatal("expected error for empty task, got nil")
@@ -152,7 +152,7 @@ func TestMasterCallsToolThenAnswers(t *testing.T) {
 	reg := tools.NewRegistry()
 	reg.Register(tools.ListDir{})
 	factory := func(tier string) (llm.Adapter, string) { return adapter, "m" }
-	mgr := NewManager(bus, reg, tracker, factory, 4)
+	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
 	master := NewMaster(adapter, "m", reg, bus, tracker, mgr)
 
 	inbox := make(chan Event, 4)
