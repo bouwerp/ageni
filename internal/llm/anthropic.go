@@ -36,7 +36,23 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, req Request) (<-chan Stre
 		return nil, err
 	}
 
-	stream := a.client.Messages.NewStreaming(ctx, params)
+	// Auto-compaction at 120k input tokens: when the conversation grows
+	// past this point Anthropic summarises older turns server-side and
+	// only the summary + recent turns are billed for the next request.
+	// The summary_prompt is tuned to preserve the load-bearing state for
+	// our master/sub-agent flow.
+	stream := a.client.Messages.NewStreaming(ctx, params,
+		option.WithJSONSet("context_management", map[string]any{
+			"edits": []map[string]any{{
+				"type": "compact_20260112",
+				"trigger": map[string]any{
+					"type":  "input_tokens",
+					"value": 120000,
+				},
+				"summary_prompt": "Preserve precisely: the user's original objective, the current todo list with statuses, every file path that has been modified or read, the last test/build outcome, sub-agent IDs and their final outputs, and any unresolved errors. Drop verbose reasoning and intermediate tool-call output that has already informed a later step.",
+			}},
+		}),
+	)
 	out := make(chan StreamEvent, 16)
 
 	go func() {

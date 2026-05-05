@@ -100,7 +100,6 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 				m.pendingEvs = append(m.pendingEvs, ev)
 				// If a sub-agent finished or errored, wake the master to react.
 				if ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError {
-					m.injectSubagentReminder()
 					m.takeTurns(ctx)
 				}
 			}
@@ -117,40 +116,63 @@ func isSubagentEvent(k EventKind) bool {
 	return false
 }
 
-// injectSubagentReminder folds pending sub-agent events into a single
-// user-role <system-reminder> so the master can react on its next turn.
-// The reminder is volatile (per-turn) so it doesn't pollute the cached prefix.
-func (m *Master) injectSubagentReminder() {
-	if len(m.pendingEvs) == 0 {
+// activeContextMarker tags the auto-generated tail block so we can find and
+// replace it on the next turn instead of accumulating duplicates in history.
+const activeContextMarker = "<active_context_block>"
+
+// refreshActiveContext drops any prior <active_context_block> from the tail
+// of the message list and appends a fresh one summarising current state.
+// This replaces the old "accumulating sub-agent reminders" pattern: instead
+// of letting reminders pile up across turns (each one a permanent token
+// cost), we maintain a single self-replacing block that's always current.
+//
+// pendingEvs are folded into a "since last turn" delta inside the block,
+// then cleared.
+func (m *Master) refreshActiveContext() {
+	// Strip any prior block from the tail.
+	for len(m.messages) > 0 {
+		last := m.messages[len(m.messages)-1]
+		if last.Role == llm.RoleUser && strings.HasPrefix(last.Text, activeContextMarker) {
+			m.messages = m.messages[:len(m.messages)-1]
+			continue
+		}
+		break
+	}
+
+	subs := m.manager.List()
+	if len(subs) == 0 && len(m.pendingEvs) == 0 {
 		return
 	}
+
 	var sb strings.Builder
-	sb.WriteString("<system-reminder>\nSub-agent activity since your last turn:\n")
-	for _, ev := range m.pendingEvs {
-		switch ev.Kind {
-		case EvSubagentSpawn:
-			sb.WriteString(fmt.Sprintf("- %s spawned (model=%s, task=%q)\n", ev.SubagentID, ev.SubagentModel, ev.SubagentTask))
-		case EvSubagentToolCall:
-			if ev.ToolCall != nil {
-				sb.WriteString(fmt.Sprintf("- %s called tool %s\n", ev.SubagentID, ev.ToolCall.Name))
-			}
-		case EvSubagentToolDone:
-			if ev.ToolResult != nil {
-				mark := ""
-				if ev.ToolResult.IsError {
-					mark = " [ERROR]"
-				}
-				sb.WriteString(fmt.Sprintf("- %s tool finished%s\n", ev.SubagentID, mark))
-			}
-		case EvSubagentDone:
-			sb.WriteString(fmt.Sprintf("- %s finished (use check_subagent to read final output)\n", ev.SubagentID))
-		case EvSubagentError:
-			sb.WriteString(fmt.Sprintf("- %s ERROR: %v\n", ev.SubagentID, ev.Err))
+	sb.WriteString(activeContextMarker)
+	sb.WriteString("\n<active_context>\n")
+
+	if len(subs) > 0 {
+		sb.WriteString("Sub-agents (current state):\n")
+		for _, s := range subs {
+			sb.WriteString(fmt.Sprintf("- %s [%s] %s\n", s.ID, s.Status(), s.Task.Objective))
 		}
 	}
-	sb.WriteString("Decide whether to inspect (check_subagent), correct (send_to_subagent), kill, or proceed.\n</system-reminder>")
+
+	if len(m.pendingEvs) > 0 {
+		sb.WriteString("\nNew events since your last turn:\n")
+		for _, ev := range m.pendingEvs {
+			switch ev.Kind {
+			case EvSubagentSpawn:
+				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
+			case EvSubagentDone:
+				sb.WriteString(fmt.Sprintf("- %s finished — call check_subagent(%q) for the final output\n", ev.SubagentID, ev.SubagentID))
+			case EvSubagentError:
+				sb.WriteString(fmt.Sprintf("- %s ERROR: %v\n", ev.SubagentID, ev.Err))
+			}
+		}
+		sb.WriteString("React: inspect via check_subagent, correct via send_to_subagent, kill, or proceed.\n")
+		m.pendingEvs = nil
+	}
+
+	sb.WriteString("</active_context>")
 	m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: sb.String()})
-	m.pendingEvs = nil
 }
 
 func (m *Master) takeTurns(parent context.Context) {
@@ -164,6 +186,10 @@ func (m *Master) takeTurns(parent context.Context) {
 		m.mu.Unlock()
 		cancel()
 	}()
+
+	// Regenerate the <active_context> tail block before this turn. The old
+	// block (if any) is stripped first so we don't accumulate duplicates.
+	m.refreshActiveContext()
 
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {

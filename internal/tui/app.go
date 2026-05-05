@@ -273,7 +273,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, a.subscribeOne(msg.sub))
 
 	case relayUsageMsg:
-		a.usage = renderUsage(llm.TrackerSnapshot(msg.snap))
+		a.usage = a.renderUsageFromTracker()
 		cmds = append(cmds, a.subscribeUsageOne(msg.sub))
 	}
 
@@ -750,15 +750,37 @@ func (a *App) statusLine() string {
 	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, mouseStr, flash)
 }
 
-func renderUsage(snap llm.TrackerSnapshot) string {
-	t := snap.Total
-	cacheRate := 0.0
-	denom := t.InputTokens + t.CacheReadTokens
-	if denom > 0 {
-		cacheRate = 100 * float64(t.CacheReadTokens) / float64(denom)
+// renderUsageFromTracker shows master + sub-agent token usage with cache hit
+// rate per role, so the user can see when caching is working.
+func (a *App) renderUsageFromTracker() string {
+	master := a.tracker.StatsByRolePrefix("master")
+	subs := a.tracker.StatsByRolePrefix("subagent:")
+	return fmt.Sprintf("M:%s/%s c=%s  S:%s/%s c=%s",
+		fmtTokens(master.InputTokens+master.CacheReadTokens),
+		fmtTokens(master.OutputTokens),
+		fmtRate(master),
+		fmtTokens(subs.InputTokens+subs.CacheReadTokens),
+		fmtTokens(subs.OutputTokens),
+		fmtRate(subs),
+	)
+}
+
+func fmtRate(s llm.RoleStats) string {
+	if s.InputTokens+s.CacheReadTokens == 0 {
+		return "—"
 	}
-	return fmt.Sprintf("tokens in=%d out=%d cache=%d (%.0f%% hit) created=%d",
-		t.InputTokens, t.OutputTokens, t.CacheReadTokens, cacheRate, t.CacheCreationTokens)
+	return fmt.Sprintf("%.0f%%", s.CacheHitRate)
+}
+
+func fmtTokens(n int) string {
+	switch {
+	case n >= 1_000_000:
+		return fmt.Sprintf("%.1fM", float64(n)/1_000_000)
+	case n >= 1_000:
+		return fmt.Sprintf("%.1fk", float64(n)/1_000)
+	default:
+		return fmt.Sprintf("%d", n)
+	}
 }
 
 func oneLine(s string) string {
