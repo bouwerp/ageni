@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textarea"
@@ -70,6 +71,11 @@ type App struct {
 	glam      *glamour.TermRenderer
 	glamWidth int
 
+	// Command history with up/down arrow + persistence.
+	history      *History
+	historyIdx   int    // -1 = not browsing, otherwise index into history items
+	historyDraft string // input text saved when the user enters history mode
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -102,6 +108,8 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		focusInput:     true,
 		subBufs:        make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
+		history:        LoadHistory(),
+		historyIdx:     -1,
 		ctx:            cctx,
 		cancel:         cancel,
 	}
@@ -195,6 +203,14 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmds []tea.Cmd
 
+	// Mouse events (wheel scroll) always go to the chat viewport so the user
+	// can scroll back through the session without losing input focus.
+	if _, ok := msg.(tea.MouseMsg); ok {
+		var cmd tea.Cmd
+		a.chat, cmd = a.chat.Update(msg)
+		return a, cmd
+	}
+
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		switch {
@@ -203,15 +219,34 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, tea.Quit
 		case msg.Type == tea.KeyTab:
 			a.cycleView()
+			return a, nil
 		case msg.Type == tea.KeyEsc:
 			a.stopGeneration()
+			return a, nil
 		case msg.String() == "ctrl+,", msg.String() == "ctrl+s":
 			return a, a.openSettings()
+		case msg.Type == tea.KeyPgUp, msg.Type == tea.KeyPgDown,
+			msg.String() == "ctrl+u", msg.String() == "ctrl+d":
+			// Always route page-scroll keys to the chat viewport.
+			var cmd tea.Cmd
+			a.chat, cmd = a.chat.Update(msg)
+			return a, cmd
+		case msg.Type == tea.KeyUp && a.inputIsSingleLine():
+			a.historyPrev()
+			return a, nil
+		case msg.Type == tea.KeyDown && a.inputIsSingleLine():
+			a.historyNext()
+			return a, nil
 		}
 		if msg.Type == tea.KeyEnter && !msg.Alt && a.focusInput {
 			text := strings.TrimSpace(a.input.Value())
 			if text != "" {
 				a.input.Reset()
+				a.historyIdx = -1
+				a.historyDraft = ""
+				if a.history != nil {
+					a.history.Append(text)
+				}
 				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + text + "\n\n")
 				a.currentMaster.Reset()
 				a.refreshChat()
@@ -243,6 +278,52 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	return a, tea.Batch(cmds...)
+}
+
+// inputIsSingleLine returns true when the input has no embedded newlines, so
+// up/down arrow can safely be repurposed for command history without
+// interfering with multi-line cursor movement.
+func (a *App) inputIsSingleLine() bool {
+	return !strings.Contains(a.input.Value(), "\n")
+}
+
+// historyPrev fills the input with the previous history entry. The first up
+// press saves the current draft so the user can return to it via Down.
+func (a *App) historyPrev() {
+	if a.history == nil {
+		return
+	}
+	items := a.history.Items()
+	if len(items) == 0 {
+		return
+	}
+	switch {
+	case a.historyIdx == -1:
+		a.historyDraft = a.input.Value()
+		a.historyIdx = len(items) - 1
+	case a.historyIdx > 0:
+		a.historyIdx--
+	default:
+		return
+	}
+	a.input.SetValue(items[a.historyIdx])
+	a.input.CursorEnd()
+}
+
+func (a *App) historyNext() {
+	if a.history == nil || a.historyIdx == -1 {
+		return
+	}
+	items := a.history.Items()
+	a.historyIdx++
+	if a.historyIdx >= len(items) {
+		a.historyIdx = -1
+		a.input.SetValue(a.historyDraft)
+		a.historyDraft = ""
+	} else {
+		a.input.SetValue(items[a.historyIdx])
+	}
+	a.input.CursorEnd()
 }
 
 func (a *App) stopGeneration() {
@@ -480,8 +561,10 @@ func (a *App) flushMasterText() {
 }
 
 // ensureGlamour rebuilds the markdown renderer when the chat-pane width
-// changes. Returns nil silently if construction fails (renderer is optional —
-// raw text is fine).
+// changes. WithAutoStyle() can fall back to the no-tty profile inside
+// Bubble Tea's alt-screen (resulting in unstyled output that looks like raw
+// markdown), so we pick the style explicitly via lipgloss's background
+// detection. Override with the GLAMOUR_STYLE env var if needed.
 func (a *App) ensureGlamour() {
 	w := a.chat.Width - 2
 	if w < 20 {
@@ -490,12 +573,30 @@ func (a *App) ensureGlamour() {
 	if a.glam != nil && a.glamWidth == w {
 		return
 	}
+
+	style := os.Getenv("GLAMOUR_STYLE")
+	if style == "" {
+		if lipgloss.HasDarkBackground() {
+			style = "dark"
+		} else {
+			style = "light"
+		}
+	}
+
 	r, err := glamour.NewTermRenderer(
-		glamour.WithAutoStyle(),
+		glamour.WithStandardStyle(style),
 		glamour.WithWordWrap(w),
+		glamour.WithEmoji(),
 	)
 	if err != nil {
-		return
+		// Fall back to auto in case the requested style is unknown.
+		r, err = glamour.NewTermRenderer(
+			glamour.WithAutoStyle(),
+			glamour.WithWordWrap(w),
+		)
+		if err != nil {
+			return
+		}
 	}
 	a.glam = r
 	a.glamWidth = w
@@ -516,10 +617,15 @@ func (a *App) renderMarkdown(s string) string {
 }
 
 func (a *App) refreshChat() {
+	// Sticky-bottom: only auto-scroll if the user is already at the bottom.
+	// If they've scrolled up to read history, leave them alone.
+	atBottom := a.chat.AtBottom()
 	if a.viewSub != "" {
 		if b, ok := a.subBufs[a.viewSub]; ok {
 			a.chat.SetContent(b.String())
-			a.chat.GotoBottom()
+			if atBottom {
+				a.chat.GotoBottom()
+			}
 			return
 		}
 	}
@@ -528,7 +634,9 @@ func (a *App) refreshChat() {
 		body += titleStyle.Render("master ❯ ") + a.currentMaster.String()
 	}
 	a.chat.SetContent(body)
-	a.chat.GotoBottom()
+	if atBottom {
+		a.chat.GotoBottom()
+	}
 }
 
 func (a *App) refreshSide() {
@@ -584,7 +692,7 @@ func (a *App) statusLine() string {
 	if a.flashMessage != "" {
 		flash = "  │  " + a.flashMessage
 	}
-	return fmt.Sprintf("%s  │  %s  │  Tab=cycle  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
+	return fmt.Sprintf("%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, a.usage, flash)
 }
 
 func renderUsage(snap llm.TrackerSnapshot) string {

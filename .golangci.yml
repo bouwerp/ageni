@@ -109,3 +109,6 @@ linters:
       # Session log opens a path constructed from $HOME/.ageni — intentional.
       - path: internal/session/log\.go
         linters: [gosec]
+      # History file lives at $HOME/.ageni/history.txt — intentional.
+      - path: internal/tui/history\.go
+        linters: [gosec]
