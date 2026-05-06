@@ -69,7 +69,7 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 	if !ok {
 		return llm.ToolResult{
 			ToolCallID: call.ID,
-			Content:    r.unknownToolMessage(call.Name),
+			Content:    r.unknownToolMessage(name),
 			IsError:    true,
 		}
 	}

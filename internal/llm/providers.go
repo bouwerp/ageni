@@ -295,10 +295,8 @@ var providers = []ProviderSpec{
 		APIKeyEnv:    "OPENCODE_API_KEY",
 		NeedsKey:     true,
 		Free:         true,
-		DefaultModel: "gpt-oss-120b",
+		DefaultModel: "qwen3-coder-480b",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "gpt-oss-120b", Label: "GPT-OSS 120B (free)", Free: true},
-			{ID: "gpt-oss-20b", Label: "GPT-OSS 20B (free)", Free: true},
 			{ID: "qwen3-coder-480b", Label: "Qwen 3 Coder 480B (free)", Free: true},
 			{ID: "kimi-k2", Label: "Kimi K2 (free)", Free: true},
 		},

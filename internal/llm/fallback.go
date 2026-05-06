@@ -201,6 +201,8 @@ func isFallbackable(err error) bool {
 		"eof", "unexpected eof",
 		"timeout", "timed out",
 		"model not supported", "model_not_supported", "modelnotfound", "model not found",
+		"not supported", "modelerror",
+		"failed to call a function",
 	} {
 		if strings.Contains(msg, h) {
 			return true
