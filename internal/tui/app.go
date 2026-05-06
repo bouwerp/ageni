@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -82,6 +83,11 @@ type App struct {
 	// atComp is non-nil while @ path autocomplete is active.
 	atComp *atComplete
 
+	// pendingCalls maps ToolCall.ID → ToolCall so that EvMasterToolDone /
+	// EvSubagentToolDone handlers can look up which file was mutated and
+	// show a diff.
+	pendingCalls map[string]llm.ToolCall
+
 	// Markdown renderer for master + sub-agent final output. Re-initialised
 	// when the chat-pane width changes.
 	glam      *glamour.TermRenderer
@@ -146,11 +152,12 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
 		subActivity:    make(map[string]string),
-		history:        LoadHistory(),
-		historyIdx:     -1,
-		mouseOn:        true,
-		ctx:            cctx,
-		cancel:         cancel,
+		history:      LoadHistory(),
+		historyIdx:   -1,
+		mouseOn:      true,
+		ctx:          cctx,
+		cancel:       cancel,
+		pendingCalls: make(map[string]llm.ToolCall),
 	}
 	a.chatBuf.WriteString(titleStyle.Render("ageni") + " — type a request to begin\n\n")
 	a.refreshChat()
@@ -794,12 +801,21 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.flushMasterText() // commit any in-progress text before the tool block
 			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.masterToolIn = ev.ToolCall.Name
+			a.pendingCalls[ev.ToolCall.ID] = *ev.ToolCall
 			a.refreshChat()
 			a.refreshSide()
 		}
 	case agent.EvMasterToolDone:
 		if ev.ToolResult != nil {
-			a.chatBuf.WriteString(renderToolResult(ev.ToolResult) + "\n\n")
+			call, hasPending := a.pendingCalls[ev.ToolResult.ToolCallID]
+			delete(a.pendingCalls, ev.ToolResult.ToolCallID)
+			rendered := renderToolResult(ev.ToolResult)
+			if hasPending && !ev.ToolResult.IsError {
+				if diff := a.diffForCall(call); diff != "" {
+					rendered += "\n" + diff
+				}
+			}
+			a.chatBuf.WriteString(rendered + "\n\n")
 			a.refreshChat()
 		}
 		a.masterToolIn = ""
@@ -842,13 +858,22 @@ func (a *App) handleEvent(ev agent.Event) {
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
 			b.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.subActivity[ev.SubagentID] = "tool:" + ev.ToolCall.Name
+			a.pendingCalls[ev.ToolCall.ID] = *ev.ToolCall
 		}
 		a.refreshChat()
 		a.refreshSide()
 	case agent.EvSubagentToolDone:
 		if ev.ToolResult != nil {
+			call, hasPending := a.pendingCalls[ev.ToolResult.ToolCallID]
+			delete(a.pendingCalls, ev.ToolResult.ToolCallID)
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
-				b.WriteString(renderToolResult(ev.ToolResult) + "\n")
+				rendered := renderToolResult(ev.ToolResult)
+				if hasPending && !ev.ToolResult.IsError {
+					if diff := a.diffForCall(call); diff != "" {
+						rendered += "\n" + diff
+					}
+				}
+				b.WriteString(rendered + "\n")
 			}
 			// Tool errors also bubble up to the master chat — easy to miss
 			// in the sub-agent pane otherwise.
@@ -1393,4 +1418,46 @@ func oneLine(s string) string {
 		s = s[:200] + "…"
 	}
 	return s
+}
+
+// fileMutationTools are the tool names whose completion should trigger a diff.
+var fileMutationTools = map[string]bool{
+	"write_file":  true,
+	"edit_file":   true,
+	"apply_diff":  true,
+	"multi_edit":  true,
+	"delete_file": true,
+	"move_file":   true,
+}
+
+// diffForCall returns a rendered diff for a file-mutation tool call, or "".
+func (a *App) diffForCall(call llm.ToolCall) string {
+	if a.changes == nil {
+		return ""
+	}
+	if !fileMutationTools[call.Name] {
+		return ""
+	}
+	// Extract the file path from the tool arguments. All file tools use
+	// "path" except move_file which writes to "dst".
+	var args struct {
+		Path string `json:"path"`
+		Dst  string `json:"dst"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil || (args.Path == "" && args.Dst == "") {
+		return ""
+	}
+	target := args.Path
+	if target == "" {
+		target = args.Dst
+	}
+	absPath, err := filepath.Abs(target)
+	if err != nil {
+		return ""
+	}
+	diff, err := a.changes.DiffFromSnapshot(absPath)
+	if err != nil || diff == "" {
+		return ""
+	}
+	return renderDiff(diff, diffMaxLines)
 }

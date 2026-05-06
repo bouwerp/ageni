@@ -11,6 +11,10 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/hexops/gotextdiff"
+	"github.com/hexops/gotextdiff/myers"
+	"github.com/hexops/gotextdiff/span"
 )
 
 // ChangeKind is what a tool did to a path.
@@ -376,6 +380,43 @@ func (t *ChangeTracker) Summary() []Change {
 	}
 	sort.SliceStable(out, func(i, j int) bool { return out[i].At.Before(out[j].At) })
 	return out
+}
+
+// DiffFromSnapshot computes a unified diff between the snapshot of absPath
+// (taken before the first mutation this session) and its current on-disk
+// content. Returns ("", nil) when the two are identical or when no snapshot
+// exists. The label shown in the diff header is the relative path from cwd
+// when possible, otherwise the basename.
+func (t *ChangeTracker) DiffFromSnapshot(absPath string) (string, error) {
+	if t == nil {
+		return "", nil
+	}
+	snap := t.snapPath(absPath)
+	before, err := os.ReadFile(snap) //nolint:gosec
+	if err != nil {
+		return "", nil // no snapshot — nothing to diff against
+	}
+	after, err := os.ReadFile(absPath) //nolint:gosec
+	if err != nil {
+		// File was deleted.
+		after = nil
+	}
+	beforeStr := string(before)
+	afterStr := string(after)
+	if beforeStr == afterStr {
+		return "", nil
+	}
+
+	label := absPath
+	if rel, err := filepath.Rel(".", absPath); err == nil && !strings.HasPrefix(rel, "..") {
+		label = rel
+	} else {
+		label = filepath.Base(absPath)
+	}
+
+	edits := myers.ComputeEdits(span.URIFromPath(label), beforeStr, afterStr)
+	diff := fmt.Sprint(gotextdiff.ToUnified(label, label, beforeStr, edits))
+	return diff, nil
 }
 
 // ResolvePath best-effort matches a user-supplied query to a recorded path.
