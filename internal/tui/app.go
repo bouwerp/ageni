@@ -79,6 +79,9 @@ type App struct {
 	// Toggled with F2 so the user can drag-select text in the terminal.
 	mouseOn bool
 
+	// atComp is non-nil while @ path autocomplete is active.
+	atComp *atComplete
+
 	// Markdown renderer for master + sub-agent final output. Re-initialised
 	// when the chat-pane width changes.
 	glam      *glamour.TermRenderer
@@ -309,6 +312,28 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
+		// ── @ autocomplete navigation (takes priority over all other keys) ──
+		if a.atComp != nil && a.atComp.active && a.focusInput {
+			switch {
+			case msg.Type == tea.KeyEsc:
+				a.dismissAtComplete()
+				return a, nil
+			case msg.Type == tea.KeyUp:
+				if a.atComp.sel > 0 {
+					a.atComp.sel--
+				}
+				return a, nil
+			case msg.Type == tea.KeyDown:
+				if a.atComp.sel < len(a.atComp.matches)-1 {
+					a.atComp.sel++
+				}
+				return a, nil
+			case msg.Type == tea.KeyTab, msg.Type == tea.KeyEnter && !msg.Alt:
+				a.insertAtCompletion()
+				return a, nil
+			}
+		}
+
 		switch {
 		case msg.Type == tea.KeyCtrlC:
 			a.cancel()
@@ -348,6 +373,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.input.Reset()
 				a.historyIdx = -1
 				a.historyDraft = ""
+				a.dismissAtComplete()
 				if a.history != nil {
 					a.history.Append(text)
 				}
@@ -403,6 +429,10 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		var cmd tea.Cmd
 		a.input, cmd = a.input.Update(msg)
 		cmds = append(cmds, cmd)
+		// Re-evaluate @ autocomplete after every input update.
+		if _, isKey := msg.(tea.KeyMsg); isKey {
+			a.updateAtComplete()
+		}
 	} else {
 		var cmd tea.Cmd
 		a.chat, cmd = a.chat.Update(msg)
@@ -456,6 +486,79 @@ func (a *App) historyNext() {
 		a.input.SetValue(items[a.historyIdx])
 	}
 	a.input.CursorEnd()
+}
+
+// updateAtComplete re-evaluates whether the @ autocomplete should be active,
+// updates matches, and adjusts the layout if the suggestion-box height changed.
+func (a *App) updateAtComplete() {
+	li := a.input.LineInfo()
+	prefix := inputTextUpToCursor(a.input.Value(), a.input.Line(), li.StartColumn, li.ColumnOffset)
+	atByte, query, ok := detectAtPrefix(prefix)
+
+	if !ok {
+		if a.atComp != nil && a.atComp.active {
+			a.atComp = nil
+			a.layout()
+		}
+		return
+	}
+
+	cwd := getCwd()
+	matches := matchFiles(cwd, query, atCompleteMaxItems)
+
+	if a.atComp == nil {
+		a.atComp = &atComplete{}
+	}
+	prevH := a.atComp.height()
+	prevQuery := a.atComp.query
+	a.atComp.active = true
+	a.atComp.atByte = atByte
+	if query != prevQuery {
+		a.atComp.sel = 0
+	}
+	a.atComp.query = query
+	a.atComp.matches = matches
+	if len(matches) == 0 {
+		a.atComp.active = false
+	}
+
+	if a.atComp.height() != prevH {
+		a.layout()
+	}
+}
+
+// insertAtCompletion replaces the @<query> token in the input with the
+// selected path, then closes the suggestion panel.
+func (a *App) insertAtCompletion() {
+	if a.atComp == nil || !a.atComp.active {
+		return
+	}
+	path := a.atComp.selectedPath()
+	if path == "" {
+		a.dismissAtComplete()
+		return
+	}
+	val := a.input.Value()
+	// Replace from atByte to atByte+1+len(query) with "@"+path
+	end := a.atComp.atByte + 1 + len(a.atComp.query)
+	if end > len(val) {
+		end = len(val)
+	}
+	newVal := val[:a.atComp.atByte] + "@" + path + val[end:]
+	a.input.SetValue(newVal)
+	a.input.CursorEnd()
+	a.dismissAtComplete()
+}
+
+// dismissAtComplete closes the suggestion panel without inserting.
+func (a *App) dismissAtComplete() {
+	if a.atComp != nil {
+		hadHeight := a.atComp.height() > 0
+		a.atComp = nil
+		if hadHeight {
+			a.layout()
+		}
+	}
 }
 
 // toggleMouse flips Bubble Tea's mouse capture so the user can drag-select
@@ -650,12 +753,22 @@ func (a *App) layout() {
 	chatW := a.width - sideW - 4
 	inputH := 4
 	statusH := 1
-	bodyH := a.height - inputH - statusH - 2
+	suggestH := 0
+	if a.atComp != nil {
+		suggestH = a.atComp.height()
+	}
+	// When the suggestion panel is visible, JoinVertical gains one extra
+	// separator line between body and suggest, so subtract suggestH+1.
+	suggestHAdj := suggestH
+	if suggestH > 0 {
+		suggestHAdj++
+	}
+	bodyH := a.height - inputH - statusH - 2 - suggestHAdj
 
 	a.chat.Width = chatW
-	a.chat.Height = bodyH
+	a.chat.Height = max(bodyH, 3)
 	a.side.Width = sideW
-	a.side.Height = bodyH
+	a.side.Height = max(bodyH, 3)
 	a.input.SetWidth(a.width - 4)
 	a.input.SetHeight(inputH - 2)
 	a.refreshChat()
@@ -1120,6 +1233,10 @@ func (a *App) View() string {
 	)
 	in := inputStyle.Render(a.input.View())
 	bottom := statusStyle.Render(a.statusLine())
+	if a.atComp != nil && a.atComp.active && len(a.atComp.matches) > 0 {
+		suggest := a.atComp.render(a.width)
+		return lipgloss.JoinVertical(lipgloss.Left, body, suggest, in, bottom)
+	}
 	return lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
 }
 
