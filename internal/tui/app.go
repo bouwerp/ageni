@@ -723,6 +723,7 @@ func (a *App) cycleView() {
 	if len(a.subOrder) == 0 {
 		return
 	}
+	prevSub := a.viewSub
 	if a.viewSub == "" {
 		a.viewSub = a.subOrder[0]
 	} else {
@@ -739,7 +740,14 @@ func (a *App) cycleView() {
 			a.viewSub = a.subOrder[idx+1]
 		}
 	}
-	a.refreshChat()
+	if a.viewSub != prevSub {
+		// Reset to bottom when entering a new pane so the user always
+		// lands on the latest output rather than inheriting the previous
+		// pane's scroll position.
+		a.refreshChatForce()
+	} else {
+		a.refreshChat()
+	}
 }
 
 func (a *App) layout() {
@@ -1002,26 +1010,41 @@ func (a *App) renderMarkdown(s string) string {
 	return strings.TrimRight(out, "\n")
 }
 
-func (a *App) refreshChat() {
-	// Sticky-bottom: only auto-scroll if the user is already at the bottom.
-	// If they've scrolled up to read history, leave them alone.
-	atBottom := a.chat.AtBottom()
+// refreshChat updates the chat viewport, honouring the sticky-bottom
+// behaviour: if the user was already at the bottom (following live output)
+// we scroll to the new bottom; if they scrolled up to read history we leave
+// the offset alone.
+func (a *App) refreshChat() { a.setChat(a.chat.AtBottom()) }
+
+// refreshChatForce unconditionally scrolls to the bottom of the new content.
+// Used when switching panes so the user lands on the latest output rather than
+// inheriting the previous pane's stale scroll offset.
+func (a *App) refreshChatForce() { a.setChat(true) }
+
+func (a *App) setChat(gotoBottom bool) {
+	body := a.buildChatContent()
+	// Pad to viewport height so the rendered box is always full-size.
+	// Without this, a short content string produces a shorter-than-expected
+	// border box and Bubble Tea leaves the previous frame's cells below it.
+	body = padToHeight(body, a.chat.Height)
+	a.chat.SetContent(body)
+	if gotoBottom {
+		a.chat.GotoBottom()
+	}
+}
+
+// buildChatContent assembles the string to show in the chat viewport for the
+// currently selected view (master or a specific sub-agent).
+func (a *App) buildChatContent() string {
 	if a.viewSub != "" {
 		if b, ok := a.subBufs[a.viewSub]; ok {
 			body := b.String()
-			// Show in-progress streamed text live at the bottom of the
-			// sub-agent pane, before it gets flushed/rendered at the next
-			// turn boundary.
 			if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
 				body += titleStyle.Render(a.viewSub+" ❯ ") + cur.String()
 			} else if line := a.subInlineIndicator(a.viewSub); line != "" {
 				body += line
 			}
-			a.chat.SetContent(body)
-			if atBottom {
-				a.chat.GotoBottom()
-			}
-			return
+			return body
 		}
 	}
 	body := a.chatBuf.String()
@@ -1030,10 +1053,22 @@ func (a *App) refreshChat() {
 	} else if line := a.masterInlineIndicator(); line != "" {
 		body += line
 	}
-	a.chat.SetContent(body)
-	if atBottom {
-		a.chat.GotoBottom()
+	return body
+}
+
+// padToHeight appends blank lines so the string has at least `height` lines.
+// This keeps the chat box full-size even when content is shorter than the
+// viewport, preventing stale terminal cells from the previous frame showing
+// through below the border.
+func padToHeight(s string, height int) string {
+	if height <= 0 {
+		return s
 	}
+	have := strings.Count(s, "\n") + 1
+	if have >= height {
+		return s
+	}
+	return s + strings.Repeat("\n", height-have)
 }
 
 // masterInlineIndicator renders a Claude-Code-style "✻ thinking…" line at
@@ -1173,7 +1208,7 @@ func (a *App) refreshSide() {
 		}
 	}
 
-	a.side.SetContent(sb.String())
+	a.side.SetContent(padToHeight(sb.String(), a.side.Height))
 }
 
 // shouldShowInlineIndicator returns true when the visible chat pane needs
