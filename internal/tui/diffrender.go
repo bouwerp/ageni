@@ -7,6 +7,20 @@ import (
 	"github.com/charmbracelet/lipgloss"
 )
 
+// styledLines applies style to each non-empty line of s independently,
+// keeping the ANSI reset on the same line as its content. This prevents
+// the reset code from landing after a newline where viewport truncation or
+// scrolling strips it and bleeds colour into adjacent lines.
+func styledLines(style lipgloss.Style, s string) string {
+	lines := strings.Split(s, "\n")
+	for i, l := range lines {
+		if l != "" {
+			lines[i] = style.Render(l)
+		}
+	}
+	return strings.Join(lines, "\n")
+}
+
 const diffMaxLines = 50
 
 var (

@@ -470,7 +470,16 @@ func (s *Subagent) systemPrompt() string {
 - Final response: produce exactly one assistant turn that contains a <result>...</result> block matching the requested output_format, followed by a <reasoning>...</reasoning> block summarizing what you did. No tool calls in the final turn.
 - Do not invent file paths, function names, or APIs. If you don't know, say so.
 - If the master named a specific skill in <use_skill>, call read_skill on it first and apply its procedures.
-</rules>`
+</rules>
+
+<self_healing>
+When a tool returns an error, do not stop — diagnose and recover autonomously:
+- Bad argument / invalid JSON: fix the argument and retry.
+- File not found: check if the path exists with list_dir or glob, then use the correct path.
+- Permission or transient error: retry up to 2 more times before including it as a blocker in your <result>.
+- Unknown tool: use the closest available alternative from <allowed_tools>.
+Never ask the master or the user for help with recoverable errors — handle them yourself.
+</self_healing>`
 }
 
 func (s *Subagent) userPrompt() string {

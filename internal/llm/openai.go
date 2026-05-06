@@ -50,16 +50,12 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 
 		emitTools := func() {
 			for _, t := range pending {
-				args := t.args
-				if args == "" {
-					args = "{}"
-				}
 				out <- StreamEvent{
 					Type: StreamEventToolCall,
 					ToolCall: &ToolCall{
 						ID:        t.id,
 						Name:      t.name,
-						Arguments: json.RawMessage(args),
+						Arguments: sanitizeArgs([]byte(t.args)),
 					},
 				}
 			}

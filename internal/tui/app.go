@@ -178,7 +178,7 @@ func (a *App) LoadHistory(messages []llm.Message) {
 	if len(messages) == 0 {
 		return
 	}
-	a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("─── resumed: %d prior message(s) ───\n\n", len(messages))))
+	a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("─── resumed: %d prior message(s) ───", len(messages))) + "\n\n")
 	for _, m := range messages {
 		switch m.Role {
 		case llm.RoleUser:
@@ -201,7 +201,7 @@ func (a *App) LoadHistory(messages []llm.Message) {
 			}
 		}
 	}
-	a.chatBuf.WriteString(mutedStyle.Render("─── continuing ───\n\n"))
+	a.chatBuf.WriteString(mutedStyle.Render("─── continuing ───") + "\n\n")
 	a.refreshChat()
 }
 
@@ -833,7 +833,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.subActivity[ev.SubagentID] = "spawning"
 		a.subOrder = append(a.subOrder, ev.SubagentID)
 		header := titleStyle.Render(ev.SubagentID+" — "+ev.SubagentModel) + "\n" +
-			toolArgsStyle.Render(ev.SubagentTask) + "\n\n"
+			styledLines(toolArgsStyle, ev.SubagentTask) + "\n\n"
 		a.subBufs[ev.SubagentID].WriteString(header)
 		a.refreshSide()
 		a.refreshChat()
@@ -891,13 +891,13 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvSubagentRetry:
 		// Surface transient errors + retries in chat so the user can see why
 		// a sub-agent is taking longer than expected.
-		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s\n", ev.SubagentID, oneLine(ev.Text))))
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s", ev.SubagentID, oneLine(ev.Text))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
 			b.WriteString("\n[retry] " + ev.Text + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentInbox:
-		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[→ %s] %s\n", ev.SubagentID, oneLine(ev.Text))))
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[→ %s] %s", ev.SubagentID, oneLine(ev.Text))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
 			b.WriteString("\n[inbox] " + ev.Text + "\n")
 		}
@@ -928,14 +928,14 @@ func (a *App) handleEvent(ev agent.Event) {
 		// Show the error in the master chat AND in the sub-agent's transcript
 		// so the user sees it whether they're looking at master or sub-agent
 		// view.
-		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s error] %s\n", ev.SubagentID, errText)))
+		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s error] %s", ev.SubagentID, errText)) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
 			b.WriteString(fmt.Sprintf("\n[error] %s\n", errText))
 		}
 		a.refreshSide()
 		a.refreshChat()
 	case agent.EvError:
-		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("\n[error] %v\n", ev.Err)))
+		a.chatBuf.WriteString("\n" + subErrStyle.Render(fmt.Sprintf("[error] %v", ev.Err)) + "\n")
 		a.refreshChat()
 	case agent.EvFlash:
 		a.flashMessage = ev.Text

@@ -99,16 +99,12 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, req Request) (<-chan Stre
 				}
 			case anthropic.ContentBlockStopEvent:
 				if t, ok := pending[v.Index]; ok {
-					args := t.input
-					if args == "" {
-						args = "{}"
-					}
 					out <- StreamEvent{
 						Type: StreamEventToolCall,
 						ToolCall: &ToolCall{
 							ID:        t.id,
 							Name:      t.name,
-							Arguments: json.RawMessage(args),
+							Arguments: sanitizeArgs([]byte(t.input)),
 						},
 					}
 					delete(pending, v.Index)
