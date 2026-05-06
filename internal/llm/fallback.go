@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"strconv"
 	"strings"
 )
 
@@ -89,10 +90,32 @@ func (f *FallbackAdapter) tryFrom(ctx context.Context, idx int, req Request) (<-
 			close(done)
 			return done, nil
 		}
-		if ev.Type == StreamEventError && isFallbackable(ev.Err) && i < len(f.entries)-1 {
-			f.notify(i, i+1, summariseErr(ev.Err))
-			drain(ch)
-			continue
+		if ev.Type == StreamEventError && isFallbackable(ev.Err) {
+			// OpenRouter 402: "can only afford N tokens". Retry the SAME
+			// adapter once with MaxTokens capped to N before falling back,
+			// so we don't lose the preferred provider over a budget cap.
+			if affordable := extractAffordableTokens(ev.Err.Error()); affordable >= 256 &&
+				(r.MaxTokens == 0 || r.MaxTokens > affordable) {
+				drain(ch)
+				r2 := r
+				r2.MaxTokens = affordable
+				ch2, err2 := entry.Adapter.Stream(ctx, r2)
+				if err2 == nil {
+					ev2, ok2, _ := peekFirst(ctx, ch2)
+					if ok2 && ev2.Type != StreamEventError {
+						f.notify(i, i, fmt.Sprintf("token cap reduced to %d (402 budget limit)", affordable))
+						return replay([]StreamEvent{ev2}, ch2), nil
+					}
+					if ok2 {
+						drain(ch2)
+					}
+				}
+			}
+			if i < len(f.entries)-1 {
+				f.notify(i, i+1, summariseErr(ev.Err))
+				drain(ch)
+				continue
+			}
 		}
 		return replay([]StreamEvent{ev}, ch), nil
 	}
@@ -147,9 +170,15 @@ func replay(peeked []StreamEvent, src <-chan StreamEvent) <-chan StreamEvent {
 }
 
 // isFallbackable returns true when an error warrants trying the next
-// adapter in the chain: rate limits (HTTP 429), 5xx server errors,
-// connection failures, deadline exceeded. Permanent errors (auth, 400,
-// 404, schema mismatches) bubble up unchanged.
+// adapter in the chain. Retryable classes:
+//   - HTTP 429 / rate-limit
+//   - HTTP 402 Payment Required (OpenRouter: insufficient credits)
+//   - HTTP 5xx server errors
+//   - Network / connection failures
+//   - Deadline exceeded
+//
+// Permanent errors (auth 401/403, 400 bad request, 404, schema
+// mismatches) bubble up unchanged.
 func isFallbackable(err error) bool {
 	if err == nil {
 		return false
@@ -160,6 +189,7 @@ func isFallbackable(err error) bool {
 	msg := strings.ToLower(err.Error())
 	for _, h := range []string{
 		"429", "rate limit", "rate-limit",
+		"402", "payment required", "insufficient credits", "can only afford",
 		"500", "502", "503", "504",
 		"overloaded", "service unavailable", "temporarily unavailable",
 		"connection refused", "connection reset", "broken pipe",
@@ -171,6 +201,30 @@ func isFallbackable(err error) bool {
 		}
 	}
 	return false
+}
+
+// extractAffordableTokens parses the token budget from an OpenRouter 402
+// message like "… can only afford 3871 …" and returns it. Returns 0 when the
+// pattern isn't present so callers can skip the token-reduction retry.
+func extractAffordableTokens(errMsg string) int {
+	const needle = "can only afford "
+	idx := strings.Index(strings.ToLower(errMsg), needle)
+	if idx < 0 {
+		return 0
+	}
+	rest := errMsg[idx+len(needle):]
+	end := 0
+	for end < len(rest) && rest[end] >= '0' && rest[end] <= '9' {
+		end++
+	}
+	if end == 0 {
+		return 0
+	}
+	n, err := strconv.Atoi(rest[:end])
+	if err != nil || n <= 0 {
+		return 0
+	}
+	return n
 }
 
 // summariseErr extracts a short reason from an error message for the
