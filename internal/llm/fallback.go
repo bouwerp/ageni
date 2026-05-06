@@ -173,7 +173,9 @@ func replay(peeked []StreamEvent, src <-chan StreamEvent) <-chan StreamEvent {
 // adapter in the chain. Retryable classes:
 //   - HTTP 429 / rate-limit
 //   - HTTP 402 Payment Required (OpenRouter: insufficient credits)
+//   - HTTP 413 Request Entity Too Large (Groq / others: prompt too long)
 //   - HTTP 5xx server errors
+//   - Context-length / token-limit errors (various provider wordings)
 //   - Network / connection failures
 //   - Deadline exceeded
 //
@@ -190,6 +192,9 @@ func isFallbackable(err error) bool {
 	for _, h := range []string{
 		"429", "rate limit", "rate-limit",
 		"402", "payment required", "insufficient credits", "can only afford",
+		"413", "request too large", "request entity too large",
+		"context_length_exceeded", "context length exceeded",
+		"maximum context length", "prompt is too long",
 		"500", "502", "503", "504",
 		"overloaded", "service unavailable", "temporarily unavailable",
 		"connection refused", "connection reset", "broken pipe",
