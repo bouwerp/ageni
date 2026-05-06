@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 
@@ -458,17 +459,19 @@ func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleC
 	}
 	entries := make([]llm.FallbackEntry, 0, 1+len(fallbacks))
 	entries = append(entries, llm.FallbackEntry{
-		Adapter:        buildAdapter(primary),
-		Model:          primary.Model,
-		Label:          llm.FormatLabel(primary.Provider.Name, primary.Model),
-		FallbackModels: alternativeModels(primary),
+		Adapter:          buildAdapter(primary),
+		Model:            primary.Model,
+		Label:            llm.FormatLabel(primary.Provider.Name, primary.Model),
+		FallbackModels:   alternativeModels(primary),
+		LiveModelFetcher: liveModelFetcher(primary),
 	})
 	for _, fb := range fallbacks {
 		entries = append(entries, llm.FallbackEntry{
-			Adapter:        buildAdapter(fb),
-			Model:          fb.Model,
-			Label:          llm.FormatLabel(fb.Provider.Name, fb.Model),
-			FallbackModels: alternativeModels(fb),
+			Adapter:          buildAdapter(fb),
+			Model:            fb.Model,
+			Label:            llm.FormatLabel(fb.Provider.Name, fb.Model),
+			FallbackModels:   alternativeModels(fb),
+			LiveModelFetcher: liveModelFetcher(fb),
 		})
 	}
 	chain := llm.NewFallbackAdapter(name, entries...)
@@ -593,6 +596,34 @@ func alternativeModels(rc config.RoleConfig) []string {
 		}
 	}
 	return out
+}
+
+// liveModelFetcher returns a func that queries the provider's /v1/models
+// endpoint once (lazily, on first call) and returns IDs suitable for model
+// rotation. Returns nil for providers that don't support live listing.
+func liveModelFetcher(rc config.RoleConfig) func() []string {
+	if rc.Provider.BaseURL == "" {
+		// Anthropic / providers without an explicit base URL — no live fetch.
+		return nil
+	}
+	var (
+		once   sync.Once
+		result []string
+	)
+	return func() []string {
+		once.Do(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 4*time.Second)
+			defer cancel()
+			ms, err := llm.FetchModels(ctx, rc.Provider, rc.APIKey)
+			if err != nil {
+				return
+			}
+			for _, m := range ms {
+				result = append(result, m.ID)
+			}
+		})
+		return result
+	}
 }
 
 func handleSignals(cancel context.CancelFunc) {

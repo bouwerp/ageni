@@ -307,8 +307,8 @@ func TestModelRotationBeforeProviderFallback(t *testing.T) {
 	}
 }
 
-// retryingStubForModel returns a model-unsupported error for badModel and
-// success for any other model.
+// retryingStubForModel returns a model-unsupported error for badModel
+// (and any model in badModels) and succeeds for any other model.
 type retryingStubForModel struct {
 	badModel  string
 	badErr    error
@@ -316,11 +316,15 @@ type retryingStubForModel struct {
 	lastModel string
 }
 
+func (r *retryingStubForModel) isBad(model string) bool {
+	return model == r.badModel
+}
+
 func (r *retryingStubForModel) Provider() string { return "p" }
 func (r *retryingStubForModel) Stream(_ context.Context, req Request) (<-chan StreamEvent, error) {
 	r.lastModel = req.Model
 	ch := make(chan StreamEvent, 4)
-	if req.Model == r.badModel {
+	if r.isBad(req.Model) {
 		ch <- StreamEvent{Type: StreamEventError, Err: r.badErr}
 		close(ch)
 		return ch, nil
@@ -329,6 +333,57 @@ func (r *retryingStubForModel) Stream(_ context.Context, req Request) (<-chan St
 	ch <- StreamEvent{Type: StreamEventDone}
 	close(ch)
 	return ch, nil
+}
+
+func TestLiveFetchedModelsUsedAfterStaticExhausted(t *testing.T) {
+	// Static FallbackModels is empty; all hardcoded models fail.
+	// LiveModelFetcher returns ["live-model"] which then succeeds.
+	unsupErr := errors.New("401 ModelError: not supported")
+	adapter := &retryingStubForModel{
+		badModel: "bad-model",
+		badErr:   unsupErr,
+		goodText: "live-ok",
+	}
+	fetchCount := 0
+	fetcher := func() []string {
+		fetchCount++
+		return []string{"live-model"}
+	}
+	secondary := &stubAdapter{name: "backup"}
+	chain := NewFallbackAdapter("test",
+		FallbackEntry{
+			Adapter:          adapter,
+			Model:            "bad-model",
+			Label:            "p/bad-model",
+			LiveModelFetcher: fetcher,
+		},
+		FallbackEntry{Adapter: secondary, Model: "s", Label: "backup/s"},
+	)
+	var notified []string
+	chain.OnFallback = func(from, to, reason string) { notified = append(notified, from+"->"+to) }
+
+	ch, err := chain.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		if ev.Type == StreamEventText {
+			text += ev.TextDelta
+		}
+	}
+	if text != "live-ok" {
+		t.Fatalf("text = %q, want live-ok", text)
+	}
+	if secondary.gotModel != "" {
+		t.Fatalf("secondary invoked unexpectedly")
+	}
+	if fetchCount != 1 {
+		t.Fatalf("fetcher called %d times, want 1", fetchCount)
+	}
+	if len(notified) != 1 || notified[0] != "p/bad-model->p/live-model" {
+		t.Fatalf("OnFallback = %v", notified)
+	}
 }
 
 func TestFallbackOnceContentEmitted(t *testing.T) {

@@ -17,11 +17,19 @@ import (
 // before advancing to the next entry. Used when the primary model is
 // unavailable (deprecated, unsupported on the provider) so we exhaust
 // same-provider alternatives before switching providers.
+//
+// LiveModelFetcher, when non-nil, is called once (lazily, on first
+// model-unsupported failure after FallbackModels are exhausted) to
+// retrieve the provider's current live model list. Any IDs not already
+// tried are appended to the rotation queue so deprecated hardcoded
+// entries don't block progress. Use sync.Once internally if the fetch
+// is expensive.
 type FallbackEntry struct {
-	Adapter        Adapter
-	Model          string
-	Label          string   // "<provider>/<model>" — for diagnostics
-	FallbackModels []string // tried in order before advancing to next entry
+	Adapter          Adapter
+	Model            string
+	Label            string    // "<provider>/<model>" — for diagnostics
+	FallbackModels   []string  // tried in order before advancing to next entry
+	LiveModelFetcher func() []string // called at most once per run
 }
 
 // FallbackAdapter wraps an ordered chain of adapters. Stream tries each
@@ -63,25 +71,29 @@ func (f *FallbackAdapter) Stream(ctx context.Context, req Request) (<-chan Strea
 	return f.tryFrom(ctx, 0, req)
 }
 
-// tryFrom attempts the adapter at idx. For each entry it first cycles
-// through FallbackModels on model-unsupported errors before advancing
-// to the next entry. On any other retryable error it skips straight to
-// the next entry. Once any text / tool / done event arrives the stream
-// is committed and forwarded without further fallback.
+// tryFrom attempts the adapter at idx. For each entry it cycles through
+// FallbackModels (and, lazily, LiveModelFetcher results) on
+// model-unsupported errors before advancing to the next entry.
 func (f *FallbackAdapter) tryFrom(ctx context.Context, idx int, req Request) (<-chan StreamEvent, error) {
 nextEntry:
 	for i := idx; i < len(f.entries); i++ {
 		entry := f.entries[i]
+		// Index-based so we can append live-fetched models mid-loop.
 		models := append([]string{entry.Model}, entry.FallbackModels...)
+		liveFetched := false
 
-		for mi, model := range models {
+		for mi := 0; mi < len(models); mi++ {
+			model := models[mi]
 			r := req
 			r.Model = model
 			ch, err := entry.Adapter.Stream(ctx, r)
 			if err != nil {
-				if isModelUnsupported(err) && mi < len(models)-1 {
-					f.notifyModelRotate(entry, model, models[mi+1], summariseErr(err))
-					continue
+				if isModelUnsupported(err) {
+					if next, ok := f.nextModel(entry, models, mi, &liveFetched); ok {
+						models = append(models, next...)
+						f.notifyModelRotate(entry, model, models[mi+1], summariseErr(err))
+						continue
+					}
 				}
 				if isFallbackable(err) && i < len(f.entries)-1 {
 					f.notify(i, i+1, summariseErr(err))
@@ -97,7 +109,8 @@ nextEntry:
 			}
 			if !ok {
 				// Channel closed before producing — treat as failure.
-				if mi < len(models)-1 {
+				if next, hasNext := f.nextModel(entry, models, mi, &liveFetched); hasNext {
+					models = append(models, next...)
 					f.notifyModelRotate(entry, model, models[mi+1], "stream closed without output")
 					continue
 				}
@@ -130,11 +143,14 @@ nextEntry:
 						}
 					}
 				}
-				// Model-unsupported: try next model on same provider first.
-				if isModelUnsupported(ev.Err) && mi < len(models)-1 {
-					drain(ch)
-					f.notifyModelRotate(entry, model, models[mi+1], summariseErr(ev.Err))
-					continue
+				// Model-unsupported: rotate within this provider first.
+				if isModelUnsupported(ev.Err) {
+					if next, hasNext := f.nextModel(entry, models, mi, &liveFetched); hasNext {
+						drain(ch)
+						models = append(models, next...)
+						f.notifyModelRotate(entry, model, models[mi+1], summariseErr(ev.Err))
+						continue
+					}
 				}
 				if i < len(f.entries)-1 {
 					f.notify(i, i+1, summariseErr(ev.Err))
@@ -146,6 +162,33 @@ nextEntry:
 		}
 	}
 	return nil, errors.New("fallback chain exhausted")
+}
+
+// nextModel returns any additional model IDs to append to the rotation
+// queue. It returns (nil, true) when models[mi+1] already exists (no
+// fetch needed), or calls LiveModelFetcher once and returns the new IDs
+// not already in the tried set. Returns (nil, false) when no more
+// candidates exist.
+func (f *FallbackAdapter) nextModel(entry FallbackEntry, models []string, mi int, liveFetched *bool) (extra []string, hasNext bool) {
+	if mi < len(models)-1 {
+		return nil, true // already have more in the queue
+	}
+	if *liveFetched || entry.LiveModelFetcher == nil {
+		return nil, false
+	}
+	*liveFetched = true
+	tried := make(map[string]bool, len(models))
+	for _, m := range models {
+		tried[m] = true
+	}
+	live := entry.LiveModelFetcher()
+	var fresh []string
+	for _, id := range live {
+		if !tried[id] {
+			fresh = append(fresh, id)
+		}
+	}
+	return fresh, len(fresh) > 0
 }
 
 func (f *FallbackAdapter) notify(fromIdx, toIdx int, reason string) {
