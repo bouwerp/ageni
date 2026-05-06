@@ -12,10 +12,16 @@ import (
 // against. Different fallbacks typically use different model names
 // (anthropic uses "claude-…", groq uses "llama-…"), so the chain
 // rewrites Request.Model per attempt.
+//
+// FallbackModels lists alternative models to try on the same adapter
+// before advancing to the next entry. Used when the primary model is
+// unavailable (deprecated, unsupported on the provider) so we exhaust
+// same-provider alternatives before switching providers.
 type FallbackEntry struct {
-	Adapter Adapter
-	Model   string
-	Label   string // "<provider>/<model>" — for diagnostics
+	Adapter        Adapter
+	Model          string
+	Label          string   // "<provider>/<model>" — for diagnostics
+	FallbackModels []string // tried in order before advancing to next entry
 }
 
 // FallbackAdapter wraps an ordered chain of adapters. Stream tries each
@@ -57,67 +63,87 @@ func (f *FallbackAdapter) Stream(ctx context.Context, req Request) (<-chan Strea
 	return f.tryFrom(ctx, 0, req)
 }
 
-// tryFrom attempts the adapter at idx. On a retryable failure it
-// recurses into the next entry. On success — once any text / tool /
-// done event arrives — it commits to the current adapter and forwards
-// the rest of its stream.
+// tryFrom attempts the adapter at idx. For each entry it first cycles
+// through FallbackModels on model-unsupported errors before advancing
+// to the next entry. On any other retryable error it skips straight to
+// the next entry. Once any text / tool / done event arrives the stream
+// is committed and forwarded without further fallback.
 func (f *FallbackAdapter) tryFrom(ctx context.Context, idx int, req Request) (<-chan StreamEvent, error) {
+nextEntry:
 	for i := idx; i < len(f.entries); i++ {
 		entry := f.entries[i]
-		r := req
-		r.Model = entry.Model
-		ch, err := entry.Adapter.Stream(ctx, r)
-		if err != nil {
-			if isFallbackable(err) && i < len(f.entries)-1 {
-				f.notify(i, i+1, summariseErr(err))
-				continue
+		models := append([]string{entry.Model}, entry.FallbackModels...)
+
+		for mi, model := range models {
+			r := req
+			r.Model = model
+			ch, err := entry.Adapter.Stream(ctx, r)
+			if err != nil {
+				if isModelUnsupported(err) && mi < len(models)-1 {
+					f.notifyModelRotate(entry, model, models[mi+1], summariseErr(err))
+					continue
+				}
+				if isFallbackable(err) && i < len(f.entries)-1 {
+					f.notify(i, i+1, summariseErr(err))
+					continue nextEntry
+				}
+				return nil, err
 			}
-			return nil, err
-		}
-		// Peek the first event. If it's an error and we have more
-		// adapters, fall through. Otherwise commit and replay.
-		ev, ok, peekErr := peekFirst(ctx, ch)
-		if peekErr != nil {
-			return nil, peekErr
-		}
-		if !ok {
-			// Channel closed before producing — treat as failure.
-			if i < len(f.entries)-1 {
-				f.notify(i, i+1, "stream closed without output")
-				continue
+			// Peek the first event. If it's an error and we have more
+			// options, fall through. Otherwise commit and replay.
+			ev, ok, peekErr := peekFirst(ctx, ch)
+			if peekErr != nil {
+				return nil, peekErr
 			}
-			done := make(chan StreamEvent, 1)
-			close(done)
-			return done, nil
-		}
-		if ev.Type == StreamEventError && isFallbackable(ev.Err) {
-			// OpenRouter 402: "can only afford N tokens". Retry the SAME
-			// adapter once with MaxTokens capped to N before falling back,
-			// so we don't lose the preferred provider over a budget cap.
-			if affordable := extractAffordableTokens(ev.Err.Error()); affordable >= 256 &&
-				(r.MaxTokens == 0 || r.MaxTokens > affordable) {
-				drain(ch)
-				r2 := r
-				r2.MaxTokens = affordable
-				ch2, err2 := entry.Adapter.Stream(ctx, r2)
-				if err2 == nil {
-					ev2, ok2, _ := peekFirst(ctx, ch2)
-					if ok2 && ev2.Type != StreamEventError {
-						f.notify(i, i, fmt.Sprintf("token cap reduced to %d (402 budget limit)", affordable))
-						return replay([]StreamEvent{ev2}, ch2), nil
-					}
-					if ok2 {
-						drain(ch2)
+			if !ok {
+				// Channel closed before producing — treat as failure.
+				if mi < len(models)-1 {
+					f.notifyModelRotate(entry, model, models[mi+1], "stream closed without output")
+					continue
+				}
+				if i < len(f.entries)-1 {
+					f.notify(i, i+1, "stream closed without output")
+					continue nextEntry
+				}
+				done := make(chan StreamEvent, 1)
+				close(done)
+				return done, nil
+			}
+			if ev.Type == StreamEventError && isFallbackable(ev.Err) {
+				// OpenRouter 402: "can only afford N tokens". Retry the SAME
+				// model once with MaxTokens capped to N before trying others,
+				// so we don't lose the preferred model over a budget cap.
+				if affordable := extractAffordableTokens(ev.Err.Error()); affordable >= 256 &&
+					(r.MaxTokens == 0 || r.MaxTokens > affordable) {
+					drain(ch)
+					r2 := r
+					r2.MaxTokens = affordable
+					ch2, err2 := entry.Adapter.Stream(ctx, r2)
+					if err2 == nil {
+						ev2, ok2, _ := peekFirst(ctx, ch2)
+						if ok2 && ev2.Type != StreamEventError {
+							f.notify(i, i, fmt.Sprintf("token cap reduced to %d (402 budget limit)", affordable))
+							return replay([]StreamEvent{ev2}, ch2), nil
+						}
+						if ok2 {
+							drain(ch2)
+						}
 					}
 				}
+				// Model-unsupported: try next model on same provider first.
+				if isModelUnsupported(ev.Err) && mi < len(models)-1 {
+					drain(ch)
+					f.notifyModelRotate(entry, model, models[mi+1], summariseErr(ev.Err))
+					continue
+				}
+				if i < len(f.entries)-1 {
+					f.notify(i, i+1, summariseErr(ev.Err))
+					drain(ch)
+					continue nextEntry
+				}
 			}
-			if i < len(f.entries)-1 {
-				f.notify(i, i+1, summariseErr(ev.Err))
-				drain(ch)
-				continue
-			}
+			return replay([]StreamEvent{ev}, ch), nil
 		}
-		return replay([]StreamEvent{ev}, ch), nil
 	}
 	return nil, errors.New("fallback chain exhausted")
 }
@@ -129,6 +155,24 @@ func (f *FallbackAdapter) notify(fromIdx, toIdx int, reason string) {
 	from := f.entries[fromIdx].Label
 	to := f.entries[toIdx].Label
 	f.OnFallback(from, to, reason)
+}
+
+// notifyModelRotate fires OnFallback when rotating to a different model on
+// the same provider (before any cross-provider fallback).
+func (f *FallbackAdapter) notifyModelRotate(entry FallbackEntry, fromModel, toModel, reason string) {
+	if f.OnFallback == nil {
+		return
+	}
+	// Derive the provider prefix from entry.Label ("<provider>/<model>").
+	provider := entry.Label
+	if idx := strings.LastIndex(provider, "/"); idx > 0 {
+		provider = provider[:idx]
+	}
+	f.OnFallback(
+		FormatLabel(provider, fromModel),
+		FormatLabel(provider, toModel),
+		reason,
+	)
 }
 
 // peekFirst reads exactly one event from ch. Returns (ev, true, nil)
@@ -167,6 +211,30 @@ func replay(peeked []StreamEvent, src <-chan StreamEvent) <-chan StreamEvent {
 		}
 	}()
 	return out
+}
+
+// isModelUnsupported returns true when the error indicates the specific
+// model is unavailable on this provider (deprecated, not yet rolled out,
+// or removed). It is a strict subset of isFallbackable: the difference is
+// that model-unsupported errors trigger per-provider model rotation first;
+// only after all FallbackModels for that entry are exhausted do they
+// advance to the next FallbackEntry.
+func isModelUnsupported(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, h := range []string{
+		"model not supported", "model_not_supported",
+		"model not found", "modelnotfound",
+		"modelerror",
+		"not supported",
+	} {
+		if strings.Contains(msg, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // isFallbackable returns true when an error warrants trying the next

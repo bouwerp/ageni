@@ -263,6 +263,74 @@ func TestFallback402NoAffordableCountFallsBackDirectly(t *testing.T) {
 	}
 }
 
+func TestModelRotationBeforeProviderFallback(t *testing.T) {
+	// entry[0] has Model="model-a", FallbackModels=["model-b"].
+	// Stream("model-a") → not-supported. Stream("model-b") → success.
+	// Secondary provider must NOT be called.
+	var modelAErr = errors.New("401 ModelError: model-a not supported")
+	rotatingAdapter := &retryingStubForModel{
+		badModel: "model-a",
+		badErr:   modelAErr,
+		goodText: "rotated-ok",
+	}
+	secondary := &stubAdapter{name: "secondary", events: []StreamEvent{
+		{Type: StreamEventText, TextDelta: "should-not-reach"},
+	}}
+	var notified []string
+	chain := NewFallbackAdapter("test",
+		FallbackEntry{Adapter: rotatingAdapter, Model: "model-a", Label: "p/model-a", FallbackModels: []string{"model-b"}},
+		FallbackEntry{Adapter: secondary, Model: "s-model", Label: "secondary/s-model"},
+	)
+	chain.OnFallback = func(from, to, reason string) { notified = append(notified, from+"->"+to) }
+
+	ch, err := chain.Stream(context.Background(), Request{Model: "model-a"})
+	if err != nil {
+		t.Fatalf("unexpected err: %v", err)
+	}
+	var text string
+	for ev := range ch {
+		if ev.Type == StreamEventText {
+			text += ev.TextDelta
+		}
+	}
+	if text != "rotated-ok" {
+		t.Fatalf("text = %q, want %q", text, "rotated-ok")
+	}
+	if secondary.gotModel != "" {
+		t.Fatalf("secondary provider was invoked unexpectedly")
+	}
+	if len(notified) != 1 || notified[0] != "p/model-a->p/model-b" {
+		t.Fatalf("OnFallback = %v, want [p/model-a->p/model-b]", notified)
+	}
+	if rotatingAdapter.lastModel != "model-b" {
+		t.Fatalf("last model used = %q, want model-b", rotatingAdapter.lastModel)
+	}
+}
+
+// retryingStubForModel returns a model-unsupported error for badModel and
+// success for any other model.
+type retryingStubForModel struct {
+	badModel  string
+	badErr    error
+	goodText  string
+	lastModel string
+}
+
+func (r *retryingStubForModel) Provider() string { return "p" }
+func (r *retryingStubForModel) Stream(_ context.Context, req Request) (<-chan StreamEvent, error) {
+	r.lastModel = req.Model
+	ch := make(chan StreamEvent, 4)
+	if req.Model == r.badModel {
+		ch <- StreamEvent{Type: StreamEventError, Err: r.badErr}
+		close(ch)
+		return ch, nil
+	}
+	ch <- StreamEvent{Type: StreamEventText, TextDelta: r.goodText}
+	ch <- StreamEvent{Type: StreamEventDone}
+	close(ch)
+	return ch, nil
+}
+
 func TestFallbackOnceContentEmitted(t *testing.T) {
 	// Once content has streamed, mid-stream errors propagate without
 	// triggering fallback (we can't unwind a partial response).

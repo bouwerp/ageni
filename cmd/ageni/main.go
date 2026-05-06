@@ -458,15 +458,17 @@ func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleC
 	}
 	entries := make([]llm.FallbackEntry, 0, 1+len(fallbacks))
 	entries = append(entries, llm.FallbackEntry{
-		Adapter: buildAdapter(primary),
-		Model:   primary.Model,
-		Label:   llm.FormatLabel(primary.Provider.Name, primary.Model),
+		Adapter:        buildAdapter(primary),
+		Model:          primary.Model,
+		Label:          llm.FormatLabel(primary.Provider.Name, primary.Model),
+		FallbackModels: alternativeModels(primary),
 	})
 	for _, fb := range fallbacks {
 		entries = append(entries, llm.FallbackEntry{
-			Adapter: buildAdapter(fb),
-			Model:   fb.Model,
-			Label:   llm.FormatLabel(fb.Provider.Name, fb.Model),
+			Adapter:        buildAdapter(fb),
+			Model:          fb.Model,
+			Label:          llm.FormatLabel(fb.Provider.Name, fb.Model),
+			FallbackModels: alternativeModels(fb),
 		})
 	}
 	chain := llm.NewFallbackAdapter(name, entries...)
@@ -577,6 +579,20 @@ func clearAgeniEnv() {
 	for _, k := range keys {
 		_ = os.Unsetenv(k)
 	}
+}
+
+// alternativeModels returns the other recommended models for a role's provider,
+// excluding the one already configured as the primary. These populate
+// FallbackModels so the fallback chain rotates through same-provider models
+// before switching to a different provider.
+func alternativeModels(rc config.RoleConfig) []string {
+	out := make([]string, 0, len(rc.Provider.RecommendedModels))
+	for _, ms := range rc.Provider.RecommendedModels {
+		if ms.ID != rc.Model {
+			out = append(out, ms.ID)
+		}
+	}
+	return out
 }
 
 func handleSignals(cancel context.CancelFunc) {
