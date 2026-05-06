@@ -148,12 +148,18 @@ func run() error {
 	defer cancel()
 	go handleSignals(cancel)
 
+	bus := agent.NewBus()
+	tracker := llm.NewTracker()
+
 	// Build the primary adapters and wrap each in a fallback chain when
 	// MASTER_FALLBACKS / SUBAGENT_FALLBACKS are configured. Fallbacks
 	// trigger on retryable errors (429, 5xx, timeout, network).
 	onFallback := func(role string) func(from, to, reason string) {
 		return func(from, to, reason string) {
-			fmt.Fprintf(os.Stderr, "ageni: %s fallback %s → %s (%s)\n", role, from, to, reason)
+			bus.Publish(agent.Event{
+				Kind: agent.EvFlash,
+				Text: fmt.Sprintf("%s fallback %s → %s (%s)", role, from, to, reason),
+			})
 		}
 	}
 	masterAdapter := buildChain("master", cfg.Master, cfg.MasterFallbacks, onFallback("master"))
@@ -173,9 +179,6 @@ func run() error {
 			return subAdapter, cfg.Subagent.Model
 		}
 	}
-
-	bus := agent.NewBus()
-	tracker := llm.NewTracker()
 
 	// Build a base set of tools used by both master and sub-agents.
 	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect

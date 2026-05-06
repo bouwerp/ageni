@@ -765,12 +765,7 @@ func (a *App) layout() {
 	if a.atComp != nil {
 		suggestH = a.atComp.height()
 	}
-	// When the suggestion panel is visible, JoinVertical gains one extra
-	// separator line between body and suggest, so subtract suggestH+1.
 	suggestHAdj := suggestH
-	if suggestH > 0 {
-		suggestHAdj++
-	}
 	bodyH := a.height - inputH - statusH - 2 - suggestHAdj
 
 	a.chat.Width = chatW
@@ -917,6 +912,8 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvError:
 		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("\n[error] %v\n", ev.Err)))
 		a.refreshChat()
+	case agent.EvFlash:
+		a.flashMessage = ev.Text
 	}
 }
 
@@ -1022,12 +1019,7 @@ func (a *App) refreshChat() { a.setChat(a.chat.AtBottom()) }
 func (a *App) refreshChatForce() { a.setChat(true) }
 
 func (a *App) setChat(gotoBottom bool) {
-	body := a.buildChatContent()
-	// Pad to viewport height so the rendered box is always full-size.
-	// Without this, a short content string produces a shorter-than-expected
-	// border box and Bubble Tea leaves the previous frame's cells below it.
-	body = padToHeight(body, a.chat.Height)
-	a.chat.SetContent(body)
+	a.chat.SetContent(a.buildChatContent())
 	if gotoBottom {
 		a.chat.GotoBottom()
 	}
@@ -1054,21 +1046,6 @@ func (a *App) buildChatContent() string {
 		body += line
 	}
 	return body
-}
-
-// padToHeight appends blank lines so the string has at least `height` lines.
-// This keeps the chat box full-size even when content is shorter than the
-// viewport, preventing stale terminal cells from the previous frame showing
-// through below the border.
-func padToHeight(s string, height int) string {
-	if height <= 0 {
-		return s
-	}
-	have := strings.Count(s, "\n") + 1
-	if have >= height {
-		return s
-	}
-	return s + strings.Repeat("\n", height-have)
 }
 
 // masterInlineIndicator renders a Claude-Code-style "✻ thinking…" line at
@@ -1208,7 +1185,7 @@ func (a *App) refreshSide() {
 		}
 	}
 
-	a.side.SetContent(padToHeight(sb.String(), a.side.Height))
+	a.side.SetContent(sb.String())
 }
 
 // shouldShowInlineIndicator returns true when the visible chat pane needs
@@ -1263,8 +1240,8 @@ func (a *App) View() string {
 		return header + a.settingsForm.View()
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		chatStyle.Render(a.chat.View()),
-		sideStyle.Render(a.side.View()),
+		chatStyle.Height(a.chat.Height).Render(a.chat.View()),
+		sideStyle.Height(a.side.Height).Render(a.side.View()),
 	)
 	in := inputStyle.Render(a.input.View())
 	bottom := statusStyle.Render(a.statusLine())

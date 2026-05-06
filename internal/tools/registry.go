@@ -64,7 +64,8 @@ func (r *Registry) Definitions() []llm.ToolDef {
 // run_bash for arbitrary shell commands, so the model can self-correct on
 // the next turn instead of repeating the same mistake.
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResult {
-	t, ok := r.tools[call.Name]
+	name := sanitizeToolName(call.Name)
+	t, ok := r.tools[name]
 	if !ok {
 		return llm.ToolResult{
 			ToolCallID: call.ID,
@@ -72,6 +73,7 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 			IsError:    true,
 		}
 	}
+	call.Name = name
 	out, err := t.Call(ctx, call.Arguments)
 	if err != nil {
 		return llm.ToolResult{
@@ -81,6 +83,20 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 		}
 	}
 	return llm.ToolResult{ToolCallID: call.ID, Content: out}
+}
+
+// sanitizeToolName strips any suffix that begins with a character not valid in
+// a tool name (alphanumeric, underscore, hyphen). Some LLMs inject special
+// tokens like "<|channel|>" into tool names; stripping them lets us match the
+// intended tool instead of returning a spurious unknown-tool error.
+func sanitizeToolName(name string) string {
+	for i, c := range name {
+		if !((c >= 'a' && c <= 'z') || (c >= 'A' && c <= 'Z') ||
+			(c >= '0' && c <= '9') || c == '_' || c == '-') {
+			return name[:i]
+		}
+	}
+	return name
 }
 
 func (r *Registry) unknownToolMessage(name string) string {

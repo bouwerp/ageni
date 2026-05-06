@@ -29,6 +29,7 @@ const (
 	EvSubagentInbox     EventKind = "subagent_inbox"
 	EvSubagentUsage     EventKind = "subagent_usage"
 	EvError             EventKind = "error"
+	EvFlash             EventKind = "flash"
 )
 
 // Event is a single message on the bus.

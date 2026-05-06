@@ -200,6 +200,7 @@ func isFallbackable(err error) bool {
 		"connection refused", "connection reset", "broken pipe",
 		"eof", "unexpected eof",
 		"timeout", "timed out",
+		"model not supported", "model_not_supported", "modelnotfound", "model not found",
 	} {
 		if strings.Contains(msg, h) {
 			return true
