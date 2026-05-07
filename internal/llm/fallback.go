@@ -272,6 +272,7 @@ func isModelUnsupported(err error) bool {
 		"model not found", "modelnotfound",
 		"modelerror",
 		"not supported",
+		"404", // provider returns 404 when the model ID doesn't exist
 	} {
 		if strings.Contains(msg, h) {
 			return true
@@ -313,6 +314,7 @@ func isFallbackable(err error) bool {
 		"timeout", "timed out",
 		"model not supported", "model_not_supported", "modelnotfound", "model not found",
 		"not supported", "modelerror",
+		"404", // model ID not found on provider
 		"failed to call a function",
 	} {
 		if strings.Contains(msg, h) {
