@@ -9,7 +9,7 @@ commit log.
 The repo is at `github.com/bouwerp/ageni`. Releases follow the rule
 "every push that ships a user-visible change gets a new tag" — minor
 bumps for features, patch bumps for fixes. At the time of writing the
-project is on **v0.37.5** and 62 commits.
+project is on **v0.37.7** and 64 commits.
 
 ---
 
@@ -706,6 +706,33 @@ propagated to the user unchanged. Fixed by adding `"404"` to both
 same-provider model rotation (tries `llama-3.3-70b`); if all static
 candidates are exhausted, the chain advances to the next provider.
 
+### Phase 29 — command queue (v0.37.7)
+
+Previously, messages submitted while the master was processing were sent
+non-blocking to a capacity-16 channel (`masterIn`). They did eventually get
+processed, but there was no UI signal that they were waiting. In the edge
+case where all 16 slots were somehow full, messages were silently dropped.
+
+Added a TUI-side `msgQueue []string` that is the single source of truth
+for pending user messages:
+
+- **On Enter while `masterBusy || len(msgQueue) > 0`**: expand
+  `@`-mentions, display the message in chat normally, then append the
+  expanded text to `msgQueue` with a `[queued — N pending]` muted marker.
+- **On `EvMasterTurnDone`**: if `msgQueue` is non-empty, dequeue the
+  first item, call `sendToMaster`, and keep `masterBusy = true`. The
+  master sees a steady stream of user turns with no idle gap between them.
+  Only when the queue is empty is `masterBusy` cleared.
+- **On Esc (`stopGeneration`)**: `msgQueue` is set to nil before
+  cancelling in-flight work. The flash message reports how many queued
+  messages were dropped alongside how many sub-agents were cancelled.
+- **Status bar**: a `N queued` segment appears whenever `len(msgQueue) > 0`.
+
+The channel non-blocking send (`select { case … default: }`) is kept for
+`sendToMaster` as a safety valve, but because the queue is only drained
+from `EvMasterTurnDone` (one message at a time) and messages are queued
+instead of channel-sent when busy, the channel is never under pressure.
+
 ---
 
 ## Package layout
@@ -944,6 +971,8 @@ phase above.
 | v0.37.3 | Tool output ANSI/control char sanitization; remove non-existent Cerebras model |
 | v0.37.4 | Message-level control char sanitization (SanitizeText) at provider boundary |
 | v0.37.5 | 404 treated as model-unsupported in fallback chain; enables Cerebras rotation |
+| v0.37.6 | Documentation update: BUILDING.md phases 15–28, README to v0.37.5 state |
+| v0.37.7 | Command queue: messages submitted while master is busy queue + auto-dequeue |
 
 ---
 

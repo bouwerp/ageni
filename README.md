@@ -92,6 +92,18 @@ After every successful file mutation, `lintAfterEdit` appends a language-appropr
 - `send_to_subagent(id, msg)`
 - `kill_subagent(id)`
 
+### Command queue
+
+Submitting a message while the master is processing queues it rather than
+dropping it. The queued message appears in the chat immediately with a
+`[queued — N pending]` marker. When the current turn finishes the next
+message is dispatched automatically; `masterBusy` stays true until the
+queue drains. The status bar shows `N queued` while messages are waiting.
+
+**Esc** cancels the in-flight turn, kills any running sub-agents, *and*
+clears the queue — the flash message reports how many queued messages were
+dropped alongside how many sub-agents were cancelled.
+
 ### Selecting and copying text
 
 Bubble Tea captures mouse events for wheel-scrolling the chat pane, which blocks the terminal's native click-drag selection. Two ways around it:
@@ -387,7 +399,7 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`: tests with 
 
 ## Scope
 
-### v1 (current — v0.37.5)
+### v1 (current — v0.37.7)
 
 - Master/sub-agent loop with EventBus
 - Anthropic + OpenAI-compatible adapters with streaming + tool use
