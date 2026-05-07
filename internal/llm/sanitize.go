@@ -3,8 +3,28 @@ package llm
 import (
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strings"
 )
+
+// ansiRE matches ANSI/VT100 escape sequences in plain text.
+var ansiRE = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[A-Za-z]|[^\[])`)
+
+// SanitizeText strips ANSI escape sequences and bare control characters
+// (0x00–0x1F, 0x7F) from plain-text strings, preserving \n, \r, \t.
+// Applied to Message.Text and ToolResult.Content before building API params
+// so providers that reject even properly-escaped control characters don't 400.
+func SanitizeText(s string) string {
+	s = ansiRE.ReplaceAllString(s, "")
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		if r >= 0x20 || r == '\n' || r == '\r' || r == '\t' {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
 
 // sanitizeArgs ensures tool call argument bytes are valid JSON. LLMs
 // occasionally emit raw control characters (0x00-0x1F) inside JSON string

@@ -153,18 +153,18 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 	switch m.Role {
 	case RoleSystem:
-		return openai.SystemMessage(m.Text)
+		return openai.SystemMessage(SanitizeText(m.Text))
 	case RoleUser:
-		return openai.UserMessage(m.Text)
+		return openai.UserMessage(SanitizeText(m.Text))
 	case RoleAssistant:
 		ap := openai.ChatCompletionAssistantMessageParam{}
 		if m.Text != "" {
 			ap.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
-				OfString: openai.String(m.Text),
+				OfString: openai.String(SanitizeText(m.Text)),
 			}
 		}
 		for _, tc := range m.ToolCalls {
-			args := string(tc.Arguments)
+			args := string(sanitizeArgs(tc.Arguments))
 			if args == "" {
 				args = "{}"
 			}
@@ -183,9 +183,9 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 		// upstream — for now emit only the first.
 		if len(m.ToolResults) > 0 {
 			tr := m.ToolResults[0]
-			return openai.ToolMessage(tr.Content, tr.ToolCallID)
+			return openai.ToolMessage(SanitizeText(tr.Content), tr.ToolCallID)
 		}
 		return openai.UserMessage("")
 	}
-	return openai.UserMessage(m.Text)
+	return openai.UserMessage(SanitizeText(m.Text))
 }

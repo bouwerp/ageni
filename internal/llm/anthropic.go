@@ -180,12 +180,13 @@ func messageToAnthropic(m Message, last bool) (anthropic.MessageParam, error) {
 	var blocks []anthropic.ContentBlockParamUnion
 
 	if m.Text != "" {
-		blocks = append(blocks, anthropic.NewTextBlock(m.Text))
+		blocks = append(blocks, anthropic.NewTextBlock(SanitizeText(m.Text)))
 	}
 	for _, tc := range m.ToolCalls {
 		var input any
-		if len(tc.Arguments) > 0 {
-			if err := json.Unmarshal(tc.Arguments, &input); err != nil {
+		clean := sanitizeArgs(tc.Arguments)
+		if len(clean) > 0 {
+			if err := json.Unmarshal(clean, &input); err != nil {
 				return anthropic.MessageParam{}, fmt.Errorf("tool call %s: %w", tc.Name, err)
 			}
 		} else {
@@ -194,7 +195,7 @@ func messageToAnthropic(m Message, last bool) (anthropic.MessageParam, error) {
 		blocks = append(blocks, anthropic.NewToolUseBlock(tc.ID, input, tc.Name))
 	}
 	for _, tr := range m.ToolResults {
-		blocks = append(blocks, anthropic.NewToolResultBlock(tr.ToolCallID, tr.Content, tr.IsError))
+		blocks = append(blocks, anthropic.NewToolResultBlock(tr.ToolCallID, SanitizeText(tr.Content), tr.IsError))
 	}
 
 	// Mark the last user-turn block with cache_control to checkpoint history.
