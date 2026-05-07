@@ -74,7 +74,7 @@ Tools are unified internally as Go structs implementing a `Tool` interface, then
 
 | Category | Tools |
 |---|---|
-| **Files** | `read_file` (with line ranges), `write_file`, `edit_file`, `multi_edit` (atomic batch), `list_dir`, `glob` (`**` patterns) |
+| **Files** | `read_file` (with line ranges), `write_file`, `edit_file`, `apply_diff` (search/replace blocks + miss diagnostics), `multi_edit` (atomic batch), `list_dir`, `glob` (`**` patterns) |
 | **Search** | `grep` (ripgrep --json), `web_fetch` (HTML→markdown), `web_search` (Tavily) |
 | **Shell** | `run_bash` (streamed), `run_tests` (typed Go/npm/pytest/cargo) |
 | **Git** | `git_status` (porcelain v2), `git_diff`, `git_log`, `compute_diff` (in-memory unified diff) |
@@ -83,6 +83,8 @@ Tools are unified internally as Go structs implementing a `Tool` interface, then
 | **Registries** | `pkg_info` (npm / PyPI / Go modules / crates.io) |
 | **MCP** | Any tools exported by servers in `~/.ageni/mcp.json` (prefixed `<server>__<tool>`) |
 | **Skills** | `read_skill(name, topic?)` loads on-demand instructions; ~21 skills bundled from [realfi-co/agent-skills](https://github.com/realfi-co/agent-skills) (MIT) + anything in `~/.ageni/skills/` or `./.ageni/skills/` |
+
+After every successful file mutation, `lintAfterEdit` appends a language-appropriate lint summary to the tool result (Go: `gofmt -d`; Python: `flake8` summary). The model sees lint feedback in the same turn without a second round-trip.
 
 **Master-only tools:**
 - `spawn_subagent(task, context)` → `subagent_id`
@@ -141,38 +143,78 @@ Slower iteration loop, less mature LLM SDKs (Anthropic's Rust SDK is newer; Open
 ageni/
   cmd/ageni/main.go          # entrypoint
   internal/
-    app/                     # Bubble Tea App, top-level model
-    tui/
-      chat.go                # master conversation pane
-      subagent_list.go       # sidebar: live status of each sub-agent
-      subagent_detail.go     # transcript of selected sub-agent
-      input.go               # multiline input bar
     agent/
-      master.go              # master loop, event handling
-      subagent.go            # sub-agent runtime
+      master.go              # master loop, lead/worker routing, system prompt
+      subagent.go            # sub-agent runtime + budget wrap-up
+      manager.go             # spawn / track / kill sub-agents
       bus.go                 # EventBus
+      tools.go               # spawn/check/send/kill + record_correction (master-only)
+      find_tool.go           # find_in_codebase Librarian tool
     llm/
-      llm.go                 # unified Message / ToolCall / stream interface
-      anthropic.go           # AnthropicAdapter
-      openai.go              # OpenAIAdapter (covers OpenAI-compatible endpoints)
+      llm.go                 # Adapter interface + Message / ToolCall / Request types
+      anthropic.go           # AnthropicAdapter with prompt-cache breakpoints
+      openai.go              # OpenAIAdapter (covers all OpenAI-compatible endpoints)
+      fallback.go            # FallbackAdapter — ordered chain, per-provider rotation
+      sanitize.go            # SanitizeText + sanitizeArgs
+      providers.go           # provider registry (base URL, API key env, models)
+      fetch_models.go        # live /v1/models autocomplete
+      pricing.go             # paid + indicative pricing tables
     tools/
-      registry.go            # Tool interface + JSON-schema generation
-      files.go               # read/write/edit/list
+      registry.go            # Tool interface + JSON-schema + sanitizeOutput
+      files.go               # read_file / write_file / edit_file / list_dir
+      applydiff.go           # apply_diff (search_replace + whole + miss diagnostics)
+      multiedit.go           # multi_edit (atomic batch)
       shell.go               # run_bash
-      spawn.go               # spawn/check/send/kill (master-only)
+      lint.go                # lintAfterEdit (gofmt, flake8)
+      git.go                 # git_status / git_diff / git_log / compute_diff
+      changes.go             # ChangeTracker (snapshots + checkpoints)
+      glob.go / grep.go      # glob + ripgrep wrapper
+      web.go                 # web_fetch / web_search
+    tui/
+      app.go                 # Bubble Tea root model
+      settings.go            # Ctrl+, settings page
+      diffrender.go          # Claude Code-style diff rendering
+      atfile.go / atcomplete.go  # @-mention expansion + autocomplete popup
+      history.go             # command history
+      styles.go              # lipgloss styles + colour palette
+    session/
+      session.go             # per-instance state
+      log.go / replay.go     # JSONL logger + session resume
+      picker.go              # interactive session browser
     config/
       config.go              # env-based config loader
-    session/
-      log.go                 # JSONL session persistence
+    mcp/
+      mcp.go                 # MCP client (subprocess transport)
+    skills/
+      catalog.go             # lazy skill catalog + read_skill tool
   go.mod
   go.sum
   .env.example
+  AGENTS.md                  # per-project master instructions (optional)
   README.md
+  BUILDING.md
 ```
 
 ## Token efficiency
 
 Token cost is a hard constraint. Multi-agent systems are powerful but [Anthropic's published data](https://www.anthropic.com/engineering/multi-agent-research-system) shows they consume ~15× the tokens of single-turn chat and ~4× a single agent. The harness is designed around the principle that *the master directs, workers execute* — and the worker is the cheaper model.
+
+### Lead / worker model routing
+
+The master runs in two adapter slots per turn:
+
+- **Lead adapter** (iteration 0 of each `takeTurns` call) — used for planning, decomposition, and synthesis. Set to the most capable model you can afford (Opus / GPT-4o class).
+- **Worker adapter** (iterations 1+) — used for execution loops. Set to a cheaper model (Sonnet / Haiku class).
+
+Configure both in the settings page (`Ctrl+,`) under "Master lead model" and "Master worker model". When the lead and worker are the same, the routing is transparent.
+
+### Provider fallback chains
+
+Each provider slot (master, sub-agent) is backed by a `FallbackAdapter` — an ordered chain of adapters. On a retryable error (rate limit, 5xx, connection failure, context-length exceeded), the chain tries the next entry. Fallback only triggers before any response content has been emitted; once text or tool calls are streaming the chain commits.
+
+Within each chain entry, `FallbackModels` lists alternative models to try on the same provider before crossing to the next provider. A `LiveModelFetcher` callback, called at most once when all static candidates are exhausted, fetches the provider's live model list and appends any IDs not yet tried — preventing stale hardcoded model names from blocking progress.
+
+The TUI status bar flashes a `fallback: <from> → <to> (reason)` message on each transition.
 
 ### Routing rules (baked into master system prompt)
 
@@ -253,6 +295,8 @@ Built-in presets — pick any of these in the wizard, or set `MASTER_PROVIDER` /
 | `mistral` | ✓ |  | Mistral La Plateforme: Codestral, Large, Nemo. Free tier with limits. |
 | `deepseek` | trial |  | DeepSeek V3 / R1. Cheap pay-as-you-go. |
 | `gemini` | ✓ |  | Gemini 2.5 Pro / Flash via OpenAI-compat. Generous free quotas. |
+| `togetherai` | trial |  | Together.ai inference: Llama 3.3 70B, Qwen, DeepSeek. Competitive pricing. |
+| `opencode-zen` |  |  | OpenCode's hosted Zen model. OpenAI-compatible; strong on coding tasks. |
 | `ollama` | local |  | Local: `ollama serve` on :11434. Wizard auto-detects + lists models. |
 | `llamacpp` | local |  | Local: `llama-server` on :8080. |
 | `vllm` | local |  | Self-hosted vLLM on :8000. |
@@ -343,14 +387,22 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`: tests with 
 
 ## Scope
 
-### v1 (this build)
+### v1 (current — v0.37.5)
 
 - Master/sub-agent loop with EventBus
-- Anthropic + OpenAI adapters with streaming + tool use
-- TUI: chat pane, sub-agent sidebar, sub-agent detail pane, input bar
-- File + bash tools
-- Spawn/check/send/kill sub-agent tools
-- Session logging
+- Anthropic + OpenAI-compatible adapters with streaming + tool use
+- Provider fallback chains with per-provider model rotation and live model fetch
+- Lead/worker adapter routing for master turns
+- TUI: chat pane, sub-agent sidebar, sub-agent detail pane, settings (Ctrl+,)
+- Inline diff rendering after file mutations
+- File + bash tools, `apply_diff` with miss diagnostics, `multi_edit`
+- Auto-lint feedback appended to file edit results
+- Per-tool-call checkpoints + rewind
+- Spawn/check/send/kill sub-agent tools with AllowedTools whitelisting
+- AGENTS.md per-project instruction loader
+- @-mention file expansion + fuzzy autocomplete popup
+- Session logging, resume, interactive session browser
+- MCP server support
 - Cross-platform single-binary distribution
 
 ### Research informing this design
@@ -371,10 +423,7 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 
 - Approval prompts for risky tool calls (v1 auto-approves; cwd is shared)
 - Cost / token-usage dashboard
-- Resume from previous session
-- MCP server support
 - Sandboxed sub-agent working directories
-- Sub-agent tool-call permissioning (e.g., read-only sub-agents)
 
 ### Roadmap (post-research, see `research.md`)
 

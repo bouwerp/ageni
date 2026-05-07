@@ -9,7 +9,7 @@ commit log.
 The repo is at `github.com/bouwerp/ageni`. Releases follow the rule
 "every push that ships a user-visible change gets a new tag" — minor
 bumps for features, patch bumps for fixes. At the time of writing the
-project is on **v0.25.1** and 46 commits.
+project is on **v0.37.5** and 62 commits.
 
 ---
 
@@ -395,6 +395,7 @@ typed (raw); the master sees the expanded form.
 
 ### Phase 14 — resume hardening (v0.25.1)
 
+
 The master's replayed history contained tool results like "spawned
 sub-agent s1" — so on resume it treated `s1` as live and would call
 `check_subagent("s1")` against a fresh empty Manager. Fix:
@@ -408,6 +409,302 @@ sub-agent s1" — so on resume it treated `s1` as live and would call
    `<system-reminder>` warning the master that the listed IDs are
    TERMINATED; appended to the replayed message buffer before
    `master.Run` starts.
+
+### Phase 15 — AGENTS.md project instructions (v0.26.0)
+
+`ageni` now reads an `AGENTS.md` file from the project root on startup
+(falling back to `~/.ageni/AGENTS.md` for global defaults). Its
+contents are appended to the master's system prompt under an
+`<agents_instructions>` block. This is the equivalent of Claude Code's
+`CLAUDE.md`: a place for per-project conventions ("always use `errors.As`
+not string matching", "the test suite is `go test ./...`") that are
+injected once into the cache region so every master turn sees them
+without incurring user-message tokens.
+
+The loader is lazy — `AGENTS.md` is read once at start and its digest
+cached so a stale stat on every turn doesn't add I/O.
+
+### Phase 16 — apply_diff with miss diagnostics (v0.27.0)
+
+`edit_file` performs a single literal search-and-replace. For multi-block
+changes on actively-modified files LLMs mis-predict the current content and
+miss. Added `apply_diff` in `internal/tools/applydiff.go`:
+
+- **`search_replace` format** (default, matches Aider's format): one or
+  more `<<<<<<< SEARCH … ======= … >>>>>>> REPLACE` blocks applied
+  in order. Each SEARCH must match exactly once unless `replace_all`
+  is set.
+- **`whole` format**: replaces the entire file. Equivalent to
+  `write_file` but included so callers use one tool.
+
+The key addition is **miss diagnostics**: when a SEARCH block doesn't
+match, the tool computes an edit-distance score against every window of
+the same size in the file and returns the top-3 closest candidate
+regions with line numbers. The model sees "here's the closest thing I
+found, starting at line 47" and can retry without re-reading the file.
+
+### Phase 17 — lead / worker adapter routing (v0.28.0)
+
+Added two fields to `Master`: `leadAdapter` and `leadModel`. When set,
+iteration 0 of every master `takeTurns` call uses the lead adapter;
+iteration 1+ use the worker adapter.
+
+```go
+func (m *Master) adapterForIter(iter int) (llm.Adapter, string) {
+    if iter == 0 && m.leadAdapter != nil {
+        return m.leadAdapter, m.leadModel
+    }
+    return m.adapter, m.model
+}
+```
+
+The pattern mirrors Goose's `GOOSE_LEAD_MODEL` concept: run planning and
+decomposition on the expensive model (Opus / GPT-4o), then switch to the
+cheaper worker model (Sonnet / Haiku) for the execution loop iterations.
+The TUI settings page exposes "Master lead model" and "Master worker
+model" as separate fields. Passing nil lead reverts to uniform routing.
+
+### Phase 18 — per-tool-call checkpoints + rewind (v0.29.0)
+
+The session log already recorded every event but there was no way to
+undo a bad edit short of `git checkout`. Added checkpointing:
+
+- `ChangeTracker` already snapshots each file on first touch. Extended
+  it with an explicit `Checkpoint(label)` call that records a named
+  marker to `changes.jsonl`.
+- The `rewind_to_checkpoint` master-only tool restores every file
+  touched since the named checkpoint to its snapshotted state.
+- Called automatically after each tool call that mutates files — the
+  master gets the checkpoint ID back in the tool result and can call
+  `rewind_to_checkpoint(id)` if the subsequent test/lint step fails.
+
+This gives the master a lightweight undo without requiring a git
+working tree.
+
+### Phase 19 — auto-lint after edits (v0.30.0)
+
+`internal/tools/lint.go` adds `lintAfterEdit(absPath)`, called by
+`WriteFile`, `EditFile`, `MultiEdit`, and `ApplyDiff` after every
+successful mutation. It runs a language-appropriate linter capped at
+8 seconds:
+
+- **Go**: `gofmt -l` — if the output is non-empty, re-runs `gofmt -d`
+  and appends the diff to the tool's return string.
+- **Python**: `flake8 --select E,W --max-line-length 120` summary.
+
+The lint output is appended to the tool result the model already sees —
+no extra turn needed. The model reads "gofmt: file needs reformat" and
+can decide whether to fix it. We deliberately don't auto-fix: silent
+side-effect mutations would surprise users and produce diffs they
+didn't request.
+
+### Phase 20 — Together.ai and OpenCode Zen (v0.31.0)
+
+Added two first-class providers to `internal/llm/providers.go`:
+
+- **`togetherai`** — Together.ai's inference API. OpenAI-compatible;
+  hosts Llama 3.3 70B, Qwen 2.5 Coder, DeepSeek V3, and many others.
+  Competitive pricing; tends to be faster than OpenRouter for the same
+  model.
+- **`opencode-zen`** — OpenCode's hosted Zen model. OpenAI-compatible;
+  good for coding tasks; distinct from the `opencode` local proxy entry.
+
+Both appear in the init wizard, the settings provider picker, and the
+model autocomplete list. Their `RecommendedModels` lists are pre-seeded
+with the models that reliably support tool use.
+
+### Phase 21 — provider fallback chains (v0.32.0)
+
+`internal/llm/fallback.go` introduces `FallbackAdapter` and
+`FallbackEntry`. A chain is a prioritised list of adapters; `Stream`
+tries each in turn, falling through on retryable errors (429, 402, 5xx,
+connection failures, timeouts, context-length) but only if the current
+adapter hasn't emitted any text or tool calls yet — once partial content
+has streamed, fallback stops.
+
+```go
+type FallbackEntry struct {
+    Adapter          Adapter
+    Model            string
+    Label            string
+    FallbackModels   []string
+    LiveModelFetcher func() []string
+}
+```
+
+`FallbackModels` lists alternative models to try on the same provider
+before crossing to the next entry. `LiveModelFetcher`, called at most
+once per run, fetches the provider's current model list and appends any
+IDs not yet tried — so a deprecated hardcoded model doesn't block
+progress.
+
+The `OnFallback` callback fires on each fall-through with `from`, `to`,
+and `reason` strings. The TUI uses this to flash a status-bar message.
+
+A special **OpenRouter 402 retry** is built in: when the error says
+"can only afford N tokens", the chain retries the same model once with
+`MaxTokens` capped to N before trying alternatives, preserving the
+preferred model over a transient budget cap.
+
+### Phase 22 — settings overhaul: static page + model ranking + price display (v0.33.0–v0.34.0)
+
+**v0.33.0** replaced the previous multi-screen Huh form with a single
+scrollable static settings page (`internal/tui/settings.go`). All
+fields are visible at once; the form only triggers Huh when a field
+needs a text input pop-up. This fixed a class of viewport-sizing bugs
+where field titles were clipped on narrow terminals.
+
+**v0.34.0** added per-model price display and quality ranking to the
+model picker:
+
+- `internal/llm/pricing.go` extended with `RankedModel` type and a
+  `ModelsByQuality` sort key. Models are ordered by tier:
+  `opus/gpt-4` class → `sonnet/gpt-4o` class → `haiku/flash` class →
+  free / local.
+- The settings model autocomplete shows `[provider] model-name  $X.XX/Mtok` so
+  users can see cost before committing.
+- Section names embedded in each field's title so the user knows which
+  section a field belongs to without needing to scroll to find the header
+  (fixed a disorientation issue from v0.33.0).
+
+### Phase 23 — @ path autocomplete (v0.35.x)
+
+The v0.25.0 `@<path>` expansion was expand-on-submit only. Added a
+VSCode-style popup in `internal/tui/atcomplete.go`:
+
+- Typing `@` in the input bar opens a fuzzy-searchable file picker
+  listing every file in the working tree (excluding `.git`, `vendor`,
+  `node_modules`).
+- Arrow keys + Enter select. Tab completes the common prefix. Esc
+  closes without inserting.
+- The popup is rendered as a floating overlay anchored to the cursor
+  position in the input bar using Lipgloss border + background styles.
+
+### Phase 24 — fallback chain bug fixes (v0.36.x)
+
+Several correctness fixes to the fallback chain and TUI after v0.32.0:
+
+- **413 and context-length errors** added to `isFallbackable` — Groq
+  rejects prompts that exceed its context window with a 413; other
+  providers use `context_length_exceeded` strings. Both now trigger
+  chain advance.
+- **OpenRouter 402** wording variations (`insufficient credits`,
+  `payment required`) added to `isFallbackable`.
+- **Stale terminal cells**: rapid pane-switch (Tab / Shift+Tab) left
+  cells from the previous pane. Fixed by forcing a full repaint on
+  pane-switch events.
+- **Layout overflow**: side pane overflowed the terminal width on
+  narrow terminals when sub-agent names were long. Fixed with
+  `lipgloss.MaxWidth` on the pane container.
+- **Stderr bleed**: `run_bash` was mixing stdout + stderr into a single
+  buffer. Separated them; stderr now appears with a distinct style in
+  the chat pane.
+- **Malformed tool names**: some provider responses emit tool names
+  with trailing whitespace or null bytes. Trimmed at deserialization.
+
+### Phase 25 — per-provider model rotation + lazy live fetch (v0.37.0)
+
+Extended `FallbackEntry` with two fields:
+
+```go
+FallbackModels   []string       // tried in order before advancing
+LiveModelFetcher func() []string // called at most once when all static exhausted
+```
+
+`tryFrom` now cycles through `FallbackModels` (same provider, different
+model) before advancing to the next `FallbackEntry` (different
+provider). `LiveModelFetcher`, when non-nil, is called once after all
+static candidates are exhausted: it fetches the provider's live model
+list and appends any IDs not yet tried. This means a deprecated
+hardcoded `FallbackModels` entry doesn't block progress — the live
+list fills in.
+
+### Phase 26 — plan→delegate enforcement (v0.37.1)
+
+The master prompt gained an explicit `<rule>` block enforcing the
+plan→delegate cycle. Prior to this change the master would occasionally
+call file/shell tools directly on trivial requests rather than spawning
+a sub-agent. The new rule reads:
+
+> DELEGATE — Spawn sub-agents for every task. You NEVER call grep,
+> glob, read_file, write_file, edit_file, run_bash, or any file/shell
+> tool yourself. Those are worker tools. If you find yourself about to
+> call one — STOP and spawn a worker instead.
+
+Enforcing this at the prompt level (rather than the tool layer) avoids
+hard refusals for edge cases while still steering the model away from
+the anti-pattern in the common case.
+
+### Phase 27 — Claude Code-style diff rendering (v0.37.2)
+
+`internal/tui/diffrender.go` renders unified diffs inline in the chat
+pane after every file mutation. The rendering matches Claude Code's
+style:
+
+- Green (`+`) lines for additions, red (`-`) lines for deletions.
+- Faint cyan `@@` hunk headers.
+- Bold accent file path header.
+- Capped at `diffMaxLines` (50) with a "N more lines" truncation notice.
+
+`styledLines` applies the lipgloss style to each non-empty line
+independently so the ANSI reset lands on the same line as its content —
+this prevents colour bleed when the viewport clips or scrolls past a
+styled line.
+
+The diff is appended to the write/edit tool's return string so it flows
+naturally into the chat pane alongside the tool result box.
+
+### Phase 28 — control character sanitization (v0.37.3–v0.37.5)
+
+Three related fixes landed in quick succession after providers started
+rejecting requests with "invalid control character" 400 errors.
+
+**Root cause.** Terminal tools (`run_bash`, `grep`, etc.) emit ANSI
+escape sequences (`\x1b[32m`, etc.) and bare control characters
+(`\x00`–`\x1F`) as part of their output. The session log stores these
+bytes verbatim in JSONL. When the session is later replayed into a new
+API request, `json.RawMessage(e.ToolArgs)` re-introduces the raw bytes
+into the request body. Strict providers (Together.ai, Fireworks via
+OpenRouter, Cerebras) reject even properly-escaped `` sequences
+in JSON string values.
+
+**v0.37.3: tool output layer.** Added `internal/tools/sanitize.go` with
+`sanitizeOutput(s)`. Applied in `Registry.Execute` to every tool result
+and error string before they enter the message history:
+
+```go
+func sanitizeOutput(s string) string {
+    s = ansiRE.ReplaceAllString(s, "")
+    // strip bare control chars (0x00–0x1F) except \n, \r, \t
+    ...
+}
+```
+
+Also removed the non-existent model `gpt-oss-120b` from Cerebras's
+`RecommendedModels` (Cerebras only has `llama-3.3-70b` and
+`llama3.1-8b`).
+
+**v0.37.4: message serialization layer.** The tool-output fix wasn't
+enough for history replay — tool call *arguments* in replayed messages
+can also contain control bytes. Added `SanitizeText` (exported) to
+`internal/llm/sanitize.go` and applied it at the provider boundary:
+
+- `messageToOpenAI()` — all `Text`, `Content`, `ToolResult.Content`
+  fields sanitized; `sanitizeArgs()` re-applied to replayed tool-call
+  argument bytes.
+- `messageToAnthropic()` — same, plus `sanitizeArgs()` applied *before*
+  `json.Unmarshal` on replayed arguments (the Anthropic adapter
+  unmarshals to `any`, so invalid JSON would panic rather than produce
+  a bad string).
+
+**v0.37.5: 404 as model-unsupported.** Cerebras returns HTTP 404 when
+a model ID doesn't exist (rather than the more specific 422 other
+providers use). The fallback chain's `isFallbackable` guard didn't
+include 404, so `isModelUnsupported` was never reached and the error
+propagated to the user unchanged. Fixed by adding `"404"` to both
+`isFallbackable` and `isModelUnsupported`. Now a Cerebras 404 triggers
+same-provider model rotation (tries `llama-3.3-70b`); if all static
+candidates are exhausted, the chain advances to the next provider.
 
 ---
 
@@ -437,6 +734,8 @@ internal/llm/
   llm.go          Adapter interface + Message/ToolCall/Request types
   anthropic.go    Anthropic adapter with prompt-cache breakpoints
   openai.go       OpenAI-compatible adapter (used by OpenRouter/Groq/etc.)
+  fallback.go     FallbackAdapter — ordered chain with per-provider model rotation
+  sanitize.go     SanitizeText + sanitizeArgs — strip control chars before API send
   providers.go    provider registry + base URL/api-key env mapping
   fetch_models.go dynamic /v1/models autocomplete fetch
   pricing.go      paid + indicative pricing tables, savings tracking
@@ -463,10 +762,12 @@ internal/tools/
   files.go        read_file / write_file / edit_file / list_dir
   fileops.go      make_dir / move_file / delete_file
   multiedit.go    multi_edit (atomic batch replacements)
+  applydiff.go    apply_diff (search_replace + whole formats + miss diagnostics)
   glob.go         glob (recursive ** patterns)
   grep.go         grep via ripgrep --json
   shell.go        run_bash
   tests.go        run_tests
+  lint.go         lintAfterEdit (gofmt, flake8 — appended to edit results)
   git.go          git_status / git_diff / git_log + ComputeDiff
   github.go       github (gh CLI passthrough)
   web.go          web_fetch / web_search
@@ -474,7 +775,8 @@ internal/tools/
   pkginfo.go      pkg_info (Go module info)
   todo.go         TodoWrite with claim/release
   corrections.go  RecordCorrection
-  changes.go      ChangeTracker (snapshots + JSONL)
+  changes.go      ChangeTracker (snapshots + JSONL + checkpoints)
+  sanitize.go     sanitizeOutput — strips ANSI/control chars from tool output
   registry.go     Tool / Registry / Subset / unknownToolMessage
 
 internal/tui/
@@ -482,8 +784,10 @@ internal/tui/
   settings.go     Ctrl+, settings form (huh)
   history.go      command history (~/.ageni/history.txt)
   atfile.go       @<path> mention expansion
+  atcomplete.go   @<path> fuzzy autocomplete popup
+  diffrender.go   Claude Code-style diff rendering for chat pane
+  toolcall.go     tool-call + tool-result rendering helpers
   styles.go       lipgloss styles + color palette
-  widgets.go      shared rendering helpers
 ```
 
 ---
@@ -623,6 +927,23 @@ phase above.
 | v0.24.0 | Interactive session browser at startup |
 | v0.25.0 | @path file references in user input |
 | v0.25.1 | Warn master about dead sub-agents on resume |
+| v0.26.0 | AGENTS.md project-instruction loader |
+| v0.27.0 | apply_diff tool with search/replace blocks + miss diagnostics |
+| v0.28.0 | Lead/worker adapter routing for master turns |
+| v0.29.0 | Per-tool-call checkpoints + rewind_to_checkpoint tool |
+| v0.30.0 | Auto-lint after file edits (gofmt, flake8) |
+| v0.31.0 | Together.ai and OpenCode Zen as first-class providers |
+| v0.32.0 | Provider fallback chains (FallbackAdapter + per-provider model rotation) |
+| v0.33.0 | Settings redesign: single static scrollable page |
+| v0.34.0 | Model ranking by quality tier + per-model price display in settings |
+| v0.35.x | @-mention autocomplete: VSCode-style fuzzy file picker popup |
+| v0.36.x | Fallback bug fixes: 413/context-length, 402 variants, stale cells, layout overflow, stderr bleed, malformed tool names |
+| v0.37.0 | Per-provider model rotation + lazy live-model fetch via LiveModelFetcher |
+| v0.37.1 | Plan→delegate enforcement in master system prompt |
+| v0.37.2 | Claude Code-style diff rendering in chat pane after file mutations |
+| v0.37.3 | Tool output ANSI/control char sanitization; remove non-existent Cerebras model |
+| v0.37.4 | Message-level control char sanitization (SanitizeText) at provider boundary |
+| v0.37.5 | 404 treated as model-unsupported in fallback chain; enables Cerebras rotation |
 
 ---
 
@@ -693,6 +1014,28 @@ phase above.
   workers hallucinated calls to it. Fix: register it in the sub-agent
   base registry too. The Librarian itself excludes it from
   `AllowedTools`, so no recursion.
+- **Control characters require a three-layer defence.** Sanitizing at
+  the tool-output layer (v0.37.3) wasn't sufficient: the session log
+  round-trips through JSON decode/encode on replay, re-introducing raw
+  bytes into replayed tool-call arguments. The fix required sanitization
+  at three independent layers: tool execution output, message-text
+  serialization, and tool-argument bytes. The Anthropic adapter additionally
+  needs `sanitizeArgs` applied *before* `json.Unmarshal` because it
+  unmarshals arguments to `any` (unlike the OpenAI adapter which passes
+  them as raw strings).
+- **Provider error codes don't match expectations.** Cerebras returns
+  404 for "model ID not found" rather than a 422 or provider-specific
+  string. isFallbackable was exhaustively enumerated but 404 was
+  missing. The lesson: any HTTP status code that a strict provider
+  *ought* to use for a config error should be assumed reachable by
+  *some* provider and added proactively, even if it sounds like it
+  shouldn't mean "model not found".
+- **Fallback gate order matters.** The model-rotation path in
+  `tryFrom` sits inside `if isFallbackable(ev.Err)`, which is a
+  *superset* check of `isModelUnsupported`. The inner
+  `isModelUnsupported` check was correct; the outer `isFallbackable`
+  guard was what blocked it. When debugging "why didn't the chain
+  rotate?", start at the outermost guard, not the innermost logic.
 
 ---
 
@@ -700,12 +1043,10 @@ phase above.
 
 Stuff that's been brought up but not yet built:
 
-- **`@`-mention autocomplete in the input.** Currently only
-  expand-on-submit. A popup with file matches as the user types would
-  be the natural next step.
-- **Interactive diff view in the TUI.** Currently F4 dumps to file.
-  A built-in viewer (split pane: file list on the left, diff on the
-  right, j/k navigation) would be more ergonomic.
+- **Interactive diff view in the TUI.** Inline rendering in the chat
+  pane (v0.37.2) shows diffs after each edit. A full-session viewer
+  (file list left, unified diff right, j/k navigation) is the natural
+  next step.
 - **Copy-mode (tmux-style).** A keyboard-driven select+yank inside
   the alt-screen, so users don't have to wrestle with mouse capture
   vs terminal selection.
@@ -714,6 +1055,11 @@ Stuff that's been brought up but not yet built:
   the next lever is structural: have `check_subagent` return a much
   louder "WORKER WAS TERMINATED IN A PRIOR PROCESS" instead of the
   current `"no such sub-agent: s1"`.
+- **Sandbox tiers.** Landlock (Linux) + Seatbelt (macOS) for `read-only`
+  / `workspace-write` / `danger-full-access` modes on sub-agent tool
+  calls.
+- **Headless mode.** `ageni exec "<prompt>"` with structured JSON
+  output for CI/PR-bot use.
 
 If any of those become important, the build process above is the
 template — small focused PR, semver bump, one tag per change.
