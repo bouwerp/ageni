@@ -403,7 +403,13 @@ func (m *Master) takeTurns(parent context.Context) {
 					m.bus.Publish(Event{Kind: EvMasterToolCall, ToolCall: ev.ToolCall})
 				}
 			case llm.StreamEventError:
-				// Error during streaming.
+				// Context cancelled = intentional stop (Escape). Don't show an
+				// error; just return cleanly. EvMasterTurnDone is NOT published
+				// here — stopGeneration() in the TUI clears masterBusy directly
+				// since the cancelled context means TurnDone may never arrive.
+				if context.Cause(ctx) != nil || ctx.Err() != nil {
+					return
+				}
 				m.bus.Publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", ev.Err)})
 				return
 			case llm.StreamEventDone:

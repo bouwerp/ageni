@@ -158,10 +158,48 @@ nextEntry:
 					continue nextEntry
 				}
 			}
-			return replay([]StreamEvent{ev}, ch), nil
+			return f.wrapMidStreamFallback(ctx, replay([]StreamEvent{ev}, ch), i, req), nil
 		}
 	}
 	return nil, errors.New("fallback chain exhausted")
+}
+
+// wrapMidStreamFallback wraps a committed stream so that a fallbackable
+// error arriving before any real content (text/tool/thinking tokens) has
+// been emitted can transparently restart from the next fallback entry.
+// Once content has been streamed we can no longer rewind, so the error
+// is forwarded unchanged — the caller will handle it.
+func (f *FallbackAdapter) wrapMidStreamFallback(ctx context.Context, src <-chan StreamEvent, entryIdx int, req Request) <-chan StreamEvent {
+	nextIdx := entryIdx + 1
+	if nextIdx >= len(f.entries) {
+		return src // no more entries; nothing to wrap
+	}
+	out := make(chan StreamEvent, 16)
+	go func() {
+		defer close(out)
+		contentSeen := false
+		for ev := range src {
+			switch ev.Type {
+			case StreamEventText, StreamEventToolCall, StreamEventThinking:
+				contentSeen = true
+			case StreamEventError:
+				if !contentSeen && isFallbackable(ev.Err) {
+					f.notify(entryIdx, nextIdx, "mid-stream: "+summariseErr(ev.Err))
+					ch2, err2 := f.tryFrom(ctx, nextIdx, req)
+					if err2 != nil {
+						out <- StreamEvent{Type: StreamEventError, Err: err2}
+						return
+					}
+					for ev2 := range ch2 {
+						out <- ev2
+					}
+					return
+				}
+			}
+			out <- ev
+		}
+	}()
+	return out
 }
 
 // nextModel returns any additional model IDs to append to the rotation
@@ -286,16 +324,14 @@ func isModelUnsupported(err error) bool {
 //   - HTTP 429 / rate-limit
 //   - HTTP 402 Payment Required (OpenRouter: insufficient credits)
 //   - HTTP 413 Request Entity Too Large (Groq / others: prompt too long)
+//   - HTTP 400 Bad Request (provider-specific strictness another may avoid)
 //   - HTTP 5xx server errors
 //   - Context-length / token-limit errors (various provider wordings)
 //   - Network / connection failures
 //   - Deadline exceeded
 //
-// Permanent errors (auth 401/403, 404, schema
-// mismatches) bubble up unchanged. 400 Bad Request is included in
-// fallbacks because it can be caused by provider-specific strictness
-// or malformed JSON that another model might avoid or another
-// provider might accept.
+// Permanent errors (401/403 auth failures, schema mismatches) are NOT
+// fallbackable — if a key is wrong that's a config error, not a transient one.
 func isFallbackable(err error) bool {
 	if err == nil {
 		return false
@@ -310,7 +346,6 @@ func isFallbackable(err error) bool {
 		"402", "payment required", "insufficient credits", "can only afford",
 		"413", "request too large", "request entity too large",
 		"400", "bad request", "bad_request",
-		"401", "unauthorized", "authentication failed", "invalid api key",
 		"context_length_exceeded", "context length exceeded",
 		"maximum context length", "prompt is too long",
 		"500", "502", "503", "504",

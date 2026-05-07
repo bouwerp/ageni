@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -645,6 +646,14 @@ func (a *App) stopGeneration() {
 	queued := len(a.msgQueue)
 	a.msgQueue = nil
 	subs := a.cancelInFlight()
+	// Clear thinking state immediately — the master context is cancelled so
+	// EvMasterTurnDone may never arrive (streaming errors surface as EvError,
+	// not TurnDone).  Setting these here is safe because master.Halt() was
+	// already called by cancelInFlight, preventing any new turn.
+	a.masterBusy = false
+	a.masterThinking = false
+	a.masterThinkBuf.Reset()
+	a.masterToolIn = ""
 	switch {
 	case subs > 0 && queued > 0:
 		a.flashMessage = fmt.Sprintf("stopped generation (cancelled master + %d sub-agent(s); dropped %d queued message(s))", subs, queued)
@@ -990,6 +999,10 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshSide()
 		a.refreshChat()
 	case agent.EvError:
+		// Don't show cancellation noise — user pressed Escape intentionally.
+		if errors.Is(ev.Err, context.Canceled) {
+			break
+		}
 		a.chatBuf.WriteString("\n" + subErrStyle.Render(fmt.Sprintf("[error] %v", a.wrapChat(ev.Err.Error()))) + "\n")
 		a.refreshChat()
 	case agent.EvFlash:
