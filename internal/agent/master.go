@@ -37,11 +37,12 @@ type Master struct {
 	leadAdapter llm.Adapter
 	leadModel   string
 
-	skillCatalog    string // optional: appended to the cached system prompt
-	repoMap         string // optional: rendered repository map appended to the cached prefix
-	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
-	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
+	skillCatalog    string        // optional: appended to the cached system prompt
+	repoMap         string        // optional: rendered repository map appended to the cached prefix
+	agentsMD        string        // optional: project AGENTS.md instructions (cross-vendor convention)
+	correctionsPath string        // optional: session corrections.jsonl; tail block reads last K
 	memory          *tools.Memory // optional: persistent MEMORY.md snapshot
+	contextWindow   int           // model context window in tokens (0 = unknown)
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
@@ -107,6 +108,15 @@ func (m *Master) SetCorrectionsPath(path string) {
 func (m *Master) SetMemory(mem *tools.Memory) {
 	m.mu.Lock()
 	m.memory = mem
+	m.mu.Unlock()
+}
+
+// SetContextWindow tells the master how many tokens the current model's
+// context window holds. Used to trigger compaction warnings and compaction.
+// Pass 0 to disable (default). Typical values: 200000 (Claude), 128000 (GPT-4).
+func (m *Master) SetContextWindow(tokens int) {
+	m.mu.Lock()
+	m.contextWindow = tokens
 	m.mu.Unlock()
 }
 
@@ -375,6 +385,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				if ev.Usage != nil {
 					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
+					m.checkContextPressure(ctx, ev.Usage)
 				}
 			}
 		}

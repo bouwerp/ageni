@@ -71,6 +71,11 @@ func (CheckTool) Description() string {
 func (CheckTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)
 }
+// subAgentOutputCap is the maximum number of characters of a sub-agent's
+// final output returned by check_subagent. Large outputs bloat master context;
+// the master can request a focused follow-up via send_to_subagent if needed.
+const subAgentOutputCap = 4000
+
 func (t CheckTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct{ ID string }
 	if err := json.Unmarshal(args, &p); err != nil {
@@ -87,6 +92,10 @@ func (t CheckTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	}
 	out := fmt.Sprintf("status: %s\nobjective: %s\n", s.Status(), s.Task.Objective)
 	if final := s.FinalText(); final != "" {
+		if len(final) > subAgentOutputCap {
+			truncated := len(final) - subAgentOutputCap
+			final = final[:subAgentOutputCap] + fmt.Sprintf("\n\n[... %d chars truncated — use send_to_subagent to request a focused summary of specific sections]", truncated)
+		}
 		out += "final_output:\n" + final + "\n"
 	}
 	out += "recent_activity:\n" + strings.Join(tail, "\n")

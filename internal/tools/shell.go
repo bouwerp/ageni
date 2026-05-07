@@ -64,11 +64,42 @@ func (RunBash) Call(ctx context.Context, args json.RawMessage) (string, error) {
 			return "", err
 		}
 	}
-	out := buf.String()
-	if len(out) > 16384 {
-		out = out[:16384] + "\n[truncated to 16KB]"
-	}
+	out := truncateBashOutput(buf.String())
 	return fmt.Sprintf("[exit %d]\n%s", exitCode, out), nil
+}
+
+// truncateBashOutput caps bash stdout/stderr at maxOutputChars using a
+// bi-directional head+tail strategy (crush pattern): preserves the first
+// half and the last half so both the initial context and the trailing error
+// or result are visible even on very long outputs.
+const maxOutputChars = 30_000
+
+func truncateBashOutput(s string) string {
+	if len(s) <= maxOutputChars {
+		return s
+	}
+	half := maxOutputChars / 2
+	// Snap to rune boundaries.
+	headEnd := half
+	for headEnd > 0 && !isRuneBoundary(s, headEnd) {
+		headEnd--
+	}
+	tailStart := len(s) - half
+	for tailStart < len(s) && !isRuneBoundary(s, tailStart) {
+		tailStart++
+	}
+	dropped := tailStart - headEnd
+	return s[:headEnd] +
+		fmt.Sprintf("\n\n[... %d chars truncated ...]\n\n", dropped) +
+		s[tailStart:]
+}
+
+// isRuneBoundary reports whether position i is the start of a UTF-8 code point.
+func isRuneBoundary(s string, i int) bool {
+	if i == 0 || i == len(s) {
+		return true
+	}
+	return (s[i] & 0xC0) != 0x80
 }
 
 // dangerousPattern pairs a compiled regex with a human-readable reason.

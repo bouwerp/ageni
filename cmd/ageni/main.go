@@ -335,6 +335,9 @@ func run() error {
 	if projectMemory != nil {
 		master.SetMemory(projectMemory)
 	}
+	// Wire context window so the master can emit pressure warnings and
+	// trigger in-place compaction. Derive from the model name; default 128K.
+	master.SetContextWindow(knownContextWindow(cfg.Master.Model))
 	if skillReg != nil {
 		catalog := skillReg.Catalog()
 		master.SetSkillCatalog(catalog)
@@ -440,6 +443,7 @@ func run() error {
 			}
 		}
 		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
+		master.SetContextWindow(knownContextWindow(newCfg.Master.Model))
 		if newCfg.MasterLeadActive {
 			master.SetLead(buildAdapter(newCfg.MasterLead), newCfg.MasterLead.Model)
 		} else {
@@ -663,4 +667,39 @@ func handleSignals(cancel context.CancelFunc) {
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 	cancel()
+}
+
+// knownContextWindow returns a conservative context-window token estimate for
+// the given model name. Used to configure context-pressure warnings and
+// in-place compaction. Returns 128_000 (safe floor) for unknown models.
+func knownContextWindow(model string) int {
+	m := strings.ToLower(model)
+	switch {
+	// Anthropic
+	case strings.Contains(m, "claude-3-5-sonnet"), strings.Contains(m, "claude-3-opus"),
+		strings.Contains(m, "claude-3-haiku"), strings.Contains(m, "claude-3-5-haiku"),
+		strings.Contains(m, "claude-3-7"), strings.Contains(m, "claude-sonnet-4"),
+		strings.Contains(m, "claude-opus-4"), strings.Contains(m, "claude-haiku-4"):
+		return 200_000
+	// OpenAI GPT-4o / o-series
+	case strings.Contains(m, "gpt-4o"), strings.Contains(m, "gpt-4-turbo"),
+		strings.Contains(m, "o1"), strings.Contains(m, "o3"), strings.Contains(m, "o4"):
+		return 128_000
+	// OpenAI GPT-4.1
+	case strings.Contains(m, "gpt-4.1"):
+		return 1_047_576
+	// Gemini
+	case strings.Contains(m, "gemini-1.5"), strings.Contains(m, "gemini-2"):
+		return 1_000_000
+	// Llama 3 / Groq / Cerebras / Mistral large
+	case strings.Contains(m, "llama-3"), strings.Contains(m, "mixtral"),
+		strings.Contains(m, "mistral-large"), strings.Contains(m, "deepseek-r1"),
+		strings.Contains(m, "deepseek-v3"):
+		return 131_072
+	// DeepSeek context
+	case strings.Contains(m, "deepseek"):
+		return 64_000
+	default:
+		return 128_000
+	}
 }
