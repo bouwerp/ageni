@@ -78,11 +78,11 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 	if err != nil {
 		return llm.ToolResult{
 			ToolCallID: call.ID,
-			Content:    err.Error(),
+			Content:    sanitizeOutput(err.Error()),
 			IsError:    true,
 		}
 	}
-	return llm.ToolResult{ToolCallID: call.ID, Content: out}
+	return llm.ToolResult{ToolCallID: call.ID, Content: sanitizeOutput(out)}
 }
 
 // sanitizeToolName strips any suffix that begins with a character not valid in

@@ -157,7 +157,6 @@ var providers = []ProviderSpec{
 		RecommendedModels: []ModelSuggestion{
 			{ID: "llama-3.3-70b", Label: "Llama 3.3 70B (free)", Free: true},
 			{ID: "llama3.1-8b", Label: "Llama 3.1 8B (free)", Free: true},
-			{ID: "gpt-oss-120b", Label: "GPT-OSS 120B (free)", Free: true},
 		},
 		SuggestedMaxSubagents: 4,
 		KnownLimits:           "Free tier: ~30 RPM, 1M tokens/day. Very fast TTFT. Verify model availability at inference-docs.cerebras.ai/llms.txt.",
