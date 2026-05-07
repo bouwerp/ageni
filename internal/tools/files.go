@@ -162,7 +162,22 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	body := string(b)
 	count := strings.Count(body, p.OldString)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in %s", p.Path)
+		var sb strings.Builder
+		fmt.Fprintf(&sb, "old_string not found in %s.\n", p.Path)
+		candidates := fuzzyCandidates(body, p.OldString, 3)
+		if len(candidates) == 0 {
+			sb.WriteString("No similar regions found. Check whitespace and that the file has not changed since you last read it.")
+		} else {
+			sb.WriteString("Closest candidates in the current file:\n")
+			for _, c := range candidates {
+				fmt.Fprintf(&sb, "\n— lines %d-%d (overlap %d/%d):\n", c.startLine, c.endLine, c.overlap, c.want)
+				for i, ln := range c.lines {
+					fmt.Fprintf(&sb, "    %4d │ %s\n", c.startLine+i, ln)
+				}
+			}
+			sb.WriteString("\nFix old_string to match exactly (whitespace counts), then retry.")
+		}
+		return "", errors.New(sb.String())
 	}
 	if count > 1 {
 		return "", fmt.Errorf("old_string occurs %d times in %s; provide more context to make it unique", count, p.Path)

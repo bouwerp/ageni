@@ -124,7 +124,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 			return "", err
 		}
 		if len(blocks) == 0 {
-			return "", errors.New("no SEARCH/REPLACE blocks found in content (expected <<<<<<< SEARCH … ======= … >>>>>>> REPLACE)")
+			return "", errors.New("no SEARCH/REPLACE blocks found in content.\n\nExpected format:\n  <<<<<<< SEARCH\n  ...exact content to find...\n  =======\n  ...replacement content...\n  >>>>>>> REPLACE\n\nIf you want to replace the entire file, pass format=\"whole\" instead. For a single-string replacement, use edit_file.")
 		}
 		text := string(body)
 		applied := 0

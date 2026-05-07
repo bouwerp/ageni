@@ -139,6 +139,10 @@ func guessAlternative(name string) string {
 		return "Did you mean glob? Or run_bash with find."
 	case "edit", "patch", "apply_patch":
 		return "Did you mean edit_file (single replacement) or multi_edit (atomic batch)?"
+	case "repo_facts", "repo_info", "codebase_info", "project_info", "get_facts":
+		return "Did you mean find_in_codebase? It searches the codebase via a worker and returns a distilled summary with paths and line numbers."
+	case "install", "pip_install", "npm_install", "go_get", "apt_install":
+		return `Did you mean run_bash? E.g. run_bash with "pip install <pkg>", "npm install <pkg>", "go get <pkg>", or "apt-get install -y <pkg>".`
 	}
 	return ""
 }
