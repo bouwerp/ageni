@@ -199,7 +199,7 @@ func run() error {
 		skillReg = nil
 	}
 
-	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
+	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker, jobs *tools.JobManager) {
 		r.Register(tools.ReadFile{})
 		r.Register(tools.WriteFile{Tracker: tr})
 		r.Register(tools.EditFile{Tracker: tr})
@@ -212,6 +212,9 @@ func run() error {
 		r.Register(tools.MoveFile{Tracker: tr})
 		r.Register(tools.DeleteFile{Tracker: tr})
 		r.Register(tools.RunBash{})
+		r.Register(tools.RunBashBackground{Jobs: jobs})
+		r.Register(tools.JobOutput{Jobs: jobs})
+		r.Register(tools.JobKill{Jobs: jobs})
 		r.Register(tools.WebFetch{})
 		r.Register(tools.WebSearch{})
 		r.Register(tools.GitStatus{})
@@ -251,8 +254,27 @@ func run() error {
 	// `ageni sessions diff`.
 	changes := tools.NewChangeTracker(sess.Path("changes.jsonl"), sess.Path("snapshots"))
 
+	// One JobManager shared between master and sub-agents so background
+	// jobs outlive individual sub-agent sessions and can be checked/killed
+	// by the master.
+	jobs := tools.NewJobManager()
+
+	// Load (or create) project MEMORY.md. Per-project file lives at
+	// .ageni/MEMORY.md in the repo root; falls back to the session dir
+	// when there is no repo root detected.
+	var projectMemory *tools.Memory
+	{
+		memPath := sess.Path("MEMORY.md")
+		if root := detectRepoRoot(); root != "" {
+			memPath = root + "/.ageni/MEMORY.md"
+		}
+		if m, err := tools.NewMemory(memPath); err == nil {
+			projectMemory = m
+		}
+	}
+
 	registry := tools.NewRegistry()
-	registerBase(registry, todo, changes)
+	registerBase(registry, todo, changes, jobs)
 
 	// Manager + master-only tools. Pass the app-wide ctx so sub-agents
 	// inherit a lifetime that outlives any individual master turn.
@@ -269,7 +291,7 @@ func run() error {
 	registry.Register(agent.FindInCodebase{M: manager, Bus: bus})
 
 	masterReg := tools.NewRegistry()
-	registerBase(masterReg, todo, changes)
+	registerBase(masterReg, todo, changes, jobs)
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
@@ -277,6 +299,9 @@ func run() error {
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
+	if projectMemory != nil {
+		masterReg.Register(tools.MemoryWrite{Mem: projectMemory})
+	}
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
@@ -307,6 +332,9 @@ func run() error {
 		fmt.Println()
 	}
 	master.SetCorrectionsPath(sess.Path("corrections.jsonl"))
+	if projectMemory != nil {
+		master.SetMemory(projectMemory)
+	}
 	if skillReg != nil {
 		catalog := skillReg.Catalog()
 		master.SetSkillCatalog(catalog)

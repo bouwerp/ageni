@@ -41,9 +41,13 @@ type Master struct {
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
 	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
+	memory          *tools.Memory // optional: persistent MEMORY.md snapshot
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
+
+	// loop detects the master repeating the same tool calls in a tight cycle.
+	loop loopDetector
 
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
 	// CancelCurrent). nil when no call is in flight.
@@ -94,6 +98,15 @@ func (m *Master) SetAgentsMD(rendered string) {
 func (m *Master) SetCorrectionsPath(path string) {
 	m.mu.Lock()
 	m.correctionsPath = path
+	m.mu.Unlock()
+}
+
+// SetMemory attaches a persistent Memory store to the master. Its snapshot
+// is injected as a stable <memory> block in the system prompt so the agent
+// remembers key facts across sessions without polluting the conversation.
+func (m *Master) SetMemory(mem *tools.Memory) {
+	m.mu.Lock()
+	m.memory = mem
 	m.mu.Unlock()
 }
 
@@ -201,6 +214,7 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 	switch {
 	case ev.Kind == EvUserMessage:
 		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
+		m.loop.reset() // fresh turn — reset loop window
 		return true
 	case isSubagentEvent(ev.Kind):
 		m.pendingEvs = append(m.pendingEvs, ev)
@@ -307,6 +321,11 @@ func (m *Master) takeTurns(parent context.Context) {
 	// block (if any) is stripped first so we don't accumulate duplicates.
 	m.refreshActiveContext()
 
+	// Phase-1 context pruning: replace old, large tool outputs with a stub
+	// to reduce token consumption. Keeps the last pruneProtectTurns turns
+	// intact so the model always has immediate context.
+	m.pruneOldToolResults()
+
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
@@ -374,6 +393,12 @@ func (m *Master) takeTurns(parent context.Context) {
 		for _, tc := range toolCalls {
 			result := m.tools.Execute(ctx, tc)
 			m.bus.Publish(Event{Kind: EvMasterToolDone, ToolCall: &tc, ToolResult: &result})
+			// Inject loop-detection warning into the tool result so the model
+			// sees it on the next turn and can self-correct.
+			if warn := m.loop.record(tc, result); warn != "" {
+				result.Content = result.Content + "\n\n" + warn
+				result.IsError = true
+			}
 			m.messages = append(m.messages, llm.Message{
 				Role:        llm.RoleTool,
 				ToolResults: []llm.ToolResult{result},
@@ -384,6 +409,47 @@ func (m *Master) takeTurns(parent context.Context) {
 
 // MarshalCaller is a placeholder so we can extend turn limits per session.
 var _ = time.Now
+
+// pruneProtectTurns is the number of recent conversational turns (assistant +
+// tool messages) whose tool outputs are preserved verbatim. Older tool outputs
+// that exceed pruneMinBytes are replaced with a compact stub to reduce token
+// consumption (Phase-1 context pruning, inspired by hermes-agent).
+const pruneProtectTurns = 4
+const pruneMinBytes = 200
+
+// pruneOldToolResults walks m.messages and replaces the Content of tool-result
+// messages that are older than pruneProtectTurns turns and larger than
+// pruneMinBytes with "[tool output cleared to reduce context]". This is cheap
+// (no LLM call) and can eliminate 30-50% of token bloat from file reads and
+// terminal output that the model no longer needs verbatim.
+func (m *Master) pruneOldToolResults() {
+	msgs := m.messages
+	// Count how many assistant turns exist so we can protect the tail.
+	assistantTurns := 0
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleAssistant {
+			assistantTurns++
+		}
+	}
+	if assistantTurns <= pruneProtectTurns {
+		return // not enough history to prune
+	}
+	threshold := assistantTurns - pruneProtectTurns
+
+	seen := 0
+	for i := range msgs {
+		if msgs[i].Role == llm.RoleAssistant {
+			seen++
+		}
+		if msgs[i].Role == llm.RoleTool && seen <= threshold {
+			for j := range msgs[i].ToolResults {
+				if len(msgs[i].ToolResults[j].Content) > pruneMinBytes {
+					msgs[i].ToolResults[j].Content = "[tool output cleared to reduce context]"
+				}
+			}
+		}
+	}
+}
 
 // CanonicalWorkerOutputFormat is the structured response schema the master
 // requests from every worker by default. Standardising the shape makes the
@@ -412,6 +478,7 @@ func (m *Master) systemPrompt() string {
 	catalog := m.skillCatalog
 	repoMap := m.repoMap
 	agentsMD := m.agentsMD
+	mem := m.memory
 	m.mu.RUnlock()
 
 	skillsBlock := ""
@@ -426,9 +493,15 @@ func (m *Master) systemPrompt() string {
 	if agentsMD != "" {
 		agentsBlock = "\n\n<project_instructions source=\"AGENTS.md\">\n" + agentsMD + "\n\nThese are the project's authoritative agent instructions (cross-vendor convention shared with Codex, Cursor, Amp, Factory, Jules, Copilot). Honour them as if they were given by the user. When multiple <agents_md> scopes apply to a file, the deepest matching scope wins — root-level rules apply unless a nested scope overrides them.\n</project_instructions>"
 	}
+	memoryBlock := ""
+	if mem != nil {
+		if snap := mem.Snapshot(); snap != "" {
+			memoryBlock = "\n\n<memory>\n" + snap + "\n\nThese are your persistent notes about this project and user. They are injected once at session start (frozen snapshot). To update them, use the memory_write tool. Entries are § -delimited; the [N%] indicator shows capacity used.\n</memory>"
+		}
+	}
 
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness. The user talks only to you. You plan, decompose work into tasks, delegate every task to sub-agents, monitor their progress, and synthesize the result. You never do the work yourself.</role>` + skillsBlock + repoMapBlock + agentsBlock + `
+	return `<role>You are the master agent in the ageni harness. The user talks only to you. You plan, decompose work into tasks, delegate every task to sub-agents, monitor their progress, and synthesize the result. You never do the work yourself.</role>` + skillsBlock + repoMapBlock + agentsBlock + memoryBlock + `
 
 <orchestration_rules>
 You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. These rules are absolute:
