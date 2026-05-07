@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"strings"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -16,7 +17,9 @@ import (
 // it's reported back as prompt_tokens_details.cached_tokens. We sort tools
 // alphabetically and keep system prompt position stable to maximize hits.
 type OpenAIAdapter struct {
-	client openai.Client
+	client   openai.Client
+	provider string
+	baseURL  string
 }
 
 func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
@@ -27,10 +30,20 @@ func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
 	}
-	return &OpenAIAdapter{client: openai.NewClient(opts...)}
+	return &OpenAIAdapter{
+		client:  openai.NewClient(opts...),
+		baseURL: baseURL,
+	}
 }
 
-func (o *OpenAIAdapter) Provider() string { return "openai" }
+func (o *OpenAIAdapter) SetProvider(p string) { o.provider = p }
+
+func (o *OpenAIAdapter) Provider() string {
+	if o.provider != "" {
+		return o.provider
+	}
+	return "openai"
+}
 
 func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	params := o.buildParams(req)
@@ -108,14 +121,24 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 }
 
 func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams {
+	isCerebras := strings.Contains(o.baseURL, "cerebras.ai")
+
 	params := openai.ChatCompletionNewParams{
 		Model: req.Model,
-		StreamOptions: openai.ChatCompletionStreamOptionsParam{
-			IncludeUsage: openai.Bool(true),
-		},
 	}
+	if !isCerebras {
+		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
+			IncludeUsage: openai.Bool(true),
+		}
+	}
+
 	if req.MaxTokens > 0 {
-		params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
+		if isCerebras {
+			// Cerebras and some other strict providers still expect max_tokens.
+			params.MaxTokens = openai.Int(int64(req.MaxTokens))
+		} else {
+			params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
+		}
 	}
 	if req.Temperature != nil {
 		params.Temperature = openai.Float(*req.Temperature)
@@ -123,7 +146,7 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)+1)
 	if req.System != "" {
-		msgs = append(msgs, openai.SystemMessage(req.System))
+		msgs = append(msgs, openai.SystemMessage(SanitizeText(req.System)))
 	}
 	for _, m := range req.Messages {
 		msgs = append(msgs, messageToOpenAI(m))

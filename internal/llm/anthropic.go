@@ -141,7 +141,7 @@ func (a *AnthropicAdapter) buildParams(req Request) (anthropic.MessageNewParams,
 	// System prompt — cached.
 	if req.System != "" {
 		params.System = []anthropic.TextBlockParam{{
-			Text:         req.System,
+			Text:         SanitizeText(req.System),
 			CacheControl: anthropic.CacheControlEphemeralParam{},
 		}}
 	}

@@ -445,7 +445,9 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 	case llm.KindAnthropic:
 		return llm.NewAnthropicAdapter(rc.APIKey)
 	default:
-		return llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
+		a := llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
+		a.SetProvider(rc.Provider.Name)
+		return a
 	}
 }
 

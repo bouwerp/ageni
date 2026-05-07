@@ -291,8 +291,11 @@ func isModelUnsupported(err error) bool {
 //   - Network / connection failures
 //   - Deadline exceeded
 //
-// Permanent errors (auth 401/403, 400 bad request, 404, schema
-// mismatches) bubble up unchanged.
+// Permanent errors (auth 401/403, 404, schema
+// mismatches) bubble up unchanged. 400 Bad Request is included in
+// fallbacks because it can be caused by provider-specific strictness
+// or malformed JSON that another model might avoid or another
+// provider might accept.
 func isFallbackable(err error) bool {
 	if err == nil {
 		return false
@@ -305,6 +308,7 @@ func isFallbackable(err error) bool {
 		"429", "rate limit", "rate-limit",
 		"402", "payment required", "insufficient credits", "can only afford",
 		"413", "request too large", "request entity too large",
+		"400", "bad request", "bad_request",
 		"context_length_exceeded", "context length exceeded",
 		"maximum context length", "prompt is too long",
 		"500", "502", "503", "504",

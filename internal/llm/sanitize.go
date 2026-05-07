@@ -29,11 +29,14 @@ func SanitizeText(s string) string {
 // sanitizeArgs ensures tool call argument bytes are valid JSON. LLMs
 // occasionally emit raw control characters (0x00-0x1F) inside JSON string
 // literals — most commonly a literal newline ('\n' = 0x0a) — which is
-// rejected by providers with "invalid character in string literal".
+// rejected by providers with "invalid character in string literal". It also
+// handles truncated responses by attempting to close unterminated strings
+// and JSON blocks.
 //
 // Fast path: json.Valid passes → return as-is.
 // Slow path: scan byte-by-byte inside string literals and replace bare
-// control characters with their proper JSON escape sequences.
+// control characters with their proper JSON escape sequences, then heal
+// any unterminated structures.
 func sanitizeArgs(raw []byte) json.RawMessage {
 	if len(raw) == 0 {
 		return json.RawMessage("{}")
@@ -41,7 +44,65 @@ func sanitizeArgs(raw []byte) json.RawMessage {
 	if json.Valid(raw) {
 		return json.RawMessage(raw)
 	}
-	return json.RawMessage(escapeControlsInJSON(string(raw)))
+	s := escapeControlsInJSON(string(raw))
+	s = healJSON(s)
+	return json.RawMessage(s)
+}
+
+// healJSON attempts to close any unterminated string literals, objects, or
+// arrays in a truncated JSON string.
+func healJSON(s string) string {
+	s = strings.TrimSpace(s)
+	if s == "" {
+		return "{}"
+	}
+
+	inStr := false
+	escaped := false
+	var stack []rune
+
+	for i := 0; i < len(s); i++ {
+		r := rune(s[i])
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' && inStr {
+			escaped = true
+			continue
+		}
+		if r == '"' {
+			inStr = !inStr
+			continue
+		}
+		if !inStr {
+			if r == '{' || r == '[' {
+				stack = append(stack, r)
+			} else if r == '}' || r == ']' {
+				if len(stack) > 0 {
+					// Pop regardless of match — we're healing, not validating.
+					stack = stack[:len(stack)-1]
+				}
+			}
+		}
+	}
+
+	if escaped {
+		// String ended with a backslash; remove it so it doesn't escape our
+		// added quote or leave the JSON malformed.
+		s = s[:len(s)-1]
+	}
+	if inStr {
+		s += `"`
+	}
+	for i := len(stack) - 1; i >= 0; i-- {
+		if stack[i] == '{' {
+			s += "}"
+		} else {
+			s += "]"
+		}
+	}
+	return s
 }
 
 // escapeControlsInJSON walks a potentially-invalid JSON string and escapes

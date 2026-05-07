@@ -393,7 +393,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// they don't want to see their screen flooded with the
 				// resulting <attached_file> blocks). The master gets the
 				// expanded form via masterIn.
-				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + text + "\n\n")
+				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + a.wrapChat(text) + "\n\n")
 				expanded, attached, skipped := expandFileMentions(text)
 				if len(attached) > 0 {
 					a.flashMessage = fmt.Sprintf("attached %d file(s): %s", len(attached), strings.Join(attached, ", "))
@@ -910,7 +910,7 @@ func (a *App) handleEvent(ev agent.Event) {
 			// in the sub-agent pane otherwise.
 			if ev.ToolResult.IsError {
 				a.chatBuf.WriteString(toolErrStyle.Render(fmt.Sprintf("[%s tool error] ", ev.SubagentID)) +
-					toolErrStyle.Render(compactSnippetTUI(ev.ToolResult.Content, 160)) + "\n")
+					toolErrStyle.Render(a.wrapChat(ev.ToolResult.Content)) + "\n")
 			}
 		}
 		// Tool finished — back to "thinking" until the next stream-start
@@ -922,15 +922,15 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvSubagentRetry:
 		// Surface transient errors + retries in chat so the user can see why
 		// a sub-agent is taking longer than expected.
-		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s", ev.SubagentID, oneLine(ev.Text))) + "\n")
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s", ev.SubagentID, a.wrapChat(ev.Text))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
-			b.WriteString("\n[retry] " + ev.Text + "\n")
+			b.WriteString("\n[retry] " + a.wrapChat(ev.Text) + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentInbox:
-		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[→ %s] %s", ev.SubagentID, oneLine(ev.Text))) + "\n")
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[→ %s] %s", ev.SubagentID, a.wrapChat(ev.Text))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
-			b.WriteString("\n[inbox] " + ev.Text + "\n")
+			b.WriteString("\n[inbox] " + a.wrapChat(ev.Text) + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentDone:
@@ -959,14 +959,14 @@ func (a *App) handleEvent(ev agent.Event) {
 		// Show the error in the master chat AND in the sub-agent's transcript
 		// so the user sees it whether they're looking at master or sub-agent
 		// view.
-		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s error] %s", ev.SubagentID, errText)) + "\n")
+		a.chatBuf.WriteString(subErrStyle.Render(fmt.Sprintf("[%s error] %s", ev.SubagentID, a.wrapChat(errText))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
-			b.WriteString(fmt.Sprintf("\n[error] %s\n", errText))
+			b.WriteString(fmt.Sprintf("\n[error] %s\n", a.wrapChat(errText)))
 		}
 		a.refreshSide()
 		a.refreshChat()
 	case agent.EvError:
-		a.chatBuf.WriteString("\n" + subErrStyle.Render(fmt.Sprintf("[error] %v", ev.Err)) + "\n")
+		a.chatBuf.WriteString("\n" + subErrStyle.Render(fmt.Sprintf("[error] %v", a.wrapChat(ev.Err.Error()))) + "\n")
 		a.refreshChat()
 	case agent.EvFlash:
 		a.flashMessage = ev.Text
@@ -976,6 +976,15 @@ func (a *App) handleEvent(ev agent.Event) {
 func (a *App) appendMasterRender() {
 	// Live-render the in-progress master text as the trailing block.
 	a.refreshChat()
+}
+
+// wrapChat uses lipgloss to word-wrap a string to the current chat-pane width.
+func (a *App) wrapChat(s string) string {
+	w := a.chat.Width - 2
+	if w <= 0 {
+		return s
+	}
+	return lipgloss.NewStyle().Width(w).Render(s)
 }
 
 // flushSubText commits the in-progress streamed text for a sub-agent into
