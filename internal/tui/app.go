@@ -94,6 +94,12 @@ type App struct {
 	glam      *glamour.TermRenderer
 	glamWidth int
 
+	// resumeOrientation, if non-empty, is sent to masterIn as the first
+	// EvUserMessage during Init(). Populated before prog.Run() via
+	// SetResumeOrientation so it fires after the bus subscription is
+	// registered — preventing events from being dropped.
+	resumeOrientation string
+
 	// Command history with up/down arrow + persistence.
 	history      *History
 	historyIdx   int    // -1 = not browsing, otherwise index into history items
@@ -231,12 +237,28 @@ func tickCmd() tea.Cmd {
 }
 
 func (a *App) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		a.subscribeBus(),
 		a.subscribeUsage(),
 		textarea.Blink,
 		tickCmd(),
-	)
+	}
+	if a.resumeOrientation != "" {
+		msg := a.resumeOrientation
+		a.resumeOrientation = ""
+		// Send after subscribeBus() so all master response events are captured.
+		cmds = append(cmds, func() tea.Msg {
+			a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: msg}
+			return nil
+		})
+	}
+	return tea.Batch(cmds...)
+}
+
+// SetResumeOrientation queues an orientation prompt to be sent to the master
+// on the first tick after the TUI's bus subscription is live.
+func (a *App) SetResumeOrientation(msg string) {
+	a.resumeOrientation = msg
 }
 
 // spinner returns the current animation frame; cycles independently of any

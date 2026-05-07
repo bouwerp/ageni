@@ -79,6 +79,12 @@ func main() {
 		case "--help", "-h", "help":
 			printUsage(os.Stdout)
 			return
+		case "usage":
+			if err := runUsage(); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
 		default:
 			fmt.Fprintf(os.Stderr, "ageni: unknown command %q\n\n", os.Args[1])
 			printUsage(os.Stderr)
@@ -111,6 +117,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  skills <cmd>     manage skills (list, install <git-url>, path)")
 	fmt.Fprintln(w, "  sessions <cmd>   manage sessions (list, show, resume, rm)")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
+	fmt.Fprintln(w, "  usage            show API provider usage and rate limits")
 	fmt.Fprintln(w, "  help, -h         show this help")
 	fmt.Fprintln(w)
 	fmt.Fprintln(w, "Flags (when starting the TUI):")
@@ -281,6 +288,9 @@ func run() error {
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 	manager.SetDefaultBudget(cfg.SubagentBudget)
 
+	shellMgr := agent.NewShellManager(bus)
+	defer shellMgr.CancelAll()
+
 	// find_in_codebase is available to sub-agents as well as the master.
 	// The master's prompt promotes it heavily, that vocabulary leaks into
 	// spawn_subagent contexts, and workers were hallucinating the call —
@@ -301,6 +311,9 @@ func run() error {
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
 	if projectMemory != nil {
 		masterReg.Register(tools.MemoryWrite{Mem: projectMemory})
+	}
+	if cfg.ShellSessionsEnabled {
+		registerShells(masterReg, shellMgr)
 	}
 
 	// Master loop
@@ -331,6 +344,7 @@ func run() error {
 		}
 		fmt.Println()
 	}
+	fmt.Printf("shell sessions enabled: %v\n", cfg.ShellSessionsEnabled)
 	master.SetCorrectionsPath(sess.Path("corrections.jsonl"))
 	if projectMemory != nil {
 		master.SetMemory(projectMemory)
@@ -466,13 +480,12 @@ func run() error {
 		app.LoadHistory(resumeHistory)
 	}
 
-	// After resuming, auto-send an orientation prompt so the master assesses
-	// what needs to be done. Done in a goroutine so it doesn't race with
-	// prog.Run() acquiring the terminal.
+	// After resuming, queue an orientation prompt so the master assesses
+	// what needs to be done. Using SetResumeOrientation ensures the send
+	// happens inside Init() AFTER the bus subscription is registered, so
+	// no streamed response events are missed.
 	if resumed && len(resumeHistory) > 0 {
-		go func() {
-			masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: session.OrientationPrompt(todo)}
-		}()
+		app.SetResumeOrientation(session.OrientationPrompt(todo))
 	}
 
 	// Keep session LastUsed up-to-date while ageni is running. Touch on
@@ -689,6 +702,16 @@ func handleSignals(cancel context.CancelFunc) {
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 	cancel()
+}
+
+func registerShells(reg *tools.Registry, sm *agent.ShellManager) {
+	reg.Register(agent.OpenShellTool{SM: sm})
+	reg.Register(agent.ShellExecTool{SM: sm})
+	reg.Register(agent.ShellReadTool{SM: sm})
+	reg.Register(agent.ShellWaitTool{SM: sm})
+	reg.Register(agent.ShellSendInputTool{SM: sm})
+	reg.Register(agent.CloseShellTool{SM: sm})
+	reg.Register(agent.ListShellsTool{SM: sm})
 }
 
 // knownContextWindow returns a conservative context-window token estimate for

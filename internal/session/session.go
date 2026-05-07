@@ -130,12 +130,11 @@ func List() ([]*Session, error) {
 func readMeta(dir, id string) (*Session, error) {
 	b, err := os.ReadFile(filepath.Join(dir, "meta.json")) //nolint:gosec
 	if err != nil {
-		// Missing meta — fall back to directory mtime.
-		info, serr := os.Stat(dir)
-		if serr != nil {
-			return nil, err
-		}
-		return &Session{ID: id, Dir: dir, Started: info.ModTime(), LastUsed: info.ModTime()}, nil
+		// Missing meta.json (pre-v0.37.20 session). Use log.jsonl mtime as a
+		// better proxy for LastUsed than the directory mtime, which only
+		// reflects file creation, not subsequent writes.
+		lastUsed := bestLastUsed(dir)
+		return &Session{ID: id, Dir: dir, Started: lastUsed, LastUsed: lastUsed}, nil
 	}
 	var s Session
 	if err := json.Unmarshal(b, &s); err != nil {
@@ -143,6 +142,20 @@ func readMeta(dir, id string) (*Session, error) {
 	}
 	s.Dir = dir
 	return &s, nil
+}
+
+// bestLastUsed returns the best available proxy for when a session was last
+// active. Checks log.jsonl, then todo.json, then the directory itself.
+func bestLastUsed(dir string) time.Time {
+	for _, name := range []string{"log.jsonl", "todo.json", "corrections.jsonl"} {
+		if info, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			return info.ModTime()
+		}
+	}
+	if info, err := os.Stat(dir); err == nil {
+		return info.ModTime()
+	}
+	return time.Time{}
 }
 
 // Touch updates LastUsed and persists. Cheap; safe to call frequently.
