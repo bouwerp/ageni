@@ -115,6 +115,11 @@ type App struct {
 	masterToolIn string
 	subActivity  map[string]string
 
+	// msgQueue holds user messages submitted while the master is busy.
+	// They are dequeued one at a time when the master becomes idle.
+	// Esc (stopGeneration) clears the queue.
+	msgQueue []string
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -396,14 +401,17 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				if len(skipped) > 0 {
 					a.chatBuf.WriteString(mutedStyle.Render("[@-mentions skipped: "+strings.Join(skipped, ", ")+"]") + "\n\n")
 				}
-				a.currentMaster.Reset()
-				a.masterBusy = true
+				if a.masterBusy || len(a.msgQueue) > 0 {
+					// Master is processing — queue the message.
+					a.msgQueue = append(a.msgQueue, expanded)
+					a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[queued — %d pending]", len(a.msgQueue))) + "\n\n")
+				} else {
+					a.currentMaster.Reset()
+					a.masterBusy = true
+					a.sendToMaster(expanded)
+				}
 				a.refreshChat()
 				a.refreshSide()
-				select {
-				case a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: expanded}:
-				default:
-				}
 				return a, nil
 			}
 		}
@@ -632,11 +640,26 @@ func (a *App) stopGeneration() {
 	if a.cancelInFlight == nil {
 		return
 	}
+	queued := len(a.msgQueue)
+	a.msgQueue = nil
 	subs := a.cancelInFlight()
-	if subs > 0 {
+	switch {
+	case subs > 0 && queued > 0:
+		a.flashMessage = fmt.Sprintf("stopped generation (cancelled master + %d sub-agent(s); dropped %d queued message(s))", subs, queued)
+	case subs > 0:
 		a.flashMessage = fmt.Sprintf("stopped generation (cancelled master + %d sub-agent(s))", subs)
-	} else {
+	case queued > 0:
+		a.flashMessage = fmt.Sprintf("stopped generation (dropped %d queued message(s))", queued)
+	default:
 		a.flashMessage = "stopped generation"
+	}
+}
+
+// sendToMaster sends a pre-expanded message text to the master inbox.
+func (a *App) sendToMaster(expanded string) {
+	select {
+	case a.masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: expanded}:
+	default:
 	}
 }
 
@@ -823,8 +846,16 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshSide()
 	case agent.EvMasterTurnDone:
 		a.flushMasterText()
-		a.masterBusy = false
 		a.masterToolIn = ""
+		if len(a.msgQueue) > 0 {
+			next := a.msgQueue[0]
+			a.msgQueue = a.msgQueue[1:]
+			a.currentMaster.Reset()
+			// masterBusy stays true — we're immediately dispatching the next queued message.
+			a.sendToMaster(next)
+		} else {
+			a.masterBusy = false
+		}
 		a.refreshChat()
 		a.refreshSide()
 	case agent.EvSubagentSpawn:
@@ -1300,7 +1331,11 @@ func (a *App) statusLine() string {
 	if !a.mouseOn {
 		mouseStr = "OFF"
 	}
-	return fmt.Sprintf("%s  │  %s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, a.usage, mouseStr, flash)
+	queued := ""
+	if len(a.msgQueue) > 0 {
+		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
+	}
+	return fmt.Sprintf("%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is
