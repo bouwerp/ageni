@@ -309,6 +309,7 @@ func isFallbackable(err error) bool {
 		"402", "payment required", "insufficient credits", "can only afford",
 		"413", "request too large", "request entity too large",
 		"400", "bad request", "bad_request",
+		"401", "unauthorized", "authentication failed", "invalid api key",
 		"context_length_exceeded", "context length exceeded",
 		"maximum context length", "prompt is too long",
 		"500", "502", "503", "504",
