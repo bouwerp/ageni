@@ -444,6 +444,8 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 	switch rc.Provider.Kind {
 	case llm.KindAnthropic:
 		return llm.NewAnthropicAdapter(rc.APIKey)
+	case llm.KindOllamaCloud:
+		return llm.NewOllamaCloudAdapter(rc.APIKey, rc.BaseURL)
 	default:
 		a := llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
 		a.SetProvider(rc.Provider.Name)

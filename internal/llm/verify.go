@@ -36,6 +36,8 @@ func VerifyKey(ctx context.Context, spec ProviderSpec, apiKey string) error {
 	switch spec.Kind {
 	case KindAnthropic:
 		return verifyAnthropic(ctx, apiKey)
+	case KindOllamaCloud:
+		return verifyOllamaCloud(ctx, spec, apiKey)
 	default:
 		return verifyOpenAICompat(ctx, spec, apiKey)
 	}
@@ -64,6 +66,34 @@ func verifyAnthropic(ctx context.Context, apiKey string) error {
 		return errors.New("invalid API key (401/403)")
 	default:
 		return fmt.Errorf("HTTP %d from api.anthropic.com — verification inconclusive", resp.StatusCode)
+	}
+}
+
+// verifyOllamaCloud hits the native Ollama Cloud /api/tags endpoint with
+// Bearer auth to confirm the key is accepted.
+func verifyOllamaCloud(ctx context.Context, spec ProviderSpec, apiKey string) error {
+	if apiKey == "" {
+		return errors.New("no API key set")
+	}
+	base := strings.TrimRight(spec.BaseURL, "/")
+	if base == "" {
+		base = "https://ollama.com"
+	}
+	req, _ := http.NewRequestWithContext(ctx, http.MethodGet, base+"/api/tags", nil)
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return fmt.Errorf("couldn't reach %s: %w", base, err)
+	}
+	defer resp.Body.Close()
+	_, _ = io.Copy(io.Discard, resp.Body)
+	switch {
+	case resp.StatusCode >= 200 && resp.StatusCode < 300:
+		return nil
+	case resp.StatusCode == 401 || resp.StatusCode == 403:
+		return errors.New("invalid API key (401/403)")
+	default:
+		return fmt.Errorf("HTTP %d from %s — verification inconclusive", resp.StatusCode, base)
 	}
 }
 

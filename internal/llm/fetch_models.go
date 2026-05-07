@@ -28,9 +28,9 @@ func parsePerToken(s string) (float64, error) {
 // Anthropic is special-cased — its /v1/models endpoint exists but returns a
 // different schema; for now we return the curated list.
 func FetchModels(ctx context.Context, spec ProviderSpec, apiKey string) ([]ModelSuggestion, error) {
-	if spec.Kind == KindAnthropic {
-		// Anthropic's API has /v1/models but the SDK doesn't expose a list
-		// helper directly; fall back to the curated list for now.
+	if spec.Kind == KindAnthropic || spec.Kind == KindOllamaCloud {
+		// These providers either have a different /models schema or don't
+		// expose a standard models list; return the curated suggestions.
 		return spec.RecommendedModels, nil
 	}
 	if spec.BaseURL == "" {

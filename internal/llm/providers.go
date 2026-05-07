@@ -6,6 +6,7 @@ type AdapterKind string
 const (
 	KindAnthropic    AdapterKind = "anthropic"
 	KindOpenAICompat AdapterKind = "openai-compat"
+	KindOllamaCloud  AdapterKind = "ollama-cloud"
 )
 
 // ProviderSpec describes a built-in provider preset.
@@ -305,19 +306,20 @@ var providers = []ProviderSpec{
 	{
 		Name:         "ollama-cloud",
 		Label:        "Ollama Cloud",
-		Description:  "Ollama-hosted Turbo cloud inference. Trial credits.",
-		Kind:         KindOpenAICompat,
-		BaseURL:      "https://api.ollama.com/v1",
+		Description:  "Ollama-hosted cloud inference via ollama.com/api/chat. Trial credits.",
+		Kind:         KindOllamaCloud,
+		BaseURL:      "https://ollama.com",
 		APIKeyEnv:    "OLLAMA_API_KEY",
 		NeedsKey:     true,
 		Free:         true,
-		DefaultModel: "llama3.3:70b",
+		DefaultModel: "gpt-oss:20b-cloud",
 		RecommendedModels: []ModelSuggestion{
+			{ID: "gpt-oss:20b-cloud", Label: "GPT-OSS 20B Cloud"},
 			{ID: "llama3.3:70b", Label: "Llama 3.3 70B"},
 			{ID: "qwen2.5-coder:32b", Label: "Qwen 2.5 Coder 32B"},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Trial credits on signup.",
+		KnownLimits:           "Trial credits on signup. Uses native Ollama API at ollama.com/api/chat.",
 	},
 	{
 		Name:                  "custom",

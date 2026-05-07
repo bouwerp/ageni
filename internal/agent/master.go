@@ -325,13 +325,7 @@ func (m *Master) takeTurns(parent context.Context) {
 		m.bus.Publish(Event{Kind: EvMasterTurnStart})
 		stream, err := adapter.Stream(ctx, req)
 		if err != nil {
-			// If Stream returns an error directly, it means the fallback chain was exhausted
-			// or a non-fallbackable error occurred.
-			if errors.Is(err, errors.New("fallback chain exhausted")) {
-				err = fmt.Errorf("master adapter: fallback chain exhausted trying to talk to models: %w", err)
-			} else {
-				err = fmt.Errorf("master adapter: primary model failed: %w", err)
-			}
+			err = fmt.Errorf("master adapter: %w", err)
 			m.bus.Publish(Event{Kind: EvError, Err: err})
 			return
 		}
