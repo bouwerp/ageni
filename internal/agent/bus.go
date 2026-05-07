@@ -32,6 +32,8 @@ const (
 	EvSubagentUsage     EventKind = "subagent_usage"
 	EvError             EventKind = "error"
 	EvFlash             EventKind = "flash"
+	EvShellOutput       EventKind = "shell_output"
+	EvShellExited       EventKind = "shell_exited"
 )
 
 // Event is a single message on the bus.

@@ -52,6 +52,11 @@ type Config struct {
 	// the master doesn't override it via spawn_subagent's
 	// budget_tool_calls argument. Driven by AGENI_SUBAGENT_BUDGET.
 	SubagentBudget int
+	// ShellSessionsEnabled enables the persistent shell session tools
+	// (open_shell, shell_exec, shell_read, shell_wait, shell_send_input,
+	// close_shell, list_shells). Disabled by default; set
+	// AGENI_SHELL_SESSIONS=true to enable.
+	ShellSessionsEnabled bool
 }
 
 // Load resolves configuration from (in order, last wins):
@@ -111,6 +116,7 @@ func Load() (*Config, error) {
 	if len(cfg.SubagentFallbacks) == 0 {
 		cfg.SubagentFallbacks = autoDiscoverFallbacks(cfg.Subagent.Provider.Name)
 	}
+	cfg.ShellSessionsEnabled = strings.EqualFold(os.Getenv("AGENI_SHELL_SESSIONS"), "true")
 	return cfg, nil
 }
 
@@ -274,4 +280,12 @@ func intOr(key string, def int) int {
 		}
 	}
 	return def
+}
+
+// LoadEnv loads .env files in the standard search order (project .env, then
+// ~/.ageni/.env). It is safe to call multiple times. This is a thin public
+// wrapper around loadDotenvChain for callers that only need env loading (e.g.
+// the usage command) without full config resolution.
+func LoadEnv() {
+	loadDotenvChain()
 }
