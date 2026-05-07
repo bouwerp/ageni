@@ -13,6 +13,7 @@ type EventKind string
 const (
 	EvUserMessage       EventKind = "user_message"
 	EvMasterTurnStart   EventKind = "master_turn_start"
+	EvMasterThinking    EventKind = "master_thinking"  // extended-thinking token delta
 	EvMasterText        EventKind = "master_text"
 	EvMasterToolCall    EventKind = "master_tool_call"
 	EvMasterToolDone    EventKind = "master_tool_done"

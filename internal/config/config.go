@@ -104,7 +104,13 @@ func Load() (*Config, error) {
 	}
 
 	cfg.MasterFallbacks = parseFallbacks(os.Getenv("MASTER_FALLBACKS"))
+	if len(cfg.MasterFallbacks) == 0 {
+		cfg.MasterFallbacks = autoDiscoverFallbacks(cfg.Master.Provider.Name)
+	}
 	cfg.SubagentFallbacks = parseFallbacks(os.Getenv("SUBAGENT_FALLBACKS"))
+	if len(cfg.SubagentFallbacks) == 0 {
+		cfg.SubagentFallbacks = autoDiscoverFallbacks(cfg.Subagent.Provider.Name)
+	}
 	return cfg, nil
 }
 
@@ -148,6 +154,41 @@ func parseFallbacks(spec string) []RoleConfig {
 			}
 			if rc.APIKey == "" {
 				continue // can't auth — drop silently
+			}
+		}
+		out = append(out, rc)
+	}
+	return out
+}
+
+// autoDiscoverFallbacks scans all known providers for configured API keys and
+// returns them as fallback entries, excluding the primary provider. This gives
+// zero-config fallback behaviour: if ANTHROPIC_API_KEY and OPENROUTER_API_KEY
+// are both set and OpenRouter is the primary, Anthropic is auto-added as a
+// fallback — no MASTER_FALLBACKS env var needed.
+//
+// Local providers (Ollama etc.) are always excluded — they have no key to
+// detect and may not be running. Providers without a key set are skipped.
+func autoDiscoverFallbacks(primaryProviderName string) []RoleConfig {
+	var out []RoleConfig
+	for _, spec := range llm.AllProviders() {
+		if spec.Local {
+			continue
+		}
+		if strings.EqualFold(spec.Name, primaryProviderName) {
+			continue
+		}
+		if spec.DefaultModel == "" {
+			continue
+		}
+		rc := RoleConfig{Provider: spec, BaseURL: spec.BaseURL, Model: spec.DefaultModel}
+		if spec.NeedsKey {
+			if spec.APIKeyEnv == "" {
+				continue
+			}
+			rc.APIKey = os.Getenv(spec.APIKeyEnv)
+			if rc.APIKey == "" {
+				continue
 			}
 		}
 		out = append(out, rc)

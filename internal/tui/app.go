@@ -110,9 +110,11 @@ type App struct {
 	// subActivity[id] is one of "" / "thinking" / "tool:NAME" — what each
 	// running sub-agent is doing right now, used by the side-pane label.
 	// spinFrame advances on every tickMsg.
-	masterBusy   bool
-	spinFrame    int
-	masterToolIn string
+	masterBusy     bool
+	masterThinking bool            // true while extended-thinking tokens are arriving
+	masterThinkBuf strings.Builder // live thinking text; shown in indicator, cleared on turn done
+	spinFrame      int
+	masterToolIn   string
 	subActivity  map[string]string
 
 	// msgQueue holds user messages submitted while the master is busy.
@@ -816,7 +818,16 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.masterBusy = true
 		a.masterToolIn = ""
 		a.refreshSide()
+	case agent.EvMasterThinking:
+		a.masterThinking = true
+		a.masterThinkBuf.WriteString(ev.Text)
 	case agent.EvMasterText:
+		// First real text token means the thinking phase is over — clear the
+		// live thinking buffer (it was ephemeral; we don't commit it to chatBuf).
+		if a.masterThinking {
+			a.masterThinking = false
+			a.masterThinkBuf.Reset()
+		}
 		a.currentMaster.WriteString(ev.Text)
 		a.appendMasterRender()
 	case agent.EvMasterToolCall:
@@ -847,6 +858,8 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvMasterTurnDone:
 		a.flushMasterText()
 		a.masterToolIn = ""
+		a.masterThinking = false
+		a.masterThinkBuf.Reset()
 		if len(a.msgQueue) > 0 {
 			next := a.msgQueue[0]
 			a.msgQueue = a.msgQueue[1:]
@@ -1113,17 +1126,29 @@ func (a *App) buildChatContent() string {
 	return body
 }
 
-// masterInlineIndicator renders a Claude-Code-style "✻ thinking…" line at
-// the bottom of the chat pane while the master is generating but hasn't
-// emitted any text yet (so the user has *something* moving on screen
-// during the gap between LLM request and first byte). Returns "" when
-// there's nothing to show.
+// masterInlineIndicator renders a live status line at the bottom of the chat
+// pane while the master is active. Three distinct states:
+//
+//   - tool running — spinner + tool name (existing behaviour)
+//   - thinking     — italic grey snippet of the live extended-thinking text so
+//     the user can see the model is actively reasoning
+//   - waiting      — spinner + "waiting for response…" so a stall is visually
+//     distinct from active thinking (no bytes received yet)
 func (a *App) masterInlineIndicator() string {
 	switch {
 	case a.masterToolIn != "":
 		return mutedStyle.Render(fmt.Sprintf("%s master · running %s…", a.spinner(), a.masterToolIn))
+	case a.masterThinking:
+		// Show the last ~120 chars of the live thinking text so it fits on
+		// one line. Prefix with ✦ to signal it's internal reasoning.
+		snippet := a.masterThinkBuf.String()
+		if len(snippet) > 120 {
+			snippet = "…" + snippet[len(snippet)-120:]
+		}
+		snippet = strings.ReplaceAll(snippet, "\n", " ")
+		return thinkingStyle.Render(fmt.Sprintf("✦ thinking: %s", snippet))
 	case a.masterBusy:
-		return mutedStyle.Render(fmt.Sprintf("%s master · thinking…", a.spinner()))
+		return mutedStyle.Render(fmt.Sprintf("%s master · waiting for response…", a.spinner()))
 	}
 	return ""
 }
@@ -1358,8 +1383,10 @@ func (a *App) masterStateLabel() string {
 	switch {
 	case a.masterToolIn != "":
 		return frame + " master:" + a.masterToolIn + "…"
-	case a.masterBusy:
+	case a.masterThinking:
 		return frame + " master thinking…"
+	case a.masterBusy:
+		return frame + " master waiting…"
 	}
 	running := a.runningSubIDs()
 	if len(running) > 0 {

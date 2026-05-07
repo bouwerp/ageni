@@ -369,6 +369,8 @@ func (m *Master) takeTurns(parent context.Context) {
 			default:
 			}
 			switch ev.Type {
+			case llm.StreamEventThinking:
+				m.bus.Publish(Event{Kind: EvMasterThinking, Text: ev.TextDelta})
 			case llm.StreamEventText:
 				assistantText.WriteString(ev.TextDelta)
 				m.bus.Publish(Event{Kind: EvMasterText, Text: ev.TextDelta})

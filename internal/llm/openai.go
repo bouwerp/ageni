@@ -25,7 +25,11 @@ type OpenAIAdapter struct {
 func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
 	opts := []option.RequestOption{
 		option.WithAPIKey(apiKey),
-		option.WithMaxRetries(4),
+		// One SDK-level retry is enough for transient glitches; our
+		// FallbackAdapter handles cross-provider fallback on 429/5xx so
+		// we don't want the SDK spending ~15 s on exponential back-off
+		// before our fallback chain even gets to see the error.
+		option.WithMaxRetries(1),
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))

@@ -305,7 +305,8 @@ func isFallbackable(err error) bool {
 	}
 	msg := strings.ToLower(err.Error())
 	for _, h := range []string{
-		"429", "rate limit", "rate-limit",
+		"429", "rate limit", "rate-limit", "rate_limit",
+		"temporarily rate-limited", "ratelimited", "too many requests",
 		"402", "payment required", "insufficient credits", "can only afford",
 		"413", "request too large", "request entity too large",
 		"400", "bad request", "bad_request",

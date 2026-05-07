@@ -38,6 +38,12 @@ var (
 
 	mutedStyle = lipgloss.NewStyle().Foreground(colorMuted)
 
+	// thinkingStyle is used for extended-thinking tokens streaming live in the
+	// inline indicator. Italic + a darker grey so it reads as internal
+	// reasoning, distinct from the model's final output.
+	colorThinking = lipgloss.Color("241")
+	thinkingStyle = lipgloss.NewStyle().Foreground(colorThinking).Italic(true)
+
 	subRunningStyle = lipgloss.NewStyle().Foreground(colorAccent)
 	subDoneStyle    = lipgloss.NewStyle().Foreground(colorOK)
 	subErrStyle     = lipgloss.NewStyle().Foreground(colorErr)
