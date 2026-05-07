@@ -53,6 +53,12 @@ type Master struct {
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
 	// CancelCurrent). nil when no call is in flight.
 	turnCancel context.CancelFunc
+
+	// halted is set by Halt() and prevents any new master turn until the
+	// next EvUserMessage. Used when the user cancels (Esc) while the master
+	// is between turns waiting on sub-agents — ensures the wakeup from
+	// EvSubagentCancelled doesn't trigger an unwanted new turn.
+	halted bool
 }
 
 func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, manager *Manager) *Master {
@@ -181,6 +187,15 @@ func (m *Master) CancelCurrent() {
 	}
 }
 
+// Halt sets the halted flag so no new turn is taken until the next user
+// message. Used by the TUI Escape handler to stop a master that's between
+// turns (waiting for sub-agents) without killing the master loop itself.
+func (m *Master) Halt() {
+	m.mu.Lock()
+	m.halted = true
+	m.mu.Unlock()
+}
+
 // Run drives the master loop. inbox carries events the master must act on
 // (user messages, sub-agent updates the master should see). Returns when
 // ctx is cancelled.
@@ -211,7 +226,12 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 				}
 			}
 			if runTurn {
-				m.takeTurns(ctx)
+				m.mu.Lock()
+				halted := m.halted
+				m.mu.Unlock()
+				if !halted {
+					m.takeTurns(ctx)
+				}
 			}
 		}
 	}
@@ -223,12 +243,15 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 func (m *Master) handleInboxEvent(ev Event) bool {
 	switch {
 	case ev.Kind == EvUserMessage:
+		m.mu.Lock()
+		m.halted = false // user sent a new message — resume normal operation
+		m.mu.Unlock()
 		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
 		m.loop.reset() // fresh turn — reset loop window
 		return true
 	case isSubagentEvent(ev.Kind):
 		m.pendingEvs = append(m.pendingEvs, ev)
-		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError
+		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError || ev.Kind == EvSubagentCancelled
 	}
 	return false
 }
@@ -236,7 +259,7 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 func isSubagentEvent(k EventKind) bool {
 	switch k {
 	case EvSubagentSpawn, EvSubagentText, EvSubagentToolCall, EvSubagentToolDone,
-		EvSubagentDone, EvSubagentError, EvSubagentUsage:
+		EvSubagentDone, EvSubagentCancelled, EvSubagentError, EvSubagentUsage:
 		return true
 	}
 	return false

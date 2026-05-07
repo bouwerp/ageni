@@ -25,6 +25,7 @@ const (
 	EvSubagentToolCall  EventKind = "subagent_tool_call"
 	EvSubagentToolDone  EventKind = "subagent_tool_done"
 	EvSubagentDone      EventKind = "subagent_done"
+	EvSubagentCancelled EventKind = "subagent_cancelled"
 	EvSubagentError     EventKind = "subagent_error"
 	EvSubagentRetry     EventKind = "subagent_retry"
 	EvSubagentInbox     EventKind = "subagent_inbox"

@@ -284,7 +284,7 @@ func (s *Subagent) fail(err error) {
 		s.status = StatusCancelled
 		s.mu.Unlock()
 		s.appendTranscript("cancelled")
-		s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: ""})
+		s.bus.Publish(Event{Kind: EvSubagentCancelled, SubagentID: s.ID})
 		return
 	}
 	s.mu.Lock()

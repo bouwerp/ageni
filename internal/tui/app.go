@@ -965,6 +965,14 @@ func (a *App) handleEvent(ev agent.Event) {
 		}
 		a.refreshSide()
 		a.refreshChat()
+	case agent.EvSubagentCancelled:
+		a.subStatus[ev.SubagentID] = agent.StatusCancelled
+		delete(a.subActivity, ev.SubagentID)
+		if cur, ok := a.currentSubText[ev.SubagentID]; ok {
+			cur.Reset()
+		}
+		a.refreshSide()
+		a.refreshChat()
 	case agent.EvSubagentError:
 		a.subStatus[ev.SubagentID] = agent.StatusError
 		delete(a.subActivity, ev.SubagentID)
@@ -1197,7 +1205,10 @@ func (a *App) refreshSide() {
 		case agent.StatusDone:
 			st2 = subDoneStyle
 			marker = "✓"
-		case agent.StatusError, agent.StatusCancelled:
+		case agent.StatusCancelled:
+			st2 = mutedStyle
+			marker = "⊘"
+		case agent.StatusError:
 			st2 = subErrStyle
 			marker = "✗"
 		}

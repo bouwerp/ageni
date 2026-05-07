@@ -24,7 +24,7 @@ var (
 // Format: "▸ tool_name  arg-summary" with the tool name in accent + bold and
 // the arg summary in muted italic.
 func renderToolCall(name string, args json.RawMessage) string {
-	summary := summarizeToolArgs(args)
+	summary := summarizeToolCallArgs(name, args)
 	left := toolPrefixStyle.Render("▸ ") + toolNameStyle.Render(name)
 	if summary == "" {
 		return left
@@ -49,9 +49,137 @@ func renderToolResult(result *llm.ToolResult) string {
 	return toolOKStyle.Render("  ✓ ") + toolResultStyle.Render(snip)
 }
 
+// summarizeToolCallArgs produces a compact one-line summary of a tool call's
+// arguments, with tool-specific formatting for common operations.
+func summarizeToolCallArgs(toolName string, args json.RawMessage) string {
+	if len(args) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(args, &m); err != nil {
+		return clip(string(args), 120)
+	}
+	if len(m) == 0 {
+		return ""
+	}
+
+	str := func(key string) string {
+		if v, ok := m[key]; ok {
+			return fmt.Sprintf("%v", v)
+		}
+		return ""
+	}
+
+	switch toolName {
+	case "grep", "find_in_codebase":
+		pattern := str("pattern")
+		if pattern == "" {
+			pattern = str("query")
+		}
+		path := str("path")
+		if path == "" {
+			path = str("file_pattern")
+		}
+		if pattern != "" && path != "" {
+			return fmt.Sprintf("%q  in %s", clip(pattern, 60), clip(path, 60))
+		}
+		if pattern != "" {
+			return fmt.Sprintf("%q", clip(pattern, 100))
+		}
+
+	case "edit_file", "str_replace", "str_replace_editor":
+		path := str("path")
+		oldStr := str("old_str")
+		newStr := str("new_str")
+		if path != "" && oldStr != "" {
+			oldSnip := clipLine(oldStr, 40)
+			newSnip := clipLine(newStr, 40)
+			return fmt.Sprintf("%s  %q → %q", path, oldSnip, newSnip)
+		}
+		if path != "" {
+			return path
+		}
+
+	case "write_file":
+		path := str("path")
+		if path != "" {
+			content := str("content")
+			lines := strings.Count(content, "\n") + 1
+			if content == "" {
+				lines = 0
+			}
+			return fmt.Sprintf("%s  (%d lines)", path, lines)
+		}
+
+	case "multi_edit":
+		path := str("path")
+		if edits, ok := m["edits"]; ok {
+			if arr, ok := edits.([]any); ok {
+				if path != "" {
+					return fmt.Sprintf("%s  %d edit(s)", path, len(arr))
+				}
+				return fmt.Sprintf("%d edit(s)", len(arr))
+			}
+		}
+		if path != "" {
+			return path
+		}
+
+	case "glob":
+		pattern := str("pattern")
+		path := str("path")
+		if pattern != "" && path != "" {
+			return fmt.Sprintf("%q  in %s", clip(pattern, 60), clip(path, 60))
+		}
+		if pattern != "" {
+			return fmt.Sprintf("%q", clip(pattern, 100))
+		}
+
+	case "read_file":
+		path := str("path")
+		startLine := str("start_line")
+		endLine := str("end_line")
+		if path != "" && (startLine != "" || endLine != "") {
+			return fmt.Sprintf("%s  :%s–%s", path, startLine, endLine)
+		}
+		if path != "" {
+			return path
+		}
+
+	case "run_bash":
+		if cmd := str("command"); cmd != "" {
+			return clip(cmd, 120)
+		}
+
+	case "spawn_subagent":
+		objective := str("objective")
+		tier := str("model_tier")
+		if objective != "" && tier != "" {
+			return fmt.Sprintf("[%s] %s", tier, clip(objective, 80))
+		}
+		if objective != "" {
+			return clip(objective, 100)
+		}
+	}
+
+	// Generic fallback — try common single-key shortcuts.
+	return summarizeToolArgs(args)
+}
+
+// clipLine clips a possibly multi-line string to a single line then clips length.
+func clipLine(s string, n int) string {
+	s = strings.TrimSpace(s)
+	if idx := strings.IndexByte(s, '\n'); idx >= 0 {
+		s = s[:idx] + "…"
+	}
+	if len(s) > n {
+		return s[:n] + "…"
+	}
+	return s
+}
+
 // summarizeToolArgs produces a compact one-line summary of a tool call's
-// arguments. Common single-key tools (run_bash, read_file, grep, web_fetch
-// etc.) get a shortcut where just the key value is shown; otherwise we list
+// arguments. Common single-key tools get a shortcut; otherwise we list
 // up to two key=value pairs.
 func summarizeToolArgs(args json.RawMessage) string {
 	if len(args) == 0 {

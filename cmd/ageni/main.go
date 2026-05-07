@@ -375,7 +375,7 @@ func run() error {
 	subFwd := bus.Subscribe(128)
 	go func() {
 		for ev := range subFwd {
-			if ev.Kind == agent.EvSubagentDone || ev.Kind == agent.EvSubagentError {
+			if ev.Kind == agent.EvSubagentDone || ev.Kind == agent.EvSubagentError || ev.Kind == agent.EvSubagentCancelled {
 				select {
 				case masterIn <- ev:
 				default:
@@ -455,6 +455,7 @@ func run() error {
 	}
 
 	cancelInFlight := func() int {
+		master.Halt()
 		master.CancelCurrent()
 		return manager.CancelAll()
 	}
