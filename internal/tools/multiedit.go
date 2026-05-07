@@ -78,7 +78,22 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 		count := strings.Count(body, e.OldString)
 		switch {
 		case count == 0:
-			return "", fmt.Errorf("edit %d: old_string not found in %s", i+1, p.Path)
+			var sb strings.Builder
+			fmt.Fprintf(&sb, "edit %d: old_string not found in %s.\n", i+1, p.Path)
+			candidates := fuzzyCandidates(body, e.OldString, 3)
+			if len(candidates) == 0 {
+				sb.WriteString("No similar regions found. Check whitespace and that the file has not changed since you last read it.")
+			} else {
+				sb.WriteString("Closest candidates in the current file:\n")
+				for _, c := range candidates {
+					fmt.Fprintf(&sb, "\n— lines %d-%d (overlap %d/%d):\n", c.startLine, c.endLine, c.overlap, c.want)
+					for j, ln := range c.lines {
+						fmt.Fprintf(&sb, "    %4d │ %s\n", c.startLine+j, ln)
+					}
+				}
+				sb.WriteString("\nFix old_string to match exactly (whitespace counts), then retry.")
+			}
+			return "", errors.New(sb.String())
 		case e.ReplaceAll:
 			body = strings.ReplaceAll(body, e.OldString, e.NewString)
 		case count == 1:
