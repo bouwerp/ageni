@@ -307,7 +307,7 @@ var providers = []ProviderSpec{
 		Label:        "Ollama Cloud",
 		Description:  "Ollama-hosted Turbo cloud inference. Trial credits.",
 		Kind:         KindOpenAICompat,
-		BaseURL:      "https://ollama.com/api/v1",
+		BaseURL:      "https://api.ollama.com/v1",
 		APIKeyEnv:    "OLLAMA_API_KEY",
 		NeedsKey:     true,
 		Free:         true,
