@@ -464,6 +464,27 @@ func run() error {
 	if len(resumeHistory) > 0 {
 		app.LoadHistory(resumeHistory)
 	}
+
+	// After resuming, auto-send an orientation prompt so the master assesses
+	// what needs to be done. Done in a goroutine so it doesn't race with
+	// prog.Run() acquiring the terminal.
+	if resumed && len(resumeHistory) > 0 {
+		go func() {
+			masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: session.OrientationPrompt(todo)}
+		}()
+	}
+
+	// Keep session LastUsed up-to-date while ageni is running. Touch on
+	// every completed master turn so the picker sorts by actual activity.
+	touchSub := bus.Subscribe(32)
+	go func() {
+		for ev := range touchSub {
+			if ev.Kind == agent.EvMasterTurnDone {
+				sess.Touch()
+			}
+		}
+	}()
+
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 	if _, err := prog.Run(); err != nil {
 		return err

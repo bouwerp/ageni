@@ -11,6 +11,7 @@ import (
 	"strings"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/tools"
 )
 
 // LoadHistory reads the session log and reconstructs the master's prior
@@ -181,4 +182,44 @@ Session resumed from disk; the previous process has exited. ALL sub-agents named
 
 If more work is needed, spawn fresh sub-agents. The next ID will be s%d.
 </system-reminder>`, strings.Join(priorIDs, ", "), nextN)
+}
+
+// OrientationPrompt generates the auto-sent message that prompts the master
+// to orient itself when a session is resumed. It shows the existing todo list
+// (if any) and instructs the master to assess what needs to be done.
+func OrientationPrompt(todo *tools.TodoWrite) string {
+	var sb strings.Builder
+	sb.WriteString("<session-orientation>\n")
+	sb.WriteString("Session resumed. Review the conversation history above and the current todo list below, then briefly state what you were working on and what to do next.\n\n")
+
+	items := todo.Items()
+	pending := 0
+	for _, it := range items {
+		if it.Status != tools.TodoCompleted {
+			pending++
+		}
+	}
+
+	if len(items) == 0 {
+		sb.WriteString("No todo list exists yet. After reviewing the history, use todo_write to create a task list that captures what still needs to be done.")
+	} else {
+		sb.WriteString("Current todos:\n")
+		for _, it := range items {
+			mark := "[ ]"
+			switch it.Status {
+			case tools.TodoInProgress:
+				mark = "[~]"
+			case tools.TodoCompleted:
+				mark = "[x]"
+			}
+			sb.WriteString(fmt.Sprintf("  %s #%d %s\n", mark, it.ID, it.Content))
+		}
+		if pending == 0 {
+			sb.WriteString("\nAll todos are completed. Determine whether any new work is needed or the session objective is fully met.")
+		} else {
+			sb.WriteString(fmt.Sprintf("\n%d item(s) pending. Update todo statuses as you make progress.", pending))
+		}
+	}
+	sb.WriteString("\n</session-orientation>")
+	return sb.String()
 }

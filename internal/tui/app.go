@@ -786,7 +786,10 @@ func (a *App) layout() {
 	if a.width < 60 || a.height < 12 {
 		return
 	}
-	sideW := 30
+	sideW := 38
+	if a.width < 120 {
+		sideW = 30
+	}
 	if a.width < 100 {
 		sideW = 24
 	}

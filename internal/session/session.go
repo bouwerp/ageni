@@ -76,7 +76,9 @@ func New(repoPath string) (*Session, error) {
 	return s, nil
 }
 
-// Open loads an existing session by ID.
+// Open loads an existing session by ID and stamps LastUsed.
+// Use this when actively resuming a session; for read-only access (e.g.
+// listing) use readMeta which never touches the timestamp.
 func Open(id string) (*Session, error) {
 	root, err := SessionsRoot()
 	if err != nil {
@@ -87,22 +89,18 @@ func Open(id string) (*Session, error) {
 	if err != nil || !info.IsDir() {
 		return nil, fmt.Errorf("no such session %q at %s", id, dir)
 	}
-	b, err := os.ReadFile(filepath.Join(dir, "meta.json")) //nolint:gosec
+	s, err := readMeta(dir, id)
 	if err != nil {
-		// Session dir without meta — recover with minimal info.
-		return &Session{ID: id, Dir: dir, Started: info.ModTime(), LastUsed: time.Now()}, nil
+		// Fallback if meta unreadable.
+		s = &Session{ID: id, Dir: dir, Started: info.ModTime()}
 	}
-	var s Session
-	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, err
-	}
-	s.Dir = dir
 	s.LastUsed = time.Now()
 	_ = s.saveMeta()
-	return &s, nil
+	return s, nil
 }
 
 // List returns all sessions sorted by LastUsed (most recent first).
+// Uses a read-only loader so listing never mutates LastUsed on disk.
 func List() ([]*Session, error) {
 	root, err := SessionsRoot()
 	if err != nil {
@@ -117,7 +115,7 @@ func List() ([]*Session, error) {
 		if !e.IsDir() {
 			continue
 		}
-		s, err := Open(e.Name())
+		s, err := readMeta(filepath.Join(root, e.Name()), e.Name())
 		if err != nil {
 			continue
 		}
@@ -125,6 +123,26 @@ func List() ([]*Session, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastUsed.After(out[j].LastUsed) })
 	return out, nil
+}
+
+// readMeta loads session metadata without touching LastUsed on disk.
+// Used by List() and the picker so browsing sessions doesn't corrupt sort order.
+func readMeta(dir, id string) (*Session, error) {
+	b, err := os.ReadFile(filepath.Join(dir, "meta.json")) //nolint:gosec
+	if err != nil {
+		// Missing meta — fall back to directory mtime.
+		info, serr := os.Stat(dir)
+		if serr != nil {
+			return nil, err
+		}
+		return &Session{ID: id, Dir: dir, Started: info.ModTime(), LastUsed: info.ModTime()}, nil
+	}
+	var s Session
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, err
+	}
+	s.Dir = dir
+	return &s, nil
 }
 
 // Touch updates LastUsed and persists. Cheap; safe to call frequently.
