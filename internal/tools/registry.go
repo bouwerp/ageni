@@ -78,7 +78,7 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 	if err != nil {
 		return llm.ToolResult{
 			ToolCallID: call.ID,
-			Content:    sanitizeOutput(err.Error()),
+			Content:    "Error: " + sanitizeOutput(err.Error()),
 			IsError:    true,
 		}
 	}

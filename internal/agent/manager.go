@@ -84,10 +84,10 @@ func (m *Manager) SetNextSubagentID(n int) {
 // Spawn creates and starts a sub-agent. Returns its ID.
 func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) {
 	if task.Objective == "" {
-		return "", fmt.Errorf("objective is required")
+		return "", fmt.Errorf("spawn_subagent failed — no sub-agent was created: objective is required")
 	}
 	if task.OutputFormat == "" {
-		return "", fmt.Errorf("output_format is required")
+		return "", fmt.Errorf("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
 	if task.ModelTier == "" {
 		task.ModelTier = "sonnet"

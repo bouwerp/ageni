@@ -967,7 +967,17 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvError:
 		a.chatBuf.WriteString("\n" + subErrStyle.Render(fmt.Sprintf("[error] %v", a.wrapChat(ev.Err.Error()))) + "\n")
+		a.masterToolIn = ""
+		if len(a.msgQueue) > 0 {
+			next := a.msgQueue[0]
+			a.msgQueue = a.msgQueue[1:]
+			a.currentMaster.Reset()
+			a.sendToMaster(next)
+		} else {
+			a.masterBusy = false
+		}
 		a.refreshChat()
+		a.refreshSide()
 	case agent.EvFlash:
 		a.flashMessage = ev.Text
 	}

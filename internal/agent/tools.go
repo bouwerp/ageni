@@ -49,10 +49,10 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", err
 	}
 	if strings.TrimSpace(task.Objective) == "" {
-		return "", errors.New("objective is required")
+		return "", errors.New("spawn_subagent failed — no sub-agent was created: objective is required")
 	}
 	if strings.TrimSpace(task.OutputFormat) == "" {
-		return "", errors.New("output_format is required")
+		return "", errors.New("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
 	id, err := t.M.Spawn(ctx, task)
 	if err != nil {
