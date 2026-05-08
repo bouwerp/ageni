@@ -141,8 +141,12 @@ func localToCloud(model string) string {
 		return "llama-3.1-8b-instant"
 	case strings.HasPrefix(low, "deepseek-r"):
 		return "deepseek-reasoner"
-	case strings.HasPrefix(low, "deepseek-v"), strings.HasPrefix(low, "deepseek-chat"):
-		return "deepseek-chat"
+	case low == "deepseek-v4-flash", strings.HasPrefix(low, "deepseek-chat"):
+		return "deepseek-v4-flash"
+	case low == "deepseek-v4-pro":
+		return "deepseek-v4-pro"
+	case strings.HasPrefix(low, "deepseek-v"):
+		return "deepseek-v4-flash"
 	case strings.HasPrefix(low, "mistral-large"):
 		return "mistral-large-latest"
 	case strings.HasPrefix(low, "codestral"):
@@ -212,9 +216,11 @@ var prices = map[string]Pricing{
 	"openai/gpt-oss-120b":          {InputPer1M: 0.15, OutputPer1M: 0.75},
 	"openai/gpt-oss-20b":           {InputPer1M: 0.10, OutputPer1M: 0.50},
 
-	// DeepSeek.
-	"deepseek-chat":     {InputPer1M: 0.27, OutputPer1M: 1.10},
-	"deepseek-reasoner": {InputPer1M: 0.55, OutputPer1M: 2.19},
+	// DeepSeek. deepseek-chat/deepseek-reasoner are legacy aliases for deepseek-v4-flash.
+	"deepseek-v4-flash":  {InputPer1M: 0.14, OutputPer1M: 0.28, Known: true},
+	"deepseek-v4-pro":    {InputPer1M: 0.435, OutputPer1M: 0.87, Known: true}, // 75% off until 2026-05-31
+	"deepseek-chat":      {InputPer1M: 0.14, OutputPer1M: 0.28, Known: true},  // alias for v4-flash
+	"deepseek-reasoner":  {InputPer1M: 0.14, OutputPer1M: 0.28, Known: true},  // alias for v4-flash thinking
 
 	// Mistral.
 	"mistral-large-latest": {InputPer1M: 2.00, OutputPer1M: 6.00},
