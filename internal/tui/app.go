@@ -98,6 +98,11 @@ type App struct {
 	historyIdx   int    // -1 = not browsing, otherwise index into history items
 	historyDraft string // input text saved when the user enters history mode
 
+	// needsReorientation is set by LoadHistory when a prior session is
+	// resumed. Init fires a reorientMsg so the master summarises where
+	// the session left off before waiting for the user's first message.
+	needsReorientation bool
+
 	// Activity indicator state.
 	//
 	// masterBusy is true while master generation is in flight: set on
@@ -189,7 +194,7 @@ func (a *App) LoadHistory(messages []llm.Message) {
 		case llm.RoleUser:
 			// Skip system-injected reminders / active_context blocks; users
 			// don't need to see those replayed.
-			if strings.HasPrefix(m.Text, "<active_context_block>") || strings.HasPrefix(m.Text, "<system-reminder>") {
+			if strings.HasPrefix(m.Text, "<active_context_block>") || strings.HasPrefix(m.Text, "<system-reminder>") || strings.HasPrefix(m.Text, "<session-resume>") {
 				continue
 			}
 			a.chatBuf.WriteString(userStyle.Render("you ❯ ") + m.Text + "\n\n")
@@ -208,12 +213,14 @@ func (a *App) LoadHistory(messages []llm.Message) {
 	}
 	a.chatBuf.WriteString(mutedStyle.Render("─── continuing ───") + "\n\n")
 	a.refreshChat()
+	a.needsReorientation = true
 }
 
 // Tea Msg types
 type busEvtMsg agent.Event
 type usageMsg llm.TrackerSnapshot
 type tickMsg time.Time
+type reorientMsg struct{} // fired by Init when a session is resumed
 
 // spinnerFrames is a 10-frame braille animation. Picked over dots because it
 // reads as motion at the 120ms tick rate and renders correctly in a single
@@ -228,12 +235,16 @@ func tickCmd() tea.Cmd {
 }
 
 func (a *App) Init() tea.Cmd {
-	return tea.Batch(
+	cmds := []tea.Cmd{
 		a.subscribeBus(),
 		a.subscribeUsage(),
 		textarea.Blink,
 		tickCmd(),
-	)
+	}
+	if a.needsReorientation {
+		cmds = append(cmds, func() tea.Msg { return reorientMsg{} })
+	}
+	return tea.Batch(cmds...)
 }
 
 // spinner returns the current animation frame; cycles independently of any
@@ -415,6 +426,19 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return a, nil
 			}
 		}
+
+	case reorientMsg:
+		const reorientText = "<session-resume>\n" +
+			"The session was just resumed from a previous run. Review the conversation\n" +
+			"history above and give a brief status update: (1) what was last accomplished,\n" +
+			"(2) what was in progress or left incomplete, (3) what the immediate next step\n" +
+			"should be. Then wait for the user's next instruction. Do NOT start new work\n" +
+			"without being asked.\n" +
+			"</session-resume>"
+		a.chatBuf.WriteString(mutedStyle.Render("─── reorienting… ───") + "\n\n")
+		a.refreshChat()
+		a.masterBusy = true
+		a.sendToMaster(reorientText)
 
 	case relayMsg:
 		a.handleEvent(agent.Event(msg.ev))

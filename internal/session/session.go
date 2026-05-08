@@ -103,6 +103,8 @@ func Open(id string) (*Session, error) {
 }
 
 // List returns all sessions sorted by LastUsed (most recent first).
+// It reads session metadata without updating LastUsed so that listing
+// does not corrupt the ordering by stamping every session with now.
 func List() ([]*Session, error) {
 	root, err := SessionsRoot()
 	if err != nil {
@@ -117,7 +119,7 @@ func List() ([]*Session, error) {
 		if !e.IsDir() {
 			continue
 		}
-		s, err := Open(e.Name())
+		s, err := readMeta(e.Name(), filepath.Join(root, e.Name()))
 		if err != nil {
 			continue
 		}
@@ -125,6 +127,26 @@ func List() ([]*Session, error) {
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].LastUsed.After(out[j].LastUsed) })
 	return out, nil
+}
+
+// readMeta loads session metadata from disk without touching LastUsed.
+// Used by List so that browsing sessions never corrupts their ordering.
+func readMeta(id, dir string) (*Session, error) {
+	info, err := os.Stat(dir)
+	if err != nil || !info.IsDir() {
+		return nil, fmt.Errorf("no such session %q", id)
+	}
+	b, err := os.ReadFile(filepath.Join(dir, "meta.json")) //nolint:gosec
+	if err != nil {
+		// No meta yet — recover with minimal info; use dir mtime as age.
+		return &Session{ID: id, Dir: dir, Started: info.ModTime(), LastUsed: info.ModTime()}, nil
+	}
+	var s Session
+	if err := json.Unmarshal(b, &s); err != nil {
+		return nil, err
+	}
+	s.Dir = dir
+	return &s, nil
 }
 
 // Touch updates LastUsed and persists. Cheap; safe to call frequently.
