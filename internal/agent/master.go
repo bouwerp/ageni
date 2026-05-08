@@ -308,6 +308,10 @@ func (m *Master) takeTurns(parent context.Context) {
 	// block (if any) is stripped first so we don't accumulate duplicates.
 	m.refreshActiveContext()
 
+	// trimCount caps automatic context-trim retries within one takeTurns call.
+	const maxTrims = 3
+	var trimCount int
+
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
@@ -326,6 +330,11 @@ func (m *Master) takeTurns(parent context.Context) {
 		m.bus.Publish(Event{Kind: EvMasterTurnStart})
 		stream, err := adapter.Stream(ctx, req)
 		if err != nil {
+			if isContextTooLong(err) && trimCount < maxTrims && m.trimHistory() {
+				trimCount++
+				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
+				continue
+			}
 			// If Stream returns an error directly, it means the fallback chain was exhausted
 			// or a non-fallbackable error occurred.
 			if errors.Is(err, errors.New("fallback chain exhausted")) {
@@ -339,7 +348,9 @@ func (m *Master) takeTurns(parent context.Context) {
 
 		var assistantText strings.Builder
 		var toolCalls []llm.ToolCall
+		var streamErr error
 
+	streamLoop:
 		for ev := range stream {
 			select {
 			case <-ctx.Done():
@@ -356,15 +367,31 @@ func (m *Master) takeTurns(parent context.Context) {
 					m.bus.Publish(Event{Kind: EvMasterToolCall, ToolCall: ev.ToolCall})
 				}
 			case llm.StreamEventError:
-				// Error during streaming.
-				m.bus.Publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", ev.Err)})
-				return
+				streamErr = ev.Err
+				// Drain the rest of the channel so the sender goroutine can exit.
+				go func() {
+					for range stream { //nolint:revive
+					}
+				}()
+				break streamLoop
 			case llm.StreamEventDone:
 				if ev.Usage != nil {
 					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 				}
 			}
+		}
+
+		if streamErr != nil {
+			if isContextTooLong(streamErr) && trimCount < maxTrims && m.trimHistory() {
+				trimCount++
+				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
+				assistantText.Reset()
+				toolCalls = nil
+				continue
+			}
+			m.bus.Publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", streamErr)})
+			return
 		}
 
 		m.messages = append(m.messages, llm.Message{
@@ -387,6 +414,61 @@ func (m *Master) takeTurns(parent context.Context) {
 			})
 		}
 	}
+}
+
+// trimHistory drops the oldest complete exchange from m.messages to recover
+// from context-window-exceeded errors. It finds the first non-active-context
+// RoleUser message after index 0 and removes everything before it, prepending
+// a short notice so the model knows the history was truncated. Falls back to
+// dropping the first half when no clean turn boundary exists. Returns false
+// only if the history is already too short to trim.
+func (m *Master) trimHistory() bool {
+	msgs := m.messages
+	// Find the first RoleUser message after index 0 that is not an
+	// active_context block — that marks the start of the second exchange,
+	// so everything before it is one complete round-trip we can safely drop.
+	for i := 1; i < len(msgs)-1; i++ {
+		msg := msgs[i]
+		if msg.Role == llm.RoleUser && !strings.HasPrefix(msg.Text, activeContextMarker) {
+			notice := llm.Message{
+				Role: llm.RoleUser,
+				Text: fmt.Sprintf("[Note: %d oldest message(s) removed to fit context window]", i),
+			}
+			m.messages = append([]llm.Message{notice}, msgs[i:]...)
+			return true
+		}
+	}
+	// Fallback: no clean boundary (single long exchange) — drop the first half.
+	if len(msgs) > 4 {
+		half := len(msgs) / 2
+		notice := llm.Message{
+			Role: llm.RoleUser,
+			Text: fmt.Sprintf("[Note: %d oldest message(s) removed to fit context window]", half),
+		}
+		m.messages = append([]llm.Message{notice}, msgs[half:]...)
+		return true
+	}
+	return false
+}
+
+// isContextTooLong returns true when the error indicates the request exceeded
+// the model's context window.
+func isContextTooLong(err error) bool {
+	if err == nil {
+		return false
+	}
+	msg := strings.ToLower(err.Error())
+	for _, h := range []string{
+		"context_length_exceeded", "context length exceeded",
+		"maximum context length", "prompt is too long",
+		"too many tokens", "reduce the length",
+		"context window", "tokens exceeds",
+	} {
+		if strings.Contains(msg, h) {
+			return true
+		}
+	}
+	return false
 }
 
 // MarshalCaller is a placeholder so we can extend turn limits per session.
