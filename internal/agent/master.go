@@ -312,6 +312,10 @@ func (m *Master) takeTurns(parent context.Context) {
 	const maxTrims = 3
 	var trimCount int
 
+	// idleRetries caps watchdog-triggered retries within one takeTurns call.
+	const maxIdleRetries = 2
+	var idleRetries int
+
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
@@ -345,6 +349,10 @@ func (m *Master) takeTurns(parent context.Context) {
 			m.bus.Publish(Event{Kind: EvError, Err: err})
 			return
 		}
+		// Wrap with an idle watchdog: if no event arrives within
+		// StreamIdleTimeout the wrapper emits a StreamEventError so the
+		// loop below doesn't hang silently forever.
+		stream = llm.WatchdogStream(stream)
 
 		var assistantText strings.Builder
 		var toolCalls []llm.ToolCall
@@ -386,6 +394,13 @@ func (m *Master) takeTurns(parent context.Context) {
 			if isContextTooLong(streamErr) && trimCount < maxTrims && m.trimHistory() {
 				trimCount++
 				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
+				assistantText.Reset()
+				toolCalls = nil
+				continue
+			}
+			if llm.IsStreamIdle(streamErr) && idleRetries < maxIdleRetries {
+				idleRetries++
+				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("model not responding — retrying (%d/%d)…", idleRetries, maxIdleRetries)})
 				assistantText.Reset()
 				toolCalls = nil
 				continue
