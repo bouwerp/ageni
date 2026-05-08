@@ -1390,7 +1390,8 @@ func (a *App) View() string {
 			return header + a.providerList.View()
 		}
 		if a.settingsForm != nil {
-			return header + statusStyle.Render("Role selection & limits  —  Enter=advance/submit\n\n") + a.settingsForm.View()
+			sub := statusStyle.Render("Master → Sub-agent → Lead → Fallbacks → Limits   (Enter=advance  Tab=next field)\n\n")
+			return header + sub + a.settingsForm.View()
 		}
 		return header
 	}

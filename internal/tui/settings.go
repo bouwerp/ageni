@@ -111,9 +111,9 @@ func (s *settingsState) applyProviderList(pl *providerListModel) {
 
 // newSettingsFormFromState builds the huh form for role selection / limits.
 // The provider section is managed separately by providerListModel.
+// Fields are split across focused groups so each "page" covers one topic.
 func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, error) {
-	// Role selection — only shows enabled providers.
-	fields := []huh.Field{
+	groupMaster := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Master · Provider").
 			Description("The agent you talk to. Use the best model you can afford.").
@@ -122,7 +122,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			}, &st.enabled).
 			Value(&st.masterProvider).
 			Filtering(true).
-			Height(4),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Master · Model").
 			OptionsFunc(func() []huh.Option[string] {
@@ -130,8 +130,10 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			}, &st.masterProvider).
 			Value(&st.masterModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupSub := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Sub-agent · Provider").
 			Description("Workers spawned by the master. Cheaper / free-tier is fine.").
@@ -140,7 +142,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			}, &st.enabled).
 			Value(&st.subProvider).
 			Filtering(true).
-			Height(8),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Sub-agent · Model").
 			OptionsFunc(func() []huh.Option[string] {
@@ -148,18 +150,20 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			}, &st.subProvider).
 			Value(&st.subModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupLead := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Lead · Provider  (optional)").
-			Description("Used only on the first master turn (planning). (disabled) = master model every turn.").
+			Description("Used only on the first master turn. (disabled) = master model every turn.").
 			OptionsFunc(func() []huh.Option[string] {
 				opts := enabledProviderOptions(st.enabled)
 				return append([]huh.Option[string]{huh.NewOption("(disabled — every turn uses master model)", leadDisabled)}, opts...)
 			}, &st.enabled).
 			Value(&st.leadProvider).
 			Filtering(true).
-			Height(8),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Lead · Model  (optional)").
 			OptionsFunc(func() []huh.Option[string] {
@@ -170,11 +174,13 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			}, &st.leadProvider).
 			Value(&st.leadModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupFallbacks := huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Master").
-			Description("On 429 / 5xx / timeout, ageni tries these providers in order. Each uses its default model.").
+			Description("On 429 / 5xx / timeout, ageni tries these providers in order.").
 			OptionsFunc(func() []huh.Option[string] {
 				return fallbackOptions(st.enabled, st.masterProvider)
 			}, &st.enabled).
@@ -190,7 +196,9 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Value(&st.subFallbacks).
 			Filterable(true).
 			Height(8),
+	)
 
+	groupLimits := huh.NewGroup(
 		huh.NewInput().
 			Title("Limits · Max concurrent sub-agents").
 			Description("Lower on rate-limited free tiers.").
@@ -201,9 +209,9 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Description("Soft tool-call cap. The master can override per-spawn.").
 			Value(&st.subagentBudget).
 			Validate(positiveInt),
-	}
+	)
 
-	form := huh.NewForm(huh.NewGroup(fields...)).
+	form := huh.NewForm(groupMaster, groupSub, groupLead, groupFallbacks, groupLimits).
 		WithShowHelp(true).
 		WithShowErrors(true)
 	if termHeight > 0 {
