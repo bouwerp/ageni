@@ -71,7 +71,13 @@ type App struct {
 	focusInput bool
 	viewSub    string // selected subagent id, "" = master chat
 
-	mode          Mode
+	mode Mode
+
+	// Settings — the settings screen has two phases:
+	//   Phase 0: providerList (custom component, inline checkbox + key inputs)
+	//   Phase 1: settingsForm (huh form for roles / fallbacks / limits)
+	settingsPhase int
+	providerList  *providerListModel
 	settingsForm  *huh.Form
 	settingsState *settingsState
 	flashMessage  string
@@ -704,20 +710,22 @@ func (a *App) sendToMaster(expanded string) {
 	}
 }
 
-// settingsHeaderLines is the number of lines rendered above the huh form in
-// View() so we can pass the correct usable height to newSettingsForm.
+// settingsHeaderLines is the number of lines rendered above the content in
+// View() so we can pass the correct usable height to components.
 const settingsHeaderLines = 3
 
 func (a *App) openSettings() tea.Cmd {
-	form, st, err := newSettingsForm(a.height - settingsHeaderLines)
+	st, existing, err := newSettingsState()
 	if err != nil {
 		a.flashMessage = "settings: " + err.Error()
 		return nil
 	}
-	a.settingsForm = form
 	a.settingsState = st
+	a.settingsForm = nil
+	a.settingsPhase = 0
+	a.providerList = newProviderListModel(existing, a.width, a.height-settingsHeaderLines)
 	a.mode = ModeSettings
-	return a.settingsForm.Init()
+	return a.providerList.Init()
 }
 
 func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -734,15 +742,43 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
-	// Keep the form viewport sized to the usable height whenever the
-	// terminal is resized (subtract our header lines from the full height).
+	// Keep components sized to the usable height when the terminal is resized.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		usable := ws.Height - settingsHeaderLines
-		if usable > 0 && a.settingsForm != nil {
-			a.settingsForm.WithHeight(usable)
+		if usable > 0 {
+			if a.providerList != nil {
+				a.providerList.height = usable
+			}
+			if a.settingsForm != nil {
+				a.settingsForm.WithHeight(usable)
+			}
 		}
 	}
 
+	// Phase 0 — provider list with inline key inputs.
+	if a.settingsPhase == 0 {
+		// Check for the "advance to next section" signal.
+		if _, ok := msg.(providerListDoneMsg); ok {
+			// Transfer provider selections into the state, then build the huh form.
+			a.settingsState.applyProviderList(a.providerList)
+			form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
+			if err != nil {
+				a.flashMessage = "settings: " + err.Error()
+				a.mode = ModeChat
+				return a, nil
+			}
+			a.settingsForm = form
+			a.settingsPhase = 1
+			return a, a.settingsForm.Init()
+		}
+		m, cmd := a.providerList.Update(msg)
+		if pl, ok := m.(*providerListModel); ok {
+			a.providerList = pl
+		}
+		return a, cmd
+	}
+
+	// Phase 1 — role selection / limits (huh form).
 	f, cmd := a.settingsForm.Update(msg)
 	if form, ok := f.(*huh.Form); ok {
 		a.settingsForm = form
@@ -757,9 +793,6 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 			} else {
 				msg := "settings applied — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel + ", sub-agent: " + a.settingsState.subProvider + "/" + a.settingsState.subModel
 				if vrs := a.settingsState.verifyResults; len(vrs) > 0 {
-					// Surface verification outcomes inline so the user knows
-					// which keys auth'd. Failures go in the flash; the chat
-					// pane gets a longer breakdown.
 					failed := 0
 					for _, vr := range vrs {
 						if !strings.HasSuffix(vr, ": ok") {
@@ -1351,9 +1384,15 @@ func (a *App) View() string {
 	if a.width < 60 || a.height < 12 {
 		return "ageni: window too small (need 60×12)"
 	}
-	if a.mode == ModeSettings && a.settingsForm != nil {
-		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=cancel without saving  Enter=advance/submit\n\n")
-		return header + a.settingsForm.View()
+	if a.mode == ModeSettings {
+		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=cancel without saving\n\n")
+		if a.settingsPhase == 0 && a.providerList != nil {
+			return header + a.providerList.View()
+		}
+		if a.settingsForm != nil {
+			return header + statusStyle.Render("Role selection & limits  —  Enter=advance/submit\n\n") + a.settingsForm.View()
+		}
+		return header
 	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
 		chatStyle.Height(a.chat.Height).Render(a.chat.View()),

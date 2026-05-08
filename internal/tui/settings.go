@@ -55,11 +55,10 @@ type settingsState struct {
 
 const leadDisabled = ""
 
-// newSettingsForm builds the settings form. Pass the terminal height (minus
-// any header lines the caller renders above the form) so the group viewport
-// is sized correctly from the start rather than waiting for the async
-// WindowSizeMsg round-trip that fires after the first render.
-func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
+// newSettingsState builds only the settingsState (no huh form). The caller
+// owns the provider list component and populates st.enabled / st.keyPtrs from
+// it before building the huh form with newSettingsFormFromState.
+func newSettingsState() (*settingsState, map[string]string, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
 		return nil, nil, err
@@ -80,10 +79,8 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 		maxSubagents:    orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
 	}
-
-	// Pre-populate keyPtrs and the enabled list. A provider counts as
-	// enabled if it has a key in the env (or if it's a local provider
-	// that doesn't need one).
+	// Initialise keyPtrs with existing values; the provider list will overwrite
+	// them when the user advances to the form phase.
 	for _, p := range llm.AllProviders() {
 		key := ""
 		if p.APIKeyEnv != "" {
@@ -95,40 +92,28 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 			st.enabled = append(st.enabled, p.Name)
 		}
 	}
+	return st, existing, nil
+}
 
-	// Build the form. A single Group renders all fields at once; each
-	// field Title carries its section prefix so it's readable regardless
-	// of scroll position ("Master · Provider" rather than a separate Note
-	// that drifts off-screen when tabbing).
-	fields := []huh.Field{
-		huh.NewMultiSelect[string]().
-			Title("Providers · Enabled").
-			Description("Space to tick. Keys are pulled from each provider's standard env var on save and verified against /v1/models.").
-			Options(allProviderOptions()...).
-			Value(&st.enabled).
-			Filterable(true).
-			Height(5),
-	}
-
-	// Per-provider key inputs — one per provider that needs a key.
-	for _, p := range llm.AllProviders() {
-		if !p.NeedsKey {
-			continue
+// applyProviderList transfers the provider-list component's selections into
+// settingsState so save() picks them up.
+func (s *settingsState) applyProviderList(pl *providerListModel) {
+	s.enabled = pl.enabledNames()
+	for name, val := range pl.keyValues() {
+		if v, ok := s.keyPtrs[name]; ok {
+			*v = val
+		} else {
+			v := val
+			s.keyPtrs[name] = &v
 		}
-		title := "Providers · " + p.Label + " key"
-		if v := *st.keyPtrs[p.Name]; v != "" {
-			title += "  [set]"
-		}
-		fields = append(fields, huh.NewInput().
-			Title(title).
-			Description("blank = keep existing").
-			EchoMode(huh.EchoModePassword).
-			Value(st.keyPtrs[p.Name]),
-		)
 	}
+}
 
+// newSettingsFormFromState builds the huh form for role selection / limits.
+// The provider section is managed separately by providerListModel.
+func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, error) {
 	// Role selection — only shows enabled providers.
-	fields = append(fields,
+	fields := []huh.Field{
 		huh.NewSelect[string]().
 			Title("Master · Provider").
 			Description("The agent you talk to. Use the best model you can afford.").
@@ -216,7 +201,7 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 			Description("Soft tool-call cap. The master can override per-spawn.").
 			Value(&st.subagentBudget).
 			Validate(positiveInt),
-	)
+	}
 
 	form := huh.NewForm(huh.NewGroup(fields...)).
 		WithShowHelp(true).
@@ -224,7 +209,7 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 	if termHeight > 0 {
 		form.WithHeight(termHeight)
 	}
-	return form, st, nil
+	return form, nil
 }
 
 // save writes the edited state back to ~/.ageni/.env, preserving
@@ -306,7 +291,7 @@ func (s *settingsState) save() error {
 
 // allProviderOptions builds the multi-select options for "enabled
 // providers". Each label includes the free/paid/local tag and a short
-// description.
+// description. Kept for potential future use.
 func allProviderOptions() []huh.Option[string] {
 	specs := llm.AllProviders()
 	opts := make([]huh.Option[string], 0, len(specs))
