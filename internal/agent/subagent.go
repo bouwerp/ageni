@@ -334,11 +334,16 @@ func errMark(b bool) string {
 	return ""
 }
 
+// maxIdleRetries is the number of times a sub-agent will retry a turn after
+// the stream idle watchdog fires before giving up and failing the sub-agent.
+const maxIdleRetries = 2
+
 // runTurnWithRetry runs one LLM turn with a per-turn timeout and retries on
-// transient failures (deadline, network, rate-limit, 5xx). Returns the
-// assistant text + any tool calls, or a terminal error.
+// transient failures (deadline, network, rate-limit, 5xx, idle watchdog).
+// Returns the assistant text + any tool calls, or a terminal error.
 func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (string, []llm.ToolCall, error) {
 	var lastErr error
+	idleRetries := 0
 	for attempt := 0; attempt <= s.maxRetries; attempt++ {
 		if parent.Err() != nil {
 			return "", nil, parent.Err()
@@ -351,10 +356,32 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 		}
 		lastErr = err
 
-		// Don't retry user-cancelled or task-budget conditions.
+		// Don't retry user-cancelled conditions.
 		if errors.Is(err, context.Canceled) {
 			return "", nil, err
 		}
+
+		// Idle watchdog fired — the model went silent. Retry with a nudge
+		// so the provider gets a fresh request rather than a stale one.
+		if llm.IsStreamIdle(err) {
+			idleRetries++
+			msg := fmt.Sprintf("model idle (attempt %d/%d) — retrying", idleRetries, maxIdleRetries)
+			s.appendTranscript(msg)
+			s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: msg})
+			if idleRetries >= maxIdleRetries {
+				return "", nil, fmt.Errorf("model not responding after %d retries — master should re-spawn this sub-agent", maxIdleRetries)
+			}
+			// Brief pause before re-issuing the request.
+			select {
+			case <-parent.Done():
+				return "", nil, parent.Err()
+			case <-time.After(3 * time.Second):
+			}
+			// Don't advance attempt counter — idle retries are separate.
+			attempt--
+			continue
+		}
+
 		if !isTransientErr(err) || attempt == s.maxRetries {
 			return "", nil, err
 		}
@@ -382,6 +409,9 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []l
 	if err != nil {
 		return "", nil, err
 	}
+	// Wrap with an idle watchdog so a silent TCP connection or a stalled
+	// provider doesn't leave the sub-agent stuck in "thinking" forever.
+	stream = llm.WatchdogStream(stream)
 	var text strings.Builder
 	var calls []llm.ToolCall
 	for ev := range stream {

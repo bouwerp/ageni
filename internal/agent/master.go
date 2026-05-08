@@ -174,6 +174,13 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 		case <-ctx.Done():
 			return
 		case ev := <-inbox:
+			// EvCancelAll is sent by the TUI when the user presses Esc.
+			// Discard accumulated pending sub-agent events and skip the
+			// turn so cancelled workers don't re-trigger generation.
+			if ev.Kind == EvCancelAll {
+				m.pendingEvs = nil
+				continue
+			}
 			runTurn := m.handleInboxEvent(ev)
 			// Drain anything else queued right now. This is what coalesces
 			// a fan-out burst into one master turn.
@@ -181,6 +188,12 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 			for {
 				select {
 				case ev2 := <-inbox:
+					if ev2.Kind == EvCancelAll {
+						// Cancel wins: discard pending events and abort turn.
+						m.pendingEvs = nil
+						runTurn = false
+						break drain
+					}
 					if m.handleInboxEvent(ev2) {
 						runTurn = true
 					}
@@ -637,7 +650,7 @@ You MUST be self-healing. When a tool call or provider request returns an error,
 
 3. **Unknown tool / wrong tool name:** If a tool name was rejected (sanitized or not found), switch to the closest valid alternative or decompose the operation into available tools.
 
-4. **Worker errors:** If a sub-agent errors out, read check_subagent to understand what went wrong. Re-spawn with corrected instructions rather than surfacing a "failed" status to the user.
+4. **Worker errors:** If a sub-agent errors out, read check_subagent to understand what went wrong. Re-spawn with corrected instructions rather than surfacing a "failed" status to the user. If the error contains "model not responding" or "idle", the provider was transiently unresponsive — re-spawn immediately with identical instructions (no instruction change needed).
 
 5. **Retry budget:** Up to 3 retry attempts per operation before escalating to the user with a specific blocker description. Never use all 3 retries on the same unchanged input.
 </self_healing>`

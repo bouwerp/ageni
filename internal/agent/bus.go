@@ -30,6 +30,10 @@ const (
 	EvSubagentUsage     EventKind = "subagent_usage"
 	EvError             EventKind = "error"
 	EvFlash             EventKind = "flash"
+	// EvCancelAll is sent directly to the master inbox (not via the bus)
+	// when the user presses Esc. The master discards any accumulated
+	// pending sub-agent events and skips the next turn.
+	EvCancelAll EventKind = "cancel_all"
 )
 
 // Event is a single message on the bus.

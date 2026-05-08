@@ -340,6 +340,10 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch {
 			case msg.Type == tea.KeyEsc:
 				a.dismissAtComplete()
+				// Also stop any in-flight generation — Esc means "stop everything".
+				if a.masterBusy || a.masterToolIn != "" {
+					a.stopGeneration()
+				}
 				return a, nil
 			case msg.Type == tea.KeyUp:
 				if a.atComp.sel > 0 {
@@ -667,6 +671,19 @@ func (a *App) stopGeneration() {
 	queued := len(a.msgQueue)
 	a.msgQueue = nil
 	subs := a.cancelInFlight()
+	// Reset busy state immediately — don't wait for EvMasterTurnDone, which
+	// may never arrive if the master had nothing in-flight (e.g. a message
+	// was queued in masterIn but the master hadn't started its turn yet).
+	a.masterBusy = false
+	a.masterToolIn = ""
+	// Tell the master to discard any accumulated pending sub-agent events
+	// so that cancelled workers don't re-trigger a new generation turn.
+	select {
+	case a.masterIn <- agent.Event{Kind: agent.EvCancelAll}:
+	default:
+	}
+	a.refreshChat()
+	a.refreshSide()
 	switch {
 	case subs > 0 && queued > 0:
 		a.flashMessage = fmt.Sprintf("stopped generation (cancelled master + %d sub-agent(s); dropped %d queued message(s))", subs, queued)
