@@ -435,12 +435,17 @@ func (m *Master) takeTurns(parent context.Context) {
 			return
 		}
 
-		m.messages = append(m.messages, llm.Message{
-			Role:             llm.RoleAssistant,
-			Text:             assistantText.String(),
-			ToolCalls:        toolCalls,
-			ReasoningContent: reasoningContent,
-		})
+		// Only append the assistant message if it has content or tool calls.
+		// An empty assistant message (e.g. thinking-only with no response)
+		// causes DeepSeek and other providers to reject the next request.
+		if assistantText.Len() > 0 || len(toolCalls) > 0 {
+			m.messages = append(m.messages, llm.Message{
+				Role:             llm.RoleAssistant,
+				Text:             assistantText.String(),
+				ToolCalls:        toolCalls,
+				ReasoningContent: reasoningContent,
+			})
+		}
 
 		if len(toolCalls) == 0 {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: assistantText.String()})

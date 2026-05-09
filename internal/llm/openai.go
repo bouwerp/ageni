@@ -214,6 +214,15 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 				},
 			})
 		}
+		// Providers that require content or tool_calls (e.g. DeepSeek) reject
+		// assistant messages that have neither. If we have no tool calls and no
+		// text (e.g. a thinking-only turn), set content to "" so the field is
+		// present in the serialized JSON.
+		if len(ap.ToolCalls) == 0 && m.Text == "" {
+			ap.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: openai.String(""),
+			}
+		}
 		// DeepSeek thinking mode requires reasoning_content to be echoed back.
 		// Other OpenAI-compat providers silently ignore unknown extra fields.
 		if m.ReasoningContent != "" {
