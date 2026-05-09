@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
@@ -10,6 +11,23 @@ import (
 
 	"github.com/bouwerp/ageni/internal/llm"
 )
+
+// keyVerifyStatus tracks the async verification result for a provider's API key.
+type keyVerifyStatus int
+
+const (
+	verifyUnknown keyVerifyStatus = iota
+	verifyPending
+	verifyOK
+	verifyFail
+)
+
+// providerVerifyMsg is sent asynchronously when a key verification completes.
+type providerVerifyMsg struct {
+	name  string
+	ok    bool
+	errStr string
+}
 
 // providerListDoneMsg is emitted when the user presses Tab/Enter from the last
 // row of the provider list, signalling that the settings page should advance to
@@ -21,8 +39,10 @@ type providerRow struct {
 	spec    llm.ProviderSpec
 	enabled bool
 	// input is only meaningful when spec.NeedsKey.
-	input    textinput.Model
-	editMode bool // whether the key textinput currently has focus
+	input        textinput.Model
+	editMode     bool // whether the key textinput currently has focus
+	verifyStatus keyVerifyStatus
+	verifyMsg    string // short error when verifyFail
 }
 
 // providerListModel is a Bubble Tea model that renders all providers as a
@@ -34,6 +54,7 @@ type providerRow struct {
 //   Tab / →      — if current row needs a key: enter key-edit mode
 //                  otherwise: advance cursor (Tab from last row → providerListDoneMsg)
 //   (in edit)    — type the API key; Esc / Enter / Tab to leave edit mode
+//                  (Esc leaves edit mode only; a second Esc exits settings)
 type providerListModel struct {
 	rows    []providerRow
 	cursor  int
@@ -121,18 +142,18 @@ func (m *providerListModel) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (m *providerListModel) updateEditing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEsc, tea.KeyEnter:
-		m.leaveEditMode()
-		return m, nil
+		cmd := m.leaveEditMode()
+		return m, cmd
 
 	case tea.KeyTab:
-		m.leaveEditMode()
+		cmd := m.leaveEditMode()
 		m.cursor++
 		if m.cursor >= len(m.rows) {
 			m.cursor = len(m.rows) - 1
-			return m, func() tea.Msg { return providerListDoneMsg{} }
+			return m, tea.Batch(cmd, func() tea.Msg { return providerListDoneMsg{} })
 		}
 		m.clampScroll()
-		return m, nil
+		return m, cmd
 
 	default:
 		var cmd tea.Cmd
@@ -197,10 +218,28 @@ func (m *providerListModel) enterEditMode() {
 	m.rows[m.cursor].editMode = true
 }
 
-func (m *providerListModel) leaveEditMode() {
+// leaveEditMode deactivates the textinput and, if a key was entered, fires an
+// async goroutine to verify the key against the provider's endpoint.
+func (m *providerListModel) leaveEditMode() tea.Cmd {
+	i := m.cursor
 	m.editing = false
-	m.rows[m.cursor].editMode = false
-	m.rows[m.cursor].input.Blur()
+	m.rows[i].editMode = false
+	m.rows[i].input.Blur()
+
+	key := m.rows[i].input.Value()
+	spec := m.rows[i].spec
+	if spec.NeedsKey && key != "" {
+		m.rows[i].verifyStatus = verifyPending
+		m.rows[i].verifyMsg = ""
+		return func() tea.Msg {
+			err := llm.VerifyKey(context.Background(), spec, key)
+			if err != nil {
+				return providerVerifyMsg{name: spec.Name, ok: false, errStr: err.Error()}
+			}
+			return providerVerifyMsg{name: spec.Name, ok: true}
+		}
+	}
+	return nil
 }
 
 func (m *providerListModel) clampScroll() {
@@ -238,7 +277,7 @@ func (m *providerListModel) View() string {
 	var b strings.Builder
 
 	// Header / hint line
-	hint := "  ↑↓ move  ·  Space enable  ·  Tab/→ edit key  ·  Tab from last row → next section"
+	hint := "  ↑↓ move  ·  Space enable  ·  Tab/→ edit key  ·  Esc=save & exit  ·  Tab from last row → next section"
 	b.WriteString(titleStyle.Render("Providers") + statusStyle.Render(hint) + "\n\n")
 
 	visible := m.visibleRowCount()
@@ -298,6 +337,19 @@ func (m *providerListModel) View() string {
 					// Empty placeholder dashes
 					b.WriteString(mutedStyle.Render("──────────────────────────"))
 				}
+			}
+			// Verify badge (shown after key area)
+			switch r.verifyStatus {
+			case verifyPending:
+				b.WriteString("  " + mutedStyle.Render("verifying…"))
+			case verifyOK:
+				b.WriteString("  " + lipgloss.NewStyle().Foreground(colorOK).Render("✓ ok"))
+			case verifyFail:
+				msg := r.verifyMsg
+				if len(msg) > 40 {
+					msg = msg[:37] + "…"
+				}
+				b.WriteString("  " + lipgloss.NewStyle().Foreground(colorErr).Render("✗ "+msg))
 			}
 		}
 

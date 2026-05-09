@@ -345,6 +345,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.layout()
 	}
 
+	// Background key-verify results are applied regardless of current mode so
+	// they don't get lost when the user navigates away from the provider list.
+	if vm, ok := msg.(providerVerifyMsg); ok {
+		if a.providerList != nil {
+			for i := range a.providerList.rows {
+				if a.providerList.rows[i].spec.Name == vm.name {
+					if vm.ok {
+						a.providerList.rows[i].verifyStatus = verifyOK
+					} else {
+						a.providerList.rows[i].verifyStatus = verifyFail
+						a.providerList.rows[i].verifyMsg = vm.errStr
+					}
+					break
+				}
+			}
+		}
+		return a, nil
+	}
+
 	if a.mode == ModeSettings {
 		return a.updateSettings(msg)
 	}
@@ -762,6 +781,31 @@ func (a *App) sendToMaster(expanded string) {
 // View() so we can pass the correct usable height to components.
 const settingsHeaderLines = 3
 
+// saveAndExitSettings collects the current state from whichever phase is
+// active, writes it to disk, triggers a hot-reload, and returns to chat mode.
+func (a *App) saveAndExitSettings() {
+	if a.settingsPhase == 0 && a.providerList != nil {
+		a.settingsState.applyProviderList(a.providerList)
+	}
+	if err := a.settingsState.save(); err != nil {
+		a.flashMessage = "settings: save failed — " + err.Error()
+		a.mode = ModeChat
+		return
+	}
+	if a.reload != nil {
+		if err := a.reload(); err != nil {
+			a.flashMessage = "settings saved, reload failed: " + err.Error() + " (running adapters unchanged)"
+		} else {
+			a.masterModel = a.settingsState.masterProvider + "/" + a.settingsState.masterModel
+			a.flashMessage = "settings saved — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel
+		}
+	} else {
+		a.flashMessage = "settings saved — restart `ageni` to apply"
+	}
+	a.mode = ModeChat
+	a.refreshChat()
+}
+
 func (a *App) openSettings() tea.Cmd {
 	st, existing, err := newSettingsState()
 	if err != nil {
@@ -777,16 +821,22 @@ func (a *App) openSettings() tea.Cmd {
 }
 
 func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
-	// Allow Ctrl+C to quit and Esc to bail without saving from anywhere.
+	// Allow Ctrl+C to quit from anywhere.
 	if k, ok := msg.(tea.KeyMsg); ok {
-		switch k.Type {
-		case tea.KeyCtrlC:
+		if k.Type == tea.KeyCtrlC {
 			a.cancel()
 			return a, tea.Quit
-		case tea.KeyEsc:
-			a.mode = ModeChat
-			a.flashMessage = "settings: cancelled"
-			return a, nil
+		}
+		if k.Type == tea.KeyEsc {
+			// When the user is actively typing in a key field, first Esc just
+			// leaves edit mode (not the whole settings screen).
+			if a.settingsPhase == 0 && a.providerList != nil && a.providerList.editing {
+				// fall through — providerList.Update handles it
+			} else {
+				// Auto-save and exit.
+				a.saveAndExitSettings()
+				return a, nil
+			}
 		}
 	}
 
@@ -1519,12 +1569,12 @@ func (a *App) View() string {
 		return "ageni: window too small (need 60×12)"
 	}
 	if a.mode == ModeSettings {
-		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=cancel without saving\n\n")
+		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=save & exit\n\n")
 		if a.settingsPhase == 0 && a.providerList != nil {
 			return header + a.providerList.View()
 		}
 		if a.settingsForm != nil {
-			sub := statusStyle.Render("Master → Sub-agent → Lead → Fallbacks → Limits   (Enter=advance  Tab=next field)\n\n")
+			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits   (Enter=advance  Tab=next field)\n\n")
 			return header + sub + a.settingsForm.View()
 		}
 		return header

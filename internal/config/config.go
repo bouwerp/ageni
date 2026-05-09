@@ -36,6 +36,14 @@ type Config struct {
 	MasterLead       RoleConfig
 	MasterLeadActive bool
 
+	// Critic is the model used for soundboard reviews. When CriticActive is
+	// true, the master can call soundboard() to get an adversarial critique
+	// of its plan before executing significant changes. Should be a different
+	// (ideally from a different provider) model than the master to provide
+	// genuine independent second opinions. Set CRITIC_PROVIDER to enable.
+	Critic       RoleConfig
+	CriticActive bool
+
 	// MasterFallbacks / SubagentFallbacks are ordered chains tried in
 	// sequence when the primary fails with a retryable error
 	// (429 / 5xx / timeout / network). Entries are specified in the
@@ -100,6 +108,14 @@ func Load() (*Config, error) {
 		if lead, err := resolveRole("MASTER_LEAD", leadRaw); err == nil {
 			cfg.MasterLead = lead
 			cfg.MasterLeadActive = true
+		}
+	}
+
+	// Critic is opt-in: only resolve if CRITIC_PROVIDER is set.
+	if criticRaw := os.Getenv("CRITIC_PROVIDER"); criticRaw != "" {
+		if critic, err := resolveRole("CRITIC", criticRaw); err == nil {
+			cfg.Critic = critic
+			cfg.CriticActive = true
 		}
 	}
 

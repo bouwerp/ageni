@@ -38,6 +38,11 @@ type Master struct {
 	leadAdapter llm.Adapter
 	leadModel   string
 
+	// criticAdapter / criticModel power the synchronous soundboard tool.
+	// When unset, soundboard calls return a "not configured" notice.
+	criticAdapter llm.Adapter
+	criticModel   string
+
 	skillCatalog    string // optional: appended to the cached system prompt
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
@@ -136,7 +141,24 @@ func (m *Master) SetLead(adapter llm.Adapter, model string) {
 	m.mu.Unlock()
 }
 
-// adapterForIter returns the adapter+model to use on the given
+// SetCritic installs the adapter used for synchronous soundboard reviews.
+// Pass nil + "" to disable. Safe to call from any goroutine.
+func (m *Master) SetCritic(adapter llm.Adapter, model string) {
+	m.mu.Lock()
+	m.criticAdapter = adapter
+	m.criticModel = model
+	m.mu.Unlock()
+}
+
+// CriticAdapter returns the current critic adapter and model. Returns nil, ""
+// when soundboard is not configured.
+func (m *Master) CriticAdapter() (llm.Adapter, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.criticAdapter, m.criticModel
+}
+
+
 // iteration of takeTurns. Iteration 0 → lead (if set); iteration 1+
 // → worker.
 func (m *Master) adapterForIter(iter int) (llm.Adapter, string) {
@@ -609,6 +631,8 @@ The ONLY text you produce before tool calls is a one-sentence acknowledgement wh
    - 'prior_findings': attributed selections from earlier workers ("s3 found auth at internal/auth/jwt.go:42") — only what THIS worker needs
    - 'do_not_revisit': paths other parallel workers are handling — stops collisions
    This is how you delegate without losing what you've already learned.
+
+8. **Soundboard before significant plans.** When about to execute a plan touching 3+ files, making an architectural decision, or performing an irreversible action: call soundboard(plan=...) with a 1-5 sentence description of your proposed approach. Incorporate the critique before spawning workers. Skip soundboard for trivial lookups, single-file edits, and well-understood routine tasks.
 </orchestration_rules>
 
 <monitoring_rules>

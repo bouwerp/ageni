@@ -44,6 +44,9 @@ type settingsState struct {
 	masterFallbacks []string // provider names; multi-select
 	subFallbacks    []string // provider names; multi-select
 
+	criticProvider string
+	criticModel    string
+
 	maxSubagents   string
 	subagentBudget string
 
@@ -76,6 +79,8 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 		leadModel:       existing["MASTER_LEAD_MODEL"],
 		masterFallbacks: parseFallbackProviders(existing["MASTER_FALLBACKS"]),
 		subFallbacks:    parseFallbackProviders(existing["SUBAGENT_FALLBACKS"]),
+		criticProvider:  existing["CRITIC_PROVIDER"],
+		criticModel:     existing["CRITIC_MODEL"],
 		maxSubagents:    orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
 	}
@@ -177,6 +182,30 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Height(8),
 	)
 
+	groupCritic := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Critic · Provider  (optional)").
+			Description("Soundboard reviewer. Use a different provider from the master for genuine second opinions.").
+			OptionsFunc(func() []huh.Option[string] {
+				opts := enabledProviderOptions(st.enabled)
+				return append([]huh.Option[string]{huh.NewOption("(disabled — soundboard inactive)", leadDisabled)}, opts...)
+			}, &st.enabled).
+			Value(&st.criticProvider).
+			Filtering(true).
+			Height(6),
+		huh.NewSelect[string]().
+			Title("Critic · Model  (optional)").
+			OptionsFunc(func() []huh.Option[string] {
+				if st.criticProvider == leadDisabled {
+					return nil
+				}
+				return modelOptionsFor(st.criticProvider, st.criticModel)
+			}, &st.criticProvider).
+			Value(&st.criticModel).
+			Filtering(true).
+			Height(8),
+	)
+
 	groupFallbacks := huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Master").
@@ -211,7 +240,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Validate(positiveInt),
 	)
 
-	form := huh.NewForm(groupMaster, groupSub, groupLead, groupFallbacks, groupLimits).
+	form := huh.NewForm(groupMaster, groupSub, groupLead, groupCritic, groupFallbacks, groupLimits).
 		WithShowHelp(true).
 		WithShowErrors(true)
 	if termHeight > 0 {
@@ -249,6 +278,15 @@ func (s *settingsState) save() error {
 		leadSpec, _ := llm.LookupProvider(s.leadProvider)
 		out["MASTER_LEAD_PROVIDER"] = s.leadProvider
 		out["MASTER_LEAD_MODEL"] = orDefault(s.leadModel, leadSpec.DefaultModel)
+	}
+
+	if s.criticProvider == leadDisabled {
+		out["CRITIC_PROVIDER"] = ""
+		out["CRITIC_MODEL"] = ""
+	} else {
+		criticSpec, _ := llm.LookupProvider(s.criticProvider)
+		out["CRITIC_PROVIDER"] = s.criticProvider
+		out["CRITIC_MODEL"] = orDefault(s.criticModel, criticSpec.DefaultModel)
 	}
 
 	// API keys: write whatever the user typed, blank-skip otherwise.
