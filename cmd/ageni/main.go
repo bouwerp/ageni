@@ -169,6 +169,10 @@ func run() error {
 	if cfg.MasterLeadActive {
 		masterLeadAdapter = buildAdapter(cfg.MasterLead)
 	}
+	var criticAdapter llm.Adapter
+	if cfg.CriticActive {
+		criticAdapter = buildAdapter(cfg.Critic)
+	}
 
 	// Tier factory. v1: opus → master adapter, others → sub-agent adapter.
 	// (Per-tier model overrides land in v2.)
@@ -286,6 +290,11 @@ func run() error {
 			cfg.MasterLead.Provider.Name, cfg.MasterLead.Model,
 			cfg.Master.Provider.Name, cfg.Master.Model)
 	}
+	if criticAdapter != nil {
+		master.SetCritic(criticAdapter, cfg.Critic.Model)
+		fmt.Printf("Soundboard critic: %s/%s\n", cfg.Critic.Provider.Name, cfg.Critic.Model)
+	}
+	masterReg.Register(agent.SoundboardTool{M: master})
 	if len(cfg.MasterFallbacks) > 0 {
 		fmt.Printf("Master fallback chain: ")
 		for i, fb := range cfg.MasterFallbacks {
@@ -416,6 +425,11 @@ func run() error {
 			master.SetLead(buildAdapter(newCfg.MasterLead), newCfg.MasterLead.Model)
 		} else {
 			master.SetLead(nil, "")
+		}
+		if newCfg.CriticActive {
+			master.SetCritic(buildAdapter(newCfg.Critic), newCfg.Critic.Model)
+		} else {
+			master.SetCritic(nil, "")
 		}
 		manager.UpdateFactory(newFactory)
 		manager.SetDefaultBudget(newCfg.SubagentBudget)

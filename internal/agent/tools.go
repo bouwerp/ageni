@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 // SpawnTool is the master-only tool for delegating work to a sub-agent. The
@@ -142,4 +144,73 @@ func (t KillTool) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("killed sub-agent %s", p.ID), nil
+}
+
+// criticSystemPrompt is the fixed system prompt for the soundboard critic.
+// The critic has NO tools — it only reasons about the plan and returns critique.
+const criticSystemPrompt = `You are a senior adversarial reviewer. Your job is to stress-test the plan you receive before it is executed.
+
+Structure your critique under these headings (be concise — 3-6 bullet points total):
+
+**Risks & Gaps** — What could go wrong? What assumptions are not validated?
+**Edge Cases Missed** — Unusual inputs, concurrent conditions, or error paths not addressed.
+**Better Alternatives** — Is there a simpler, safer, or more robust approach?
+**What's Correct** — Briefly acknowledge what the plan gets right.
+
+Be direct and specific. Cite file paths or line numbers when relevant. Do not repeat the plan back.`
+
+// SoundboardTool calls the critic adapter synchronously and returns its critique.
+// If no critic is configured it returns a notice rather than failing.
+type SoundboardTool struct{ M *Master }
+
+func (SoundboardTool) Name() string { return "soundboard" }
+func (SoundboardTool) Description() string {
+return `Present a proposed plan to an independent critic LLM for adversarial review before executing it. Call this before any plan that touches 3+ files, makes architectural decisions, or performs irreversible actions. The critic uses a different model than the master and will surface risks, edge cases, and alternatives. Returns the critique; incorporate feedback before proceeding.`
+}
+func (SoundboardTool) Schema() json.RawMessage {
+return json.RawMessage(`{
+"type":"object",
+"properties":{
+  "plan":{"type":"string","description":"1-5 sentences describing what you are about to do and why. Be specific about files, tools, and expected outcomes."}
+},
+"required":["plan"]
+}`)
+}
+func (t SoundboardTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
+var p struct{ Plan string }
+if err := json.Unmarshal(args, &p); err != nil {
+return "", err
+}
+if strings.TrimSpace(p.Plan) == "" {
+return "", errors.New("soundboard requires a non-empty plan")
+}
+
+adapter, model := t.M.CriticAdapter()
+if adapter == nil {
+return "(soundboard: critic not configured — skipping review)", nil
+}
+
+req := llm.Request{
+Model:  model,
+System: criticSystemPrompt,
+Messages: []llm.Message{
+{Role: llm.RoleUser, Text: "Plan to review:\n\n" + p.Plan},
+},
+}
+
+stream, err := adapter.Stream(ctx, req)
+if err != nil {
+return "", fmt.Errorf("soundboard: critic call failed: %w", err)
+}
+
+var sb strings.Builder
+for ev := range stream {
+switch ev.Type {
+case llm.StreamEventText:
+sb.WriteString(ev.TextDelta)
+case llm.StreamEventError:
+return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
+}
+}
+return sb.String(), nil
 }
