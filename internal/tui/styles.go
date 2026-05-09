@@ -22,7 +22,7 @@ var (
 
 	inputStyle = lipgloss.NewStyle().
 			Border(lipgloss.RoundedBorder()).
-			BorderForeground(colorBorderHi).
+			BorderForeground(colorBorder).
 			Padding(0, 1)
 
 	statusStyle = lipgloss.NewStyle().

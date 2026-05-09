@@ -23,6 +23,15 @@ import (
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
+// Section identifies which UI pane currently has keyboard focus.
+type Section int
+
+const (
+	SectionInput Section = iota // bottom textarea
+	SectionChat                 // main chat viewport
+	SectionSide                 // side pane (sub-agents / todos)
+)
+
 // Mode toggles between the chat UI and the settings form.
 type Mode int
 
@@ -69,8 +78,8 @@ type App struct {
 	subOrder       []string
 
 	// view state
-	focusInput bool
-	viewSub    string // selected subagent id, "" = master chat
+	focusSection Section
+	viewSub      string // selected subagent id, "" = master chat
 
 	mode Mode
 
@@ -168,7 +177,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		chat:           chat,
 		side:           side,
 		input:          ta,
-		focusInput:     true,
+		focusSection:   SectionInput,
 		subBufs:        make(map[string]*strings.Builder),
 		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
@@ -356,7 +365,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.KeyMsg:
 		// ── @ autocomplete navigation (takes priority over all other keys) ──
-		if a.atComp != nil && a.atComp.active && a.focusInput {
+		if a.atComp != nil && a.atComp.active && a.focusSection == SectionInput {
 			switch {
 			case msg.Type == tea.KeyEsc:
 				a.dismissAtComplete()
@@ -386,10 +395,10 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cancel()
 			return a, tea.Quit
 		case msg.Type == tea.KeyTab:
-			a.cycleView(1)
+			a.cycleSection(1)
 			return a, nil
 		case msg.Type == tea.KeyShiftTab:
-			a.cycleView(-1)
+			a.cycleSection(-1)
 			return a, nil
 		case msg.Type == tea.KeyEsc:
 			a.stopGeneration()
@@ -406,18 +415,35 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case msg.Type == tea.KeyPgUp, msg.Type == tea.KeyPgDown,
 			msg.String() == "ctrl+u", msg.String() == "ctrl+d":
-			// Always route page-scroll keys to the chat viewport.
+			// Page-scroll keys always go to the active viewport.
 			var cmd tea.Cmd
-			a.chat, cmd = a.chat.Update(msg)
+			if a.focusSection == SectionSide {
+				a.side, cmd = a.side.Update(msg)
+			} else {
+				a.chat, cmd = a.chat.Update(msg)
+			}
 			return a, cmd
-		case msg.Type == tea.KeyUp && a.inputIsSingleLine():
+		// Arrow keys: behaviour depends on the focused section.
+		case msg.Type == tea.KeyUp && a.focusSection == SectionChat:
+			a.chat.LineUp(3)
+			return a, nil
+		case msg.Type == tea.KeyDown && a.focusSection == SectionChat:
+			a.chat.LineDown(3)
+			return a, nil
+		case msg.Type == tea.KeyUp && a.focusSection == SectionSide:
+			a.navigateSide(-1)
+			return a, nil
+		case msg.Type == tea.KeyDown && a.focusSection == SectionSide:
+			a.navigateSide(1)
+			return a, nil
+		case msg.Type == tea.KeyUp && a.focusSection == SectionInput && a.inputIsSingleLine():
 			a.historyPrev()
 			return a, nil
-		case msg.Type == tea.KeyDown && a.inputIsSingleLine():
+		case msg.Type == tea.KeyDown && a.focusSection == SectionInput && a.inputIsSingleLine():
 			a.historyNext()
 			return a, nil
 		}
-		if msg.Type == tea.KeyEnter && !msg.Alt && a.focusInput {
+		if msg.Type == tea.KeyEnter && !msg.Alt && a.focusSection == SectionInput {
 			text := strings.TrimSpace(a.input.Value())
 			if text != "" {
 				a.input.Reset()
@@ -491,7 +517,8 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, tickCmd())
 	}
 
-	if a.focusInput {
+	switch a.focusSection {
+	case SectionInput:
 		var cmd tea.Cmd
 		a.input, cmd = a.input.Update(msg)
 		cmds = append(cmds, cmd)
@@ -499,9 +526,13 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if _, isKey := msg.(tea.KeyMsg); isKey {
 			a.updateAtComplete()
 		}
-	} else {
+	case SectionChat:
 		var cmd tea.Cmd
 		a.chat, cmd = a.chat.Update(msg)
+		cmds = append(cmds, cmd)
+	case SectionSide:
+		var cmd tea.Cmd
+		a.side, cmd = a.side.Update(msg)
 		cmds = append(cmds, cmd)
 	}
 
@@ -841,21 +872,37 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-// cycleView steps through the sub-agent panes. dir=1 goes newest→oldest→master
-// (matching the side-pane display order); dir=-1 reverses (Shift+Tab).
-func (a *App) cycleView(dir int) {
-	if len(a.subOrder) == 0 {
+// cycleSection moves focus to the next (dir=1) or previous (dir=-1) section.
+// Sections cycle: Input → Chat → Side → Input.
+func (a *App) cycleSection(dir int) {
+	const n = 3
+	next := Section((int(a.focusSection) + dir + n) % n)
+	a.setSectionFocus(next)
+}
+
+// setSectionFocus switches the focused section and updates textarea focus state.
+func (a *App) setSectionFocus(s Section) {
+	a.focusSection = s
+	if s == SectionInput {
+		a.input.Focus()
+	} else {
+		a.input.Blur()
+	}
+}
+
+// navigateSide moves the sub-agent view selection up (dir=-1, toward newer/master)
+// or down (dir=1, toward older) within the side pane's displayed order.
+// The side pane shows: master (implicit top) → newest sub → … → oldest sub.
+func (a *App) navigateSide(dir int) {
+	n := len(a.subOrder)
+	if n == 0 {
 		return
 	}
-	n := len(a.subOrder)
 	prevSub := a.viewSub
 	if a.viewSub == "" {
-		if dir >= 0 {
-			// Tab: start at newest (last in subOrder)
+		// At master: down → newest sub-agent; up → no-op (already at top).
+		if dir > 0 {
 			a.viewSub = a.subOrder[n-1]
-		} else {
-			// Shift+Tab: start at oldest (first in subOrder)
-			a.viewSub = a.subOrder[0]
 		}
 	} else {
 		idx := -1
@@ -867,29 +914,24 @@ func (a *App) cycleView(dir int) {
 		}
 		if idx < 0 {
 			a.viewSub = ""
-		} else if dir >= 0 {
-			// Tab: newest first means stepping backwards through subOrder
-			if idx == 0 {
-				a.viewSub = ""
-			} else {
-				a.viewSub = a.subOrder[idx-1]
-			}
-		} else {
-			// Shift+Tab: step forwards through subOrder (oldest→newest)
+		} else if dir < 0 {
+			// Up: toward newer. At newest → go to master.
 			if idx == n-1 {
 				a.viewSub = ""
 			} else {
 				a.viewSub = a.subOrder[idx+1]
 			}
+		} else {
+			// Down: toward older. At oldest → no-op.
+			if idx > 0 {
+				a.viewSub = a.subOrder[idx-1]
+			}
 		}
 	}
 	if a.viewSub != prevSub {
-		// Reset to bottom when entering a new pane so the user always
-		// lands on the latest output rather than inheriting the previous
-		// pane's scroll position.
 		a.refreshChatForce()
 	} else {
-		a.refreshChat()
+		a.refreshSide()
 	}
 }
 
@@ -1487,11 +1529,23 @@ func (a *App) View() string {
 		}
 		return header
 	}
+	// Highlight the focused section's border.
+	cs := chatStyle.Height(a.chat.Height)
+	ss := sideStyle.Height(a.side.Height)
+	is := inputStyle
+	switch a.focusSection {
+	case SectionChat:
+		cs = cs.BorderForeground(colorBorderHi)
+	case SectionSide:
+		ss = ss.BorderForeground(colorBorderHi)
+	case SectionInput:
+		is = is.BorderForeground(colorBorderHi)
+	}
 	body := lipgloss.JoinHorizontal(lipgloss.Top,
-		chatStyle.Height(a.chat.Height).Render(a.chat.View()),
-		sideStyle.Height(a.side.Height).Render(a.side.View()),
+		cs.Render(a.chat.View()),
+		ss.Render(a.side.View()),
 	)
-	in := inputStyle.Render(a.input.View())
+	in := is.Render(a.input.View())
 	bottom := statusStyle.Render(a.statusLine())
 	if a.atComp != nil && a.atComp.active && len(a.atComp.matches) > 0 {
 		suggest := a.atComp.render(a.width)
@@ -1531,7 +1585,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab/S-Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=sections  ↑↓=navigate  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is
