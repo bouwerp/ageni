@@ -385,7 +385,10 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cancel()
 			return a, tea.Quit
 		case msg.Type == tea.KeyTab:
-			a.cycleView()
+			a.cycleView(1)
+			return a, nil
+		case msg.Type == tea.KeyShiftTab:
+			a.cycleView(-1)
 			return a, nil
 		case msg.Type == tea.KeyEsc:
 			a.stopGeneration()
@@ -837,14 +840,22 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-func (a *App) cycleView() {
-	// "" -> first subagent -> next -> ... -> ""
+// cycleView steps through the sub-agent panes. dir=1 goes newest→oldest→master
+// (matching the side-pane display order); dir=-1 reverses (Shift+Tab).
+func (a *App) cycleView(dir int) {
 	if len(a.subOrder) == 0 {
 		return
 	}
+	n := len(a.subOrder)
 	prevSub := a.viewSub
 	if a.viewSub == "" {
-		a.viewSub = a.subOrder[0]
+		if dir >= 0 {
+			// Tab: start at newest (last in subOrder)
+			a.viewSub = a.subOrder[n-1]
+		} else {
+			// Shift+Tab: start at oldest (first in subOrder)
+			a.viewSub = a.subOrder[0]
+		}
 	} else {
 		idx := -1
 		for i, id := range a.subOrder {
@@ -853,10 +864,22 @@ func (a *App) cycleView() {
 				break
 			}
 		}
-		if idx < 0 || idx == len(a.subOrder)-1 {
+		if idx < 0 {
 			a.viewSub = ""
+		} else if dir >= 0 {
+			// Tab: newest first means stepping backwards through subOrder
+			if idx == 0 {
+				a.viewSub = ""
+			} else {
+				a.viewSub = a.subOrder[idx-1]
+			}
 		} else {
-			a.viewSub = a.subOrder[idx+1]
+			// Shift+Tab: step forwards through subOrder (oldest→newest)
+			if idx == n-1 {
+				a.viewSub = ""
+			} else {
+				a.viewSub = a.subOrder[idx+1]
+			}
 		}
 	}
 	if a.viewSub != prevSub {
@@ -1283,7 +1306,10 @@ func (a *App) refreshSide() {
 		sb.WriteString(mutedStyle.Render("(none yet)\n"))
 	}
 	frame := a.spinner()
-	for _, id := range a.subOrder {
+	// Newest first — iterate subOrder in reverse so the most recent agent
+	// is at the top, closest to the todos section.
+	for i := len(a.subOrder) - 1; i >= 0; i-- {
+		id := a.subOrder[i]
 		st := a.subStatus[id]
 		marker := "•"
 		st2 := subRunningStyle
@@ -1456,7 +1482,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab/S-Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is
