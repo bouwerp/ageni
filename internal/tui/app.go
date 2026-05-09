@@ -77,6 +77,16 @@ type App struct {
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
 
+	// Incremental glamour-render cache for live streaming.
+	// masterRenderedUpTo is the byte offset in currentMaster through which we
+	// have glamour-rendered. masterRenderedCache holds the rendered output for
+	// that prefix. buildChatContent appends the un-rendered suffix as raw text.
+	// Reset in flushMasterText. Same pattern for sub-agents keyed by ID.
+	masterRenderedUpTo  int
+	masterRenderedCache string
+	subRenderedUpTo     map[string]int
+	subRenderedCache    map[string]string
+
 	// view state
 	focusSection Section
 	viewSub      string // selected subagent id, "" = master chat
@@ -182,6 +192,8 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
 		subActivity:    make(map[string]string),
+		subRenderedUpTo:  make(map[string]int),
+		subRenderedCache: make(map[string]string),
 		history:      LoadHistory(),
 		historyIdx:   -1,
 		mouseOn:      true,
@@ -1093,14 +1105,25 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.subActivity[ev.SubagentID] = "thinking"
 		a.refreshSide()
 	case agent.EvSubagentText:
-		// Stream raw to a per-sub-agent in-progress buffer; refreshChat
-		// shows it live at the bottom of the sub-agent pane.
+		// Stream to per-sub-agent in-progress buffer with incremental glamour.
 		cur := a.currentSubText[ev.SubagentID]
 		if cur == nil {
 			cur = &strings.Builder{}
 			a.currentSubText[ev.SubagentID] = cur
 		}
 		cur.WriteString(ev.Text)
+		// Incrementally glamour-render complete lines, same as master.
+		id := ev.SubagentID
+		text := cur.String()
+		lastNL := strings.LastIndex(text, "\n")
+		upTo := a.subRenderedUpTo[id]
+		if lastNL >= 0 && lastNL+1 > upTo {
+			complete := text[:lastNL+1]
+			if !isInsideCodeFence(complete) {
+				a.subRenderedCache[id] = a.renderMarkdown(complete)
+				a.subRenderedUpTo[id] = lastNL + 1
+			}
+		}
 		a.refreshChat()
 	case agent.EvSubagentToolCall:
 		// A tool call ends the current text segment — flush the streamed
@@ -1205,7 +1228,20 @@ func (a *App) handleEvent(ev agent.Event) {
 }
 
 func (a *App) appendMasterRender() {
-	// Live-render the in-progress master text as the trailing block.
+	// Incrementally glamour-render all complete lines (up to the last \n) so
+	// the user sees formatted output as it arrives rather than raw markdown
+	// during streaming and a sudden reformat at turn end.
+	text := a.currentMaster.String()
+	lastNL := strings.LastIndex(text, "\n")
+	if lastNL >= 0 && lastNL+1 > a.masterRenderedUpTo {
+		complete := text[:lastNL+1]
+		// Don't glamour-render if we're inside an unclosed code fence — the
+		// partial fence would render oddly. Show raw until the fence closes.
+		if !isInsideCodeFence(complete) {
+			a.masterRenderedCache = a.renderMarkdown(complete)
+			a.masterRenderedUpTo = lastNL + 1
+		}
+	}
 	a.refreshChat()
 }
 
@@ -1231,6 +1267,8 @@ func (a *App) flushSubText(id string) {
 		b.WriteString(rendered + "\n\n")
 	}
 	cur.Reset()
+	delete(a.subRenderedUpTo, id)
+	delete(a.subRenderedCache, id)
 }
 
 func (a *App) flushMasterText() {
@@ -1240,6 +1278,8 @@ func (a *App) flushMasterText() {
 	rendered := a.renderMarkdown(a.currentMaster.String())
 	a.chatBuf.WriteString(titleStyle.Render("master ❯") + "\n" + rendered + "\n\n")
 	a.currentMaster.Reset()
+	a.masterRenderedUpTo = 0
+	a.masterRenderedCache = ""
 }
 
 // flushReasoningBlock commits the accumulated thinking/reasoning content to
@@ -1315,6 +1355,21 @@ func (a *App) ensureGlamour() {
 	a.glamWidth = w
 }
 
+// isInsideCodeFence reports whether text ends with an unclosed fenced code
+// block (``` or ~~~). Used to decide whether to glamour-render partial output:
+// we skip rendering if a fence is open so the partial block doesn't show as
+// garbled text.
+func isInsideCodeFence(text string) bool {
+	inside := false
+	for _, line := range strings.Split(text, "\n") {
+		trimmed := strings.TrimLeft(line, " \t")
+		if strings.HasPrefix(trimmed, "```") || strings.HasPrefix(trimmed, "~~~") {
+			inside = !inside
+		}
+	}
+	return inside
+}
+
 // renderMarkdown formats a markdown string with glamour. On any failure it
 // returns the input unchanged so output is never lost.
 func (a *App) renderMarkdown(s string) string {
@@ -1354,7 +1409,14 @@ func (a *App) buildChatContent() string {
 		if b, ok := a.subBufs[a.viewSub]; ok {
 			body := b.String()
 			if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
-				body += titleStyle.Render(a.viewSub+" ❯ ") + cur.String()
+				id := a.viewSub
+				text := cur.String()
+				upTo := a.subRenderedUpTo[id]
+				partial := text
+				if upTo > 0 && upTo <= len(text) {
+					partial = text[upTo:]
+				}
+				body += titleStyle.Render(id+" ❯ ") + a.subRenderedCache[id] + partial
 			} else if line := a.subInlineIndicator(a.viewSub); line != "" {
 				body += line
 			}
@@ -1367,7 +1429,13 @@ func (a *App) buildChatContent() string {
 		body += mutedStyle.Render("⟨thinking⟩\n"+a.currentReasoning.String())
 	}
 	if a.currentMaster.Len() > 0 {
-		body += titleStyle.Render("master ❯ ") + a.currentMaster.String()
+		text := a.currentMaster.String()
+		// Show glamour-rendered complete lines + raw partial last line.
+		partial := text
+		if a.masterRenderedUpTo > 0 && a.masterRenderedUpTo <= len(text) {
+			partial = text[a.masterRenderedUpTo:]
+		}
+		body += titleStyle.Render("master ❯ ") + a.masterRenderedCache + partial
 	} else if a.currentReasoning.Len() == 0 {
 		if line := a.masterInlineIndicator(); line != "" {
 			body += line
