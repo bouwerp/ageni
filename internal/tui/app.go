@@ -60,10 +60,11 @@ type App struct {
 	height int
 
 	// Buffers
-	chatBuf        strings.Builder
-	currentMaster  strings.Builder
-	currentSubText map[string]*strings.Builder // in-progress text per sub-agent
-	subBufs        map[string]*strings.Builder
+	chatBuf           strings.Builder
+	currentMaster     strings.Builder
+	currentReasoning  strings.Builder // in-progress reasoning/thinking delta
+	currentSubText    map[string]*strings.Builder // in-progress text per sub-agent
+	subBufs           map[string]*strings.Builder
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
 
@@ -927,12 +928,25 @@ func (a *App) handleEvent(ev agent.Event) {
 		// triggered the turn (user submit, sub-agent completion, retry).
 		a.masterBusy = true
 		a.masterToolIn = ""
+		a.currentReasoning.Reset()
 		a.refreshSide()
+	case agent.EvMasterReasoning:
+		a.currentReasoning.WriteString(ev.Text)
+		a.appendMasterRender()
 	case agent.EvMasterText:
+		// First real text token: commit the thinking block to the chat buffer
+		// so it appears above the response in a collapsed muted section.
+		if a.currentReasoning.Len() > 0 && a.currentMaster.Len() == 0 {
+			a.flushReasoningBlock()
+		}
 		a.currentMaster.WriteString(ev.Text)
 		a.appendMasterRender()
 	case agent.EvMasterToolCall:
 		if ev.ToolCall != nil {
+			// Flush any reasoning block before the first tool call too.
+			if a.currentReasoning.Len() > 0 {
+				a.flushReasoningBlock()
+			}
 			a.flushMasterText() // commit any in-progress text before the tool block
 			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.masterToolIn = ev.ToolCall.Name
@@ -957,6 +971,9 @@ func (a *App) handleEvent(ev agent.Event) {
 		// todo_write may have mutated the list — refresh the side pane.
 		a.refreshSide()
 	case agent.EvMasterTurnDone:
+		if a.currentReasoning.Len() > 0 {
+			a.flushReasoningBlock()
+		}
 		a.flushMasterText()
 		a.masterToolIn = ""
 		if len(a.msgQueue) > 0 {
@@ -1133,6 +1150,32 @@ func (a *App) flushMasterText() {
 	a.currentMaster.Reset()
 }
 
+// flushReasoningBlock commits the accumulated thinking/reasoning content to
+// the chat buffer as a muted collapsed block, then clears the buffer.
+func (a *App) flushReasoningBlock() {
+	if a.currentReasoning.Len() == 0 {
+		return
+	}
+	text := a.currentReasoning.String()
+	a.currentReasoning.Reset()
+	// Wrap and dim the thinking content. Truncate very long blocks to keep
+	// the chat readable — the full reasoning is available in the session log.
+	const maxRunes = 1200
+	runes := []rune(text)
+	truncated := false
+	if len(runes) > maxRunes {
+		runes = runes[:maxRunes]
+		truncated = true
+	}
+	wrapped := lipgloss.NewStyle().Width(a.chat.Width - 4).Render(string(runes))
+	suffix := ""
+	if truncated {
+		suffix = mutedStyle.Render("… (truncated)")
+	}
+	block := mutedStyle.Render("⟨thinking⟩\n"+wrapped) + suffix + "\n" + mutedStyle.Render("⟨/thinking⟩") + "\n\n"
+	a.chatBuf.WriteString(block)
+}
+
 // ensureGlamour rebuilds the markdown renderer when the chat-pane width
 // changes. WithAutoStyle() can fall back to the no-tty profile inside
 // Bubble Tea's alt-screen (resulting in unstyled output that looks like raw
@@ -1227,10 +1270,16 @@ func (a *App) buildChatContent() string {
 		}
 	}
 	body := a.chatBuf.String()
+	if a.currentReasoning.Len() > 0 && a.currentMaster.Len() == 0 {
+		// Show live reasoning stream in a muted block before the response.
+		body += mutedStyle.Render("⟨thinking⟩\n"+a.currentReasoning.String())
+	}
 	if a.currentMaster.Len() > 0 {
 		body += titleStyle.Render("master ❯ ") + a.currentMaster.String()
-	} else if line := a.masterInlineIndicator(); line != "" {
-		body += line
+	} else if a.currentReasoning.Len() == 0 {
+		if line := a.masterInlineIndicator(); line != "" {
+			body += line
+		}
 	}
 	return body
 }

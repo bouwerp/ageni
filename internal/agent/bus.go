@@ -14,6 +14,7 @@ const (
 	EvUserMessage       EventKind = "user_message"
 	EvMasterTurnStart   EventKind = "master_turn_start"
 	EvMasterText        EventKind = "master_text"
+	EvMasterReasoning   EventKind = "master_reasoning" // incremental thinking/reasoning delta
 	EvMasterToolCall    EventKind = "master_tool_call"
 	EvMasterToolDone    EventKind = "master_tool_done"
 	EvMasterTurnDone    EventKind = "master_turn_done"

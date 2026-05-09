@@ -383,6 +383,9 @@ func (m *Master) takeTurns(parent context.Context) {
 			case llm.StreamEventText:
 				assistantText.WriteString(ev.TextDelta)
 				m.bus.Publish(Event{Kind: EvMasterText, Text: ev.TextDelta})
+			case llm.StreamEventThinking:
+				reasoningContent += ev.TextDelta
+				m.bus.Publish(Event{Kind: EvMasterReasoning, Text: ev.TextDelta})
 			case llm.StreamEventToolCall:
 				if ev.ToolCall != nil {
 					toolCalls = append(toolCalls, *ev.ToolCall)
@@ -401,8 +404,12 @@ func (m *Master) takeTurns(parent context.Context) {
 					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 				}
-				if ev.ReasoningContent != "" {
+				// ReasoningContent on Done is the full accumulated string from
+				// providers that don't stream it incrementally. Only use it if
+				// we haven't already accumulated via StreamEventThinking deltas.
+				if reasoningContent == "" && ev.ReasoningContent != "" {
 					reasoningContent = ev.ReasoningContent
+					m.bus.Publish(Event{Kind: EvMasterReasoning, Text: ev.ReasoningContent})
 				}
 			}
 		}

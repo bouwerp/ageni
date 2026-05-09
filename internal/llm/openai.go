@@ -94,6 +94,7 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 					var rc string
 					if err := json.Unmarshal([]byte(rf.Raw()), &rc); err == nil && rc != "" {
 						reasoningContent.WriteString(rc)
+						out <- StreamEvent{Type: StreamEventThinking, TextDelta: rc}
 					}
 				}
 				for _, tcd := range choice.Delta.ToolCalls {
