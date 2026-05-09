@@ -88,7 +88,9 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 					out <- StreamEvent{Type: StreamEventText, TextDelta: choice.Delta.Content}
 				}
 				// Capture DeepSeek reasoning_content streamed as an extra field.
-				if rf, ok := choice.Delta.JSON.ExtraFields["reasoning_content"]; ok && rf.Valid() {
+				// Extra/unknown fields are marked invalid by the apijson decoder even
+				// when the value is perfectly valid JSON, so check Raw() not Valid().
+				if rf, ok := choice.Delta.JSON.ExtraFields["reasoning_content"]; ok && rf.Raw() != "" && rf.Raw() != "null" {
 					var rc string
 					if err := json.Unmarshal([]byte(rf.Raw()), &rc); err == nil && rc != "" {
 						reasoningContent.WriteString(rc)
