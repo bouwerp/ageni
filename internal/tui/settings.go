@@ -50,6 +50,11 @@ type settingsState struct {
 	maxSubagents   string
 	subagentBudget string
 
+	// localFleet is the raw LLAMACPP_FLEET env-var value (user edits it
+	// as a text field). localFleetMode is "full", "subset", or "" (disabled).
+	localFleet     string
+	localFleetMode string
+
 	// verifyResults is populated by save() with one entry per enabled
 	// provider showing the outcome of a quick auth probe. Surfaced to
 	// the user as a flash message after save.
@@ -83,6 +88,8 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 		criticModel:     existing["CRITIC_MODEL"],
 		maxSubagents:    orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
+		localFleet:      existing["LLAMACPP_FLEET"],
+		localFleetMode:  existing["LLAMACPP_FLEET_MODE"],
 	}
 	// Initialise keyPtrs with existing values; the provider list will overwrite
 	// them when the user advances to the form phase.
@@ -240,7 +247,23 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Validate(positiveInt),
 	)
 
-	form := huh.NewForm(groupMaster, groupSub, groupLead, groupCritic, groupFallbacks, groupLimits).
+	groupFleet := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Local Fleet · Mode").
+			Description("How locally-hosted llama.cpp workers integrate with cloud sub-agents.").
+			Options(
+				huh.NewOption("(disabled — use cloud sub-agents only)", ""),
+				huh.NewOption("Full fleet — all sub-agents run on local endpoints", "full"),
+				huh.NewOption("Subset — haiku-tier tasks → local, sonnet/opus → cloud", "subset"),
+			).
+			Value(&st.localFleetMode),
+		huh.NewInput().
+			Title("Local Fleet · Endpoints").
+			Description("Comma-separated list of baseURL|model pairs.\nExample: http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral\nLeave blank to disable.").
+			Value(&st.localFleet),
+	)
+
+	form := huh.NewForm(groupMaster, groupSub, groupLead, groupCritic, groupFallbacks, groupLimits, groupFleet).
 		WithShowHelp(true).
 		WithShowErrors(true)
 	if termHeight > 0 {
@@ -263,6 +286,8 @@ func (s *settingsState) save() error {
 		"AGENI_SUBAGENT_BUDGET": s.subagentBudget,
 		"MASTER_FALLBACKS":      strings.Join(s.masterFallbacks, ","),
 		"SUBAGENT_FALLBACKS":    strings.Join(s.subFallbacks, ","),
+		"LLAMACPP_FLEET":        strings.TrimSpace(s.localFleet),
+		"LLAMACPP_FLEET_MODE":   s.localFleetMode,
 	})
 
 	// Models default to provider defaults when unset.

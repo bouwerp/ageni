@@ -9,6 +9,7 @@ import (
 	"os/signal"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -174,16 +175,15 @@ func run() error {
 		criticAdapter = buildAdapter(cfg.Critic)
 	}
 
-	// Tier factory. v1: opus → master adapter, others → sub-agent adapter.
-	// (Per-tier model overrides land in v2.)
-	factory := func(tier string) (llm.Adapter, string) {
-		switch tier {
-		case "opus":
-			return masterAdapter, cfg.Master.Model
-		default:
-			return subAdapter, cfg.Subagent.Model
-		}
-	}
+	// Local fleet: build one adapter per endpoint and wrap in a round-robin pool.
+	fleet := buildFleet(cfg.LocalFleet)
+
+	// Tier factory.
+	//   opus          → master adapter (complex synthesis turns)
+	//   haiku         → local fleet (if fleet active & mode is full or subset)
+	//   sonnet/other  → local fleet (if fleet active & mode is full)
+	//                   otherwise cloud sub-agent adapter
+	factory := buildFactory(cfg, masterAdapter, subAdapter, fleet)
 
 	// Build a base set of tools used by both master and sub-agents.
 	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect
@@ -412,14 +412,8 @@ func run() error {
 		}
 		newMasterAdapter := buildChain("master", newCfg.Master, newCfg.MasterFallbacks, onFallback("master"))
 		newSubAdapter := buildChain("subagent", newCfg.Subagent, newCfg.SubagentFallbacks, onFallback("subagent"))
-		newFactory := func(tier string) (llm.Adapter, string) {
-			switch tier {
-			case "opus":
-				return newMasterAdapter, newCfg.Master.Model
-			default:
-				return newSubAdapter, newCfg.Subagent.Model
-			}
-		}
+		newFleet := buildFleet(newCfg.LocalFleet)
+		newFactory := buildFactory(newCfg, newMasterAdapter, newSubAdapter, newFleet)
 		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
 		if newCfg.MasterLeadActive {
 			master.SetLead(buildAdapter(newCfg.MasterLead), newCfg.MasterLead.Model)
@@ -462,6 +456,72 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 		a := llm.NewOpenAIAdapter(rc.APIKey, rc.BaseURL)
 		a.SetProvider(rc.Provider.Name)
 		return a
+	}
+}
+
+// localFleetPool holds a set of local adapter endpoints and assigns them to
+// sub-agents round-robin using an atomic counter.
+type localFleetPool struct {
+	entries []localFleetEntry
+	counter uint64
+}
+
+type localFleetEntry struct {
+	adapter llm.Adapter
+	model   string
+	label   string
+}
+
+// next returns the next adapter in the pool (round-robin).
+func (p *localFleetPool) next() (llm.Adapter, string) {
+	idx := atomic.AddUint64(&p.counter, 1) - 1
+	e := p.entries[idx%uint64(len(p.entries))]
+	return e.adapter, e.model
+}
+
+// buildFleet constructs a localFleetPool from config endpoints. Returns nil
+// when the slice is empty so callers can check nil cheaply.
+func buildFleet(endpoints []config.LocalEndpoint) *localFleetPool {
+	if len(endpoints) == 0 {
+		return nil
+	}
+	entries := make([]localFleetEntry, 0, len(endpoints))
+	for _, ep := range endpoints {
+		a := llm.NewOpenAIAdapter("", ep.BaseURL)
+		a.SetProvider("llamacpp-fleet")
+		model := ep.Model
+		if model == "" {
+			model = "default"
+		}
+		entries = append(entries, localFleetEntry{adapter: a, model: model, label: ep.BaseURL})
+	}
+	return &localFleetPool{entries: entries}
+}
+
+// buildFactory constructs the AdapterFactory for the Manager, incorporating
+// the local fleet when configured.
+//
+//   opus              → master adapter (flagship model for complex synthesis)
+//   haiku             → local fleet if fleet active (full or subset mode)
+//                       otherwise cloud sub-agent
+//   sonnet / default  → local fleet if fleet active and mode == "full"
+//                       otherwise cloud sub-agent
+func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleetPool) agent.AdapterFactory {
+	return func(tier string) (llm.Adapter, string) {
+		switch tier {
+		case "opus":
+			return master, cfg.Master.Model
+		case "haiku":
+			if fleet != nil && (cfg.LocalFleetMode == "full" || cfg.LocalFleetMode == "subset") {
+				return fleet.next()
+			}
+			return sub, cfg.Subagent.Model
+		default: // sonnet and anything else
+			if fleet != nil && cfg.LocalFleetMode == "full" {
+				return fleet.next()
+			}
+			return sub, cfg.Subagent.Model
+		}
 	}
 }
 
@@ -594,6 +654,7 @@ func clearAgeniEnv() {
 		"HF_TOKEN", "CEREBRAS_API_KEY", "MISTRAL_API_KEY", "DEEPSEEK_API_KEY",
 		"GEMINI_API_KEY", "OLLAMA_API_KEY", "OPENAI_BASE_URL",
 		"AGENI_MAX_SUBAGENTS", "AGENI_SUBAGENT_BUDGET",
+		"LLAMACPP_FLEET", "LLAMACPP_FLEET_MODE",
 	}
 	for _, k := range keys {
 		_ = os.Unsetenv(k)

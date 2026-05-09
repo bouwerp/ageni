@@ -60,6 +60,36 @@ type Config struct {
 	// the master doesn't override it via spawn_subagent's
 	// budget_tool_calls argument. Driven by AGENI_SUBAGENT_BUDGET.
 	SubagentBudget int
+
+	// LocalFleet is a list of locally-hosted llama.cpp (or any
+	// OpenAI-compatible) endpoints that can serve as sub-agent workers.
+	// Configure via LLAMACPP_FLEET as a comma-separated list of
+	// "baseURL|model" pairs, e.g.:
+	//   LLAMACPP_FLEET=http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral
+	// If model is omitted the entry is still valid; the adapter will use
+	// an empty model string (server picks its loaded model).
+	LocalFleet []LocalEndpoint
+
+	// LocalFleetMode controls how the local fleet interacts with the
+	// cloud sub-agent adapter. Driven by LLAMACPP_FLEET_MODE.
+	//
+	//   "full"   — all sub-agent spawns go to the local fleet (round-robin).
+	//              The cloud SUBAGENT_PROVIDER is kept for the master and
+	//              opus-tier tasks but all standard workers run locally.
+	//   "subset" — haiku-tier spawns go to the local fleet; sonnet/opus
+	//              spawns go to the cloud adapter. Useful when local hardware
+	//              handles bulk grep/search/edit work while cloud handles
+	//              complex reasoning turns.
+	//
+	// Empty string means the local fleet is inactive even if LocalFleet
+	// is populated (safe default).
+	LocalFleetMode string
+}
+
+// LocalEndpoint is one locally-hosted model server in the fleet.
+type LocalEndpoint struct {
+	BaseURL string // e.g. "http://localhost:8080/v1"
+	Model   string // model ID passed to the server; empty = use whatever is loaded
 }
 
 // Load resolves configuration from (in order, last wins):
@@ -121,6 +151,12 @@ func Load() (*Config, error) {
 
 	cfg.MasterFallbacks = parseFallbacks(os.Getenv("MASTER_FALLBACKS"))
 	cfg.SubagentFallbacks = parseFallbacks(os.Getenv("SUBAGENT_FALLBACKS"))
+
+	// Local fleet is opt-in — a parse error silently yields an empty fleet.
+	cfg.LocalFleet = parseLocalFleet(os.Getenv("LLAMACPP_FLEET"))
+	if mode := strings.TrimSpace(os.Getenv("LLAMACPP_FLEET_MODE")); mode == "full" || mode == "subset" {
+		cfg.LocalFleetMode = mode
+	}
 	return cfg, nil
 }
 
@@ -171,8 +207,48 @@ func parseFallbacks(spec string) []RoleConfig {
 	return out
 }
 
-// ErrNotConfigured indicates no provider has been chosen anywhere — caller
-// should run the wizard.
+// parseLocalFleet reads a comma-separated list of "baseURL|model" entries.
+// Each entry must have at least a baseURL; model is optional.
+// Malformed or empty entries are silently skipped.
+// Example: "http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral"
+func parseLocalFleet(spec string) []LocalEndpoint {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	var out []LocalEndpoint
+	for _, raw := range strings.Split(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		baseURL, model := entry, ""
+		if idx := strings.LastIndex(entry, "|"); idx > 0 {
+			baseURL = strings.TrimSpace(entry[:idx])
+			model = strings.TrimSpace(entry[idx+1:])
+		}
+		if baseURL == "" {
+			continue
+		}
+		out = append(out, LocalEndpoint{BaseURL: baseURL, Model: model})
+	}
+	return out
+}
+
+// FormatLocalFleet serialises a fleet slice back to the env var format.
+func FormatLocalFleet(fleet []LocalEndpoint) string {
+	parts := make([]string, 0, len(fleet))
+	for _, e := range fleet {
+		if e.Model != "" {
+			parts = append(parts, e.BaseURL+"|"+e.Model)
+		} else {
+			parts = append(parts, e.BaseURL)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
+
 var ErrNotConfigured = fmt.Errorf("ageni is not configured; run `ageni init`")
 
 func resolveRole(prefix, providerName string) (RoleConfig, error) {
