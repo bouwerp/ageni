@@ -139,6 +139,8 @@ func guessAlternative(name string) string {
 		return "Did you mean glob? Or run_bash with find."
 	case "edit", "patch", "apply_patch":
 		return "Did you mean edit_file (single replacement) or multi_edit (atomic batch)?"
+	case "edit_file":
+		return "Did you mean multi_edit (atomic batch edits) or write_file? edit_file may not be in your allowed_tools — use multi_edit for the same single-replacement use case."
 	}
 	return ""
 }

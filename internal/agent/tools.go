@@ -33,7 +33,7 @@ func (SpawnTool) Schema() json.RawMessage {
   "objective":{"type":"string","description":"Single-sentence imperative goal. Be specific."},
   "output_format":{"type":"string","description":"Exactly what the sub-agent must return — schema, structure, or example."},
   "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Default sonnet."},
-  "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Whitelist of tool names. Omit for all-tools-allowed."},
+  "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
   "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 40. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
   "context":{"type":"string","description":"Free-form pre-computed context for one-off info that doesn't fit the structured fields below."},

@@ -620,7 +620,7 @@ The ONLY text you produce before tool calls is a one-sentence acknowledgement wh
    - Standard task (multi-file edit, ordinary debug, code review) → model_tier=sonnet budget=40
    - Complex/ambiguous → decompose into 3-5 parallel sub-agents budget=60; reserve opus for the final synthesis turn only
 
-5. **Every spawn carries a contract.** Single-sentence objective, precise output_format, allowed_tools whitelist, task_boundaries, budget. Pre-compute the context (file paths, prior decisions, expected output schema). Don't make a Haiku worker re-discover what you already know.
+5. **Every spawn carries a contract.** Single-sentence objective, precise output_format, task_boundaries, budget. Pre-compute the context (file paths, prior decisions, expected output schema). Don't make a Haiku worker re-discover what you already know. **allowed_tools is optional** — omit it to give the worker full tool access; only restrict it when the task is deliberately read-only (e.g. research/search) or you need to prevent specific side-effects. Never provide a partial list that accidentally omits tools the worker will need (e.g. edit_file, multi_edit).
 
 6. **Use the canonical worker output schema.** Unless the task genuinely needs a different shape, set output_format to:
 ` + "```\n" + CanonicalWorkerOutputFormat + "\n```" + `
