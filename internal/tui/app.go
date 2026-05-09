@@ -131,6 +131,10 @@ type App struct {
 	// Esc (stopGeneration) clears the queue.
 	msgQueue []string
 
+	// masterModel is the "provider/model" label shown in the status bar.
+	// Populated at startup from env and refreshed after settings reload.
+	masterModel string
+
 	ctx    context.Context
 	cancel context.CancelFunc
 }
@@ -174,6 +178,15 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		ctx:          cctx,
 		cancel:       cancel,
 		pendingCalls: make(map[string]llm.ToolCall),
+	}
+	// Show the active master model in the status bar. The env vars are already
+	// loaded by config.Load() before New() is called, so os.Getenv is reliable.
+	if p := os.Getenv("MASTER_PROVIDER"); p != "" {
+		m := os.Getenv("MASTER_MODEL")
+		if m == "" {
+			m = "default"
+		}
+		a.masterModel = p + "/" + m
 	}
 	a.chatBuf.WriteString(titleStyle.Render("ageni") + " — type a request to begin\n\n")
 	a.refreshChat()
@@ -792,6 +805,8 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.flashMessage = "settings saved, reload failed: " + err.Error() + " (running adapters unchanged)"
 			} else {
 				msg := "settings applied — master: " + a.settingsState.masterProvider + "/" + a.settingsState.masterModel + ", sub-agent: " + a.settingsState.subProvider + "/" + a.settingsState.subModel
+				// Keep status bar in sync with the newly applied model.
+				a.masterModel = a.settingsState.masterProvider + "/" + a.settingsState.masterModel
 				if vrs := a.settingsState.verifyResults; len(vrs) > 0 {
 					failed := 0
 					for _, vr := range vrs {
@@ -1414,6 +1429,10 @@ func (a *App) statusLine() string {
 		view = "view: " + a.viewSub
 	}
 	state := a.masterStateLabel()
+	model := ""
+	if a.masterModel != "" {
+		model = "  │  model: " + a.masterModel
+	}
 	sess := ""
 	if a.session != nil && a.session.ID != "" {
 		// Short prefix for the status bar; full ID is in the session log path.
@@ -1435,7 +1454,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  ↑↓=history  PgUp/PgDn=scroll  Tab=cycle  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is

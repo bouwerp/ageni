@@ -22,6 +22,10 @@ type Message struct {
 	Text        string
 	ToolCalls   []ToolCall
 	ToolResults []ToolResult
+	// ReasoningContent holds the chain-of-thought produced by reasoning models
+	// (e.g. DeepSeek thinking mode). It must be echoed back in the next request
+	// so the provider can continue the reasoning trace.
+	ReasoningContent string
 }
 
 // ToolCall is an assistant-issued tool invocation.
@@ -72,8 +76,9 @@ const (
 type StreamEvent struct {
 	Type StreamEventType
 
-	TextDelta string
-	ToolCall  *ToolCall
+	TextDelta        string
+	ReasoningContent string // set on StreamEventDone when the model produced reasoning (e.g. DeepSeek)
+	ToolCall         *ToolCall
 
 	Usage *Usage
 	Err   error

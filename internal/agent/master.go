@@ -369,6 +369,7 @@ func (m *Master) takeTurns(parent context.Context) {
 
 		var assistantText strings.Builder
 		var toolCalls []llm.ToolCall
+		var reasoningContent string
 		var streamErr error
 
 	streamLoop:
@@ -400,6 +401,9 @@ func (m *Master) takeTurns(parent context.Context) {
 					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 				}
+				if ev.ReasoningContent != "" {
+					reasoningContent = ev.ReasoningContent
+				}
 			}
 		}
 
@@ -409,6 +413,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
 				assistantText.Reset()
 				toolCalls = nil
+				reasoningContent = ""
 				continue
 			}
 			if llm.IsStreamIdle(streamErr) && idleRetries < maxIdleRetries {
@@ -416,6 +421,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("model not responding — retrying (%d/%d)…", idleRetries, maxIdleRetries)})
 				assistantText.Reset()
 				toolCalls = nil
+				reasoningContent = ""
 				continue
 			}
 			m.bus.Publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", streamErr)})
@@ -423,9 +429,10 @@ func (m *Master) takeTurns(parent context.Context) {
 		}
 
 		m.messages = append(m.messages, llm.Message{
-			Role:      llm.RoleAssistant,
-			Text:      assistantText.String(),
-			ToolCalls: toolCalls,
+			Role:             llm.RoleAssistant,
+			Text:             assistantText.String(),
+			ToolCalls:        toolCalls,
+			ReasoningContent: reasoningContent,
 		})
 
 		if len(toolCalls) == 0 {

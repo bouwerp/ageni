@@ -60,6 +60,7 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		}
 		pending := make(map[int64]*pendingTool)
 		var usage Usage
+		var reasoningContent strings.Builder
 
 		emitTools := func() {
 			for _, t := range pending {
@@ -85,6 +86,13 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 			for _, choice := range chunk.Choices {
 				if choice.Delta.Content != "" {
 					out <- StreamEvent{Type: StreamEventText, TextDelta: choice.Delta.Content}
+				}
+				// Capture DeepSeek reasoning_content streamed as an extra field.
+				if rf, ok := choice.Delta.JSON.ExtraFields["reasoning_content"]; ok && rf.Valid() {
+					var rc string
+					if err := json.Unmarshal([]byte(rf.Raw()), &rc); err == nil && rc != "" {
+						reasoningContent.WriteString(rc)
+					}
 				}
 				for _, tcd := range choice.Delta.ToolCalls {
 					t, ok := pending[tcd.Index]
@@ -114,7 +122,11 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		// Drain any remaining tool calls (in case finish_reason wasn't on a chunk we saw).
 		emitTools()
 		u := usage
-		out <- StreamEvent{Type: StreamEventDone, Usage: &u}
+		done := StreamEvent{Type: StreamEventDone, Usage: &u}
+		if rc := reasoningContent.String(); rc != "" {
+			done.ReasoningContent = rc
+		}
+		out <- done
 	}()
 
 	return out, nil
@@ -198,6 +210,11 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 					Arguments: args,
 				},
 			})
+		}
+		// DeepSeek thinking mode requires reasoning_content to be echoed back.
+		// Other OpenAI-compat providers silently ignore unknown extra fields.
+		if m.ReasoningContent != "" {
+			ap.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
 		}
 		return openai.ChatCompletionMessageParamUnion{OfAssistant: &ap}
 	case RoleTool:

@@ -206,14 +206,14 @@ func (s *Subagent) Run(parent context.Context) {
 			req.Tools = s.tools.Definitions()
 		}
 
-		assistantText, toolCalls, err := s.runTurnWithRetry(ctx, req)
+		assistantText, reasoningContent, toolCalls, err := s.runTurnWithRetry(ctx, req)
 		if err != nil {
 			s.fail(err)
 			return
 		}
 
 		// Build assistant message + tool result messages for next turn.
-		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: assistantText, ToolCalls: toolCalls}
+		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: assistantText, ToolCalls: toolCalls, ReasoningContent: reasoningContent}
 		messages = append(messages, assistantMsg)
 
 		if len(toolCalls) == 0 {
@@ -341,24 +341,24 @@ const maxIdleRetries = 2
 // runTurnWithRetry runs one LLM turn with a per-turn timeout and retries on
 // transient failures (deadline, network, rate-limit, 5xx, idle watchdog).
 // Returns the assistant text + any tool calls, or a terminal error.
-func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (string, []llm.ToolCall, error) {
+func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (string, string, []llm.ToolCall, error) {
 	var lastErr error
 	idleRetries := 0
 	for attempt := 0; attempt <= s.maxRetries; attempt++ {
 		if parent.Err() != nil {
-			return "", nil, parent.Err()
+			return "", "", nil, parent.Err()
 		}
 		ctx, cancel := context.WithTimeout(parent, s.turnTimeout)
-		text, calls, err := s.runOneTurn(ctx, req)
+		text, rc, calls, err := s.runOneTurn(ctx, req)
 		cancel()
 		if err == nil {
-			return text, calls, nil
+			return text, rc, calls, nil
 		}
 		lastErr = err
 
 		// Don't retry user-cancelled conditions.
 		if errors.Is(err, context.Canceled) {
-			return "", nil, err
+			return "", "", nil, err
 		}
 
 		// Idle watchdog fired — the model went silent. Retry with a nudge
@@ -369,12 +369,12 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 			s.appendTranscript(msg)
 			s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: msg})
 			if idleRetries >= maxIdleRetries {
-				return "", nil, fmt.Errorf("model not responding after %d retries — master should re-spawn this sub-agent", maxIdleRetries)
+				return "", "", nil, fmt.Errorf("model not responding after %d retries — master should re-spawn this sub-agent", maxIdleRetries)
 			}
 			// Brief pause before re-issuing the request.
 			select {
 			case <-parent.Done():
-				return "", nil, parent.Err()
+				return "", "", nil, parent.Err()
 			case <-time.After(3 * time.Second):
 			}
 			// Don't advance attempt counter — idle retries are separate.
@@ -383,7 +383,7 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 		}
 
 		if !isTransientErr(err) || attempt == s.maxRetries {
-			return "", nil, err
+			return "", "", nil, err
 		}
 
 		// Exponential backoff with light jitter.
@@ -392,28 +392,29 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 		s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: err.Error()})
 		select {
 		case <-parent.Done():
-			return "", nil, parent.Err()
+			return "", "", nil, parent.Err()
 		case <-time.After(wait):
 		}
 	}
-	return "", nil, lastErr
+	return "", "", nil, lastErr
 }
 
 // runOneTurn does a single Stream call and accumulates the result.
-func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []llm.ToolCall, error) {
+func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, string, []llm.ToolCall, error) {
 	// Mirror the master: emit a turn-start event so the TUI can show the
 	// sub-agent as "thinking" while the LLM call is in flight, distinct
 	// from the running-a-tool state.
 	s.bus.Publish(Event{Kind: EvSubagentTurnStart, SubagentID: s.ID})
 	stream, err := s.Adapter.Stream(ctx, req)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
 	// Wrap with an idle watchdog so a silent TCP connection or a stalled
 	// provider doesn't leave the sub-agent stuck in "thinking" forever.
 	stream = llm.WatchdogStream(stream)
 	var text strings.Builder
 	var calls []llm.ToolCall
+	var reasoningContent string
 	for ev := range stream {
 		switch ev.Type {
 		case llm.StreamEventText:
@@ -426,18 +427,19 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []l
 				s.bus.Publish(Event{Kind: EvSubagentToolCall, SubagentID: s.ID, ToolCall: ev.ToolCall})
 			}
 		case llm.StreamEventError:
-			return text.String(), calls, ev.Err
+			return text.String(), "", calls, ev.Err
 		case llm.StreamEventDone:
 			if ev.Usage != nil {
 				s.tracker.Add("subagent:"+s.ID, s.Model, *ev.Usage)
 				s.bus.Publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
 			}
+			reasoningContent = ev.ReasoningContent
 		}
 	}
 	if ctx.Err() != nil {
-		return text.String(), calls, ctx.Err()
+		return text.String(), "", calls, ctx.Err()
 	}
-	return text.String(), calls, nil
+	return text.String(), reasoningContent, calls, nil
 }
 
 // drainInbox appends any pending messages from the master as user-role
