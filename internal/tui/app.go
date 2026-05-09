@@ -1249,6 +1249,35 @@ func (a *App) subInlineIndicator(id string) string {
 
 func (a *App) refreshSide() {
 	var sb strings.Builder
+
+	// Todos first — always at the top so they stay visible even when many
+	// sub-agents are listed below them.
+	if a.todo != nil {
+		items := a.todo.Items()
+		if len(items) > 0 {
+			sb.WriteString(titleStyle.Render("todos") + "\n\n")
+			frame0 := a.spinner()
+			for _, it := range items {
+				mark := "[ ]"
+				style := mutedStyle
+				switch it.Status {
+				case tools.TodoInProgress:
+					mark = "[" + frame0 + "]"
+					style = subRunningStyle
+				case tools.TodoCompleted:
+					mark = "[✓]"
+					style = subDoneStyle
+				}
+				owner := ""
+				if it.ClaimedBy != "" {
+					owner = mutedStyle.Render(" → " + it.ClaimedBy)
+				}
+				sb.WriteString(style.Render(fmt.Sprintf("%s %s", mark, it.Content)) + owner + "\n")
+			}
+			sb.WriteString("\n")
+		}
+	}
+
 	sb.WriteString(titleStyle.Render("sub-agents") + "\n\n")
 	if len(a.subOrder) == 0 {
 		sb.WriteString(mutedStyle.Render("(none yet)\n"))
@@ -1319,33 +1348,6 @@ func (a *App) refreshSide() {
 				sb.WriteString(kindStyle.Render(kindMark) + " " + display + "\n")
 			}
 			sb.WriteString(mutedStyle.Render("F4=dump diff") + "\n")
-		}
-	}
-
-	// Todo list — shared between master and sub-agents. Each item shows its
-	// status mark plus, when claimed, the worker that owns it. This is the
-	// single canonical view of "what's planned, what's in flight, who's on it."
-	if a.todo != nil {
-		items := a.todo.Items()
-		if len(items) > 0 {
-			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
-			for _, it := range items {
-				mark := "[ ]"
-				style := mutedStyle
-				switch it.Status {
-				case tools.TodoInProgress:
-					mark = "[" + frame + "]"
-					style = subRunningStyle
-				case tools.TodoCompleted:
-					mark = "[✓]"
-					style = subDoneStyle
-				}
-				owner := ""
-				if it.ClaimedBy != "" {
-					owner = mutedStyle.Render(" → " + it.ClaimedBy)
-				}
-				sb.WriteString(style.Render(fmt.Sprintf("%s %s", mark, it.Content)) + owner + "\n")
-			}
 		}
 	}
 
