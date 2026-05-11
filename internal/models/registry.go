@@ -60,6 +60,11 @@ type CanonicalModel struct {
 	// Seeded statically; overwritten by the live OpenRouter pricing fetcher.
 	OutputCostPer1M float64
 
+	// ROIScore is BlendedScore / effective_cost_per_1M_tokens, where
+	// effective_cost uses a 20/80 input/output token ratio typical of agentic
+	// workloads. Higher is better (more capability per dollar). 0 = no pricing.
+	ROIScore float64
+
 	// UpdatedAt records when BlendedScore was last recalculated.
 	UpdatedAt time.Time
 }
@@ -374,6 +379,14 @@ func (r *Registry) recomputeUnsafe() {
 		m.BlendedScore = blend(m.Scores)
 		if m.BlendedScore > 0 {
 			m.UpdatedAt = now
+		}
+		// ROI = score / effective_cost_per_1M_tokens.
+		// Effective cost weights input:output at 20:80 (typical agentic ratio).
+		effective := 0.2*m.InputCostPer1M + 0.8*m.OutputCostPer1M
+		if effective > 0 && m.BlendedScore > 0 {
+			m.ROIScore = m.BlendedScore / effective
+		} else {
+			m.ROIScore = 0
 		}
 	}
 	ranked := make([]*CanonicalModel, 0, len(r.models))

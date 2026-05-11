@@ -119,11 +119,12 @@ const (
 	colAider   = 8
 	colInCost  = 8  // "$1.25"
 	colOutCost = 8  // "$10.0"
+	colROI     = 7  // "123.4" or "—"
 	// remainder → providers
 )
 
 func buildColHeader(width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -136,6 +137,7 @@ func buildColHeader(width int) string {
 			padRight("Aider%", colAider) +
 			padRight("In$/M", colInCost) +
 			padRight("Out$/M", colOutCost) +
+			padRight("ROI", colROI) +
 			padRight("Providers", provW),
 	)
 }
@@ -149,7 +151,7 @@ var tierColor = map[string]lipgloss.Color{
 }
 
 func formatRow(rank int, m *models.CanonicalModel, width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -174,9 +176,10 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr = padRight(tierStr, colTier)
 	}
 
-	// Cost columns.
+	// Cost and ROI columns.
 	inCost := formatCost(m.InputCostPer1M)
 	outCost := formatCost(m.OutputCostPer1M)
+	roi := formatROI(m.ROIScore)
 
 	// Providers: colored dots + name.
 	provStr := buildProviderStr(m.AvailableProviders, provW)
@@ -189,6 +192,7 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		padRight(aiderScore, colAider) +
 		padRight(inCost, colInCost) +
 		padRight(outCost, colOutCost) +
+		padRight(roi, colROI) +
 		provStr
 }
 
@@ -207,7 +211,22 @@ func formatCost(c float64) string {
 	return fmt.Sprintf("$%.0f", c)
 }
 
-// knownProviderOrder defines the display order for provider badges.
+// formatROI renders an ROI score (BlendedScore / effective_cost_per_1M) compactly.
+// 0 → "—", <1 → "0.63", <10 → "3.7", <100 → "45", ≥100 → "226".
+func formatROI(r float64) string {
+	if r == 0 {
+		return "—"
+	}
+	if r < 1.0 {
+		return fmt.Sprintf("%.2f", r)
+	}
+	if r < 10.0 {
+		return fmt.Sprintf("%.1f", r)
+	}
+	return fmt.Sprintf("%.0f", r)
+}
+
+
 var knownProviderOrder = []string{
 	"anthropic", "openai", "gemini", "deepseek",
 	"groq", "cerebras", "mistral", "huggingface",
