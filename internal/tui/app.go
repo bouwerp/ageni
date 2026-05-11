@@ -29,6 +29,7 @@ type Mode int
 const (
 	ModeChat Mode = iota
 	ModeSettings
+	ModeRankings
 )
 
 // ReloadFunc rebuilds adapters from the current ~/.ageni/.env and applies
@@ -82,6 +83,9 @@ type App struct {
 	viewSub string // selected subagent id, "" = master chat
 
 	mode Mode
+
+	// Rankings dashboard (ModeRankings).
+	rankings *rankingsModel
 
 	// Settings — the settings screen has two phases:
 	//   Phase 0: providerList (custom component, inline checkbox + key inputs)
@@ -365,8 +369,22 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Rankings refresh from background updater — apply to rankings component
+	// regardless of which mode is active so the table is always up to date.
+	if _, ok := msg.(rankingsRefreshMsg); ok {
+		if a.rankings != nil {
+			var cmd tea.Cmd
+			a.rankings, cmd = a.rankings.Update(msg)
+			return a, cmd
+		}
+		return a, nil
+	}
+
 	if a.mode == ModeSettings {
 		return a.updateSettings(msg)
+	}
+	if a.mode == ModeRankings {
+		return a.updateRankings(msg)
 	}
 	return a.updateChat(msg)
 }
@@ -425,6 +443,8 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 		case msg.String() == "ctrl+,", msg.String() == "ctrl+s":
 			return a, a.openSettings()
+		case msg.String() == "ctrl+r":
+			return a, a.openRankings()
 		case msg.Type == tea.KeyF2:
 			return a, a.toggleMouse()
 		case msg.Type == tea.KeyF3:
@@ -813,6 +833,33 @@ func (a *App) openSettings() tea.Cmd {
 	a.providerList = newProviderListModel(existing, a.width, a.height-settingsHeaderLines)
 	a.mode = ModeSettings
 	return a.providerList.Init()
+}
+
+func (a *App) openRankings() tea.Cmd {
+	if a.rankings == nil {
+		a.rankings = newRankingsModel(a.width, a.height)
+	}
+	a.mode = ModeRankings
+	return nil
+}
+
+func (a *App) updateRankings(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch {
+		case k.Type == tea.KeyCtrlC:
+			a.cancel()
+			return a, tea.Quit
+		case k.Type == tea.KeyEsc, k.String() == "ctrl+r":
+			a.mode = ModeChat
+			return a, nil
+		}
+	}
+	if a.rankings != nil {
+		var cmd tea.Cmd
+		a.rankings, cmd = a.rankings.Update(msg)
+		return a, cmd
+	}
+	return a, nil
 }
 
 func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -1606,6 +1653,12 @@ func (a *App) View() string {
 	if a.width < 60 || a.height < 12 {
 		return "ageni: window too small (need 60×12)"
 	}
+	if a.mode == ModeRankings {
+		if a.rankings != nil {
+			return a.rankings.View()
+		}
+		return titleStyle.Render("Model Rankings") + "\n(loading…)"
+	}
 	if a.mode == ModeSettings {
 		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=save & exit\n\n")
 		if a.settingsPhase == 0 && a.providerList != nil {
@@ -1665,7 +1718,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+R=rankings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is

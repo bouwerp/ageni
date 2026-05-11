@@ -22,6 +22,7 @@ import (
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/mcp"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/repomap"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/skills"
@@ -441,6 +442,22 @@ func run() error {
 		app.LoadHistory(resumeHistory)
 	}
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+
+	// Start the model rankings updater. It fetches on startup and every 5 min,
+	// then sends rankingsRefreshMsg to the program so the dashboard re-renders.
+	rankingsUpdater := models.NewUpdater(models.Global)
+	go rankingsUpdater.Start(ctx)
+	go func() {
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-rankingsUpdater.Notify:
+				prog.Send(tui.RankingsRefreshMsg{})
+			}
+		}
+	}()
+
 	if _, err := prog.Run(); err != nil {
 		return err
 	}
