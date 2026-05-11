@@ -938,6 +938,16 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Phase 1 — role selection / limits (huh form).
+	// Left/right arrows navigate between groups (pages) in the form.
+	if k, ok := msg.(tea.KeyMsg); ok {
+		switch k.Type {
+		case tea.KeyLeft:
+			return a, a.settingsForm.PrevGroup()
+		case tea.KeyRight:
+			return a, a.settingsForm.NextGroup()
+		}
+	}
+
 	f, cmd := a.settingsForm.Update(msg)
 	if form, ok := f.(*huh.Form); ok {
 		a.settingsForm = form
@@ -1684,7 +1694,7 @@ func (a *App) View() string {
 			return header + a.providerList.View()
 		}
 		if a.settingsForm != nil {
-			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits   (Enter=advance  Tab=next field)") + "\n\n"
+			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits → Fleet   (←/→=page  Enter=advance  Tab=next field)") + "\n\n"
 			return header + sub + a.settingsForm.View()
 		}
 		return header
