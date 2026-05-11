@@ -20,14 +20,26 @@ var seedData = []CanonicalModel{
 	{
 		ID: "claude-opus-4", Name: "Claude Opus 4", Family: "claude", Tier: "flagship",
 		ProviderIDs: map[string]string{
-			"anthropic":  "claude-opus-4-7",
-			"openrouter": "anthropic/claude-opus-4.7",
+			"anthropic":  "claude-opus-4-20250514",
+			"openrouter": "anthropic/claude-opus-4",
 		},
 		AiderAliases:    []string{"claude-opus-4-20250514", "claude-opus-4"},
 		Scores:          map[string]float64{"seed_blended": 72.0},
 		InputCostPer1M:  15.0,
 		OutputCostPer1M: 75.0,
-		Notes:           "flagship; planner-grade reasoning + best tool-use compliance",
+		Notes:           "original Opus 4; heavy reasoning + best tool-use compliance",
+	},
+	{
+		ID: "claude-opus-4-7", Name: "Claude Opus 4.7", Family: "claude", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"anthropic":  "claude-opus-4-7",
+			"openrouter": "anthropic/claude-opus-4.7",
+		},
+		AiderAliases:    []string{"claude-opus-4.7", "claude opus 4.7"},
+		Scores:          map[string]float64{"seed_blended": 71.0},
+		InputCostPer1M:  5.0,
+		OutputCostPer1M: 25.0,
+		Notes:           "Opus 4.7; cheaper and faster than Opus 4; strong all-round",
 	},
 	{
 		ID: "claude-sonnet-4", Name: "Claude Sonnet 4", Family: "claude", Tier: "flagship",
