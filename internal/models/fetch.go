@@ -69,9 +69,16 @@ func parseAiderYAML(data []byte) map[string]float64 {
 	return result
 }
 
+// openRouterPricing holds the raw per-token prices returned by OpenRouter.
+type openRouterPricing struct {
+	Prompt     string `json:"prompt"`
+	Completion string `json:"completion"`
+}
+
 // openRouterModel is the minimal subset of the OpenRouter /models JSON we care about.
 type openRouterModel struct {
-	ID string `json:"id"`
+	ID      string             `json:"id"`
+	Pricing openRouterPricing  `json:"pricing"`
 }
 
 type openRouterResponse struct {
@@ -80,23 +87,32 @@ type openRouterResponse struct {
 
 // FetchOpenRouterAvailability queries OpenRouter for the full model list and
 // returns a set of "openrouter:modelID" keys representing currently available
-// models. No API key is required for the public listing endpoint.
-func FetchOpenRouterAvailability(ctx context.Context) (map[string]bool, error) {
+// models, and a map of "openrouter:modelID" → [inputPerM, outputPerM] costs.
+// No API key is required for the public listing endpoint.
+func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, costs map[string][2]float64, err error) {
 	body, err := get(ctx, openRouterURL)
 	if err != nil {
-		return nil, fmt.Errorf("openrouter models: %w", err)
+		return nil, nil, fmt.Errorf("openrouter models: %w", err)
 	}
 	var resp openRouterResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, fmt.Errorf("openrouter models: json: %w", err)
+		return nil, nil, fmt.Errorf("openrouter models: json: %w", err)
 	}
-	out := make(map[string]bool, len(resp.Data))
+	avail = make(map[string]bool, len(resp.Data))
+	costs = make(map[string][2]float64, len(resp.Data))
 	for _, m := range resp.Data {
-		if m.ID != "" {
-			out["openrouter:"+m.ID] = true
+		if m.ID == "" {
+			continue
+		}
+		key := "openrouter:" + m.ID
+		avail[key] = true
+		inp, e1 := strconv.ParseFloat(m.Pricing.Prompt, 64)
+		out, e2 := strconv.ParseFloat(m.Pricing.Completion, 64)
+		if e1 == nil && e2 == nil {
+			costs[key] = [2]float64{inp * 1e6, out * 1e6}
 		}
 	}
-	return out, nil
+	return avail, costs, nil
 }
 
 // get performs a GET request with the given context and returns the body.

@@ -52,6 +52,14 @@ type CanonicalModel struct {
 	// It lists configured provider names that currently serve this model.
 	AvailableProviders []string
 
+	// InputCostPer1M is the input (prompt) cost in USD per million tokens.
+	// Seeded statically; overwritten by the live OpenRouter pricing fetcher.
+	InputCostPer1M float64
+
+	// OutputCostPer1M is the output (completion) cost in USD per million tokens.
+	// Seeded statically; overwritten by the live OpenRouter pricing fetcher.
+	OutputCostPer1M float64
+
 	// UpdatedAt records when BlendedScore was last recalculated.
 	UpdatedAt time.Time
 }
@@ -199,6 +207,34 @@ func (r *Registry) ApplyAvailability(available map[string]bool) {
 		}
 	}
 	r.recomputeUnsafe()
+}
+
+// ApplyPricing stores live input/output costs fetched from OpenRouter.
+// costs maps "openrouter:modelID" → [inputCostPerM, outputCostPerM].
+func (r *Registry) ApplyPricing(costs map[string][2]float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, pair := range costs {
+		cid, ok := r.providerIndex[key]
+		if !ok {
+			// Try without :free suffix.
+			idx := strings.Index(key, ":")
+			if idx >= 0 {
+				base := strings.TrimSuffix(key[idx+1:], ":free")
+				cid, ok = r.providerIndex[key[:idx]+":"+base]
+			}
+		}
+		if !ok {
+			continue
+		}
+		m := r.models[cid]
+		if pair[0] > 0 {
+			m.InputCostPer1M = pair[0]
+		}
+		if pair[1] > 0 {
+			m.OutputCostPer1M = pair[1]
+		}
+	}
 }
 
 // resolveAiderNameUnsafe matches an Aider model name string against registry

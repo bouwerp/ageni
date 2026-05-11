@@ -106,17 +106,19 @@ func (r *rankingsModel) rebuild() {
 
 // Column widths (approximate; adjusted when terminal is narrow).
 const (
-	colRank     = 4
-	colName     = 28
-	colFamily   = 10
-	colTier     = 9
-	colScore    = 7
-	colAider    = 8
+	colRank    = 4
+	colName    = 28
+	colFamily  = 10
+	colTier    = 9
+	colScore   = 7
+	colAider   = 8
+	colInCost  = 8  // "$1.25"
+	colOutCost = 8  // "$10.0"
 	// remainder → providers
 )
 
 func buildColHeader(width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -127,6 +129,8 @@ func buildColHeader(width int) string {
 			padRight("Tier", colTier) +
 			padRight("Score", colScore) +
 			padRight("Aider%", colAider) +
+			padRight("In$/M", colInCost) +
+			padRight("Out$/M", colOutCost) +
 			padRight("Providers", provW),
 	)
 }
@@ -140,14 +144,13 @@ var tierColor = map[string]lipgloss.Color{
 }
 
 func formatRow(rank int, m *models.CanonicalModel, width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - 5
 	if provW < 8 {
 		provW = 8
 	}
 
 	rankStr := padRight(fmt.Sprintf("%d", rank), colRank)
 
-	// Score bar: filled blocks proportional to BlendedScore.
 	scoreStr := padRight(fmt.Sprintf("%.1f", m.BlendedScore), colScore)
 
 	aiderScore := ""
@@ -165,6 +168,10 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr = padRight(tierStr, colTier)
 	}
 
+	// Cost columns.
+	inCost := formatCost(m.InputCostPer1M)
+	outCost := formatCost(m.OutputCostPer1M)
+
 	// Providers: colored dots + name.
 	provStr := buildProviderStr(m.AvailableProviders, provW)
 
@@ -174,7 +181,24 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr +
 		padRight(scoreStr, colScore) +
 		padRight(aiderScore, colAider) +
+		padRight(inCost, colInCost) +
+		padRight(outCost, colOutCost) +
 		provStr
+}
+
+// formatCost renders a per-million-token USD cost compactly:
+// 0 → "—", <1 → "$0.15", ≥1 → "$3.0", ≥100 → "$150".
+func formatCost(c float64) string {
+	if c == 0 {
+		return "—"
+	}
+	if c < 1.0 {
+		return fmt.Sprintf("$%.2g", c)
+	}
+	if c < 10.0 {
+		return fmt.Sprintf("$%.1f", c)
+	}
+	return fmt.Sprintf("$%.0f", c)
 }
 
 // knownProviderOrder defines the display order for provider badges.
