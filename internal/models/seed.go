@@ -92,30 +92,6 @@ var seedData = []CanonicalModel{
 
 	// ── OpenAI ───────────────────────────────────────────────────────────────
 	{
-		ID: "gpt-5.5-pro", Name: "GPT-5.5 Pro", Family: "gpt", Tier: "flagship",
-		ProviderIDs: map[string]string{
-			"openai":     "gpt-5.5-pro",
-			"openrouter": "openai/gpt-5.5-pro",
-		},
-		AiderAliases:    []string{"gpt-5.5-pro"},
-		Scores:          map[string]float64{"seed_blended": 94.0},
-		InputCostPer1M:  30.0,
-		OutputCostPer1M: 180.0,
-		Notes:           "OpenAI GPT-5.5 Pro; highest-capability premium tier",
-	},
-	{
-		ID: "gpt-5.5", Name: "GPT-5.5", Family: "gpt", Tier: "flagship",
-		ProviderIDs: map[string]string{
-			"openai":     "gpt-5.5",
-			"openrouter": "openai/gpt-5.5",
-		},
-		AiderAliases:    []string{"gpt-5.5"},
-		Scores:          map[string]float64{"seed_blended": 92.0},
-		InputCostPer1M:  5.0,
-		OutputCostPer1M: 30.0,
-		Notes:           "OpenAI GPT-5.5; latest flagship generation",
-	},
-	{
 		ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", Family: "gpt", Tier: "flagship",
 		ProviderIDs: map[string]string{
 			"openai":     "gpt-5.4-pro",
@@ -295,14 +271,49 @@ var seedData = []CanonicalModel{
 	{
 		ID: "gemini-2-0-flash", Name: "Gemini 2.0 Flash", Family: "gemini", Tier: "fast",
 		ProviderIDs: map[string]string{
-			"gemini":     "gemini-2.0-flash",
 			"openrouter": "google/gemini-2.0-flash-001",
 		},
 		AiderAliases:    []string{"gemini-2.0-flash", "gemini 2.0 flash"},
 		Scores:          map[string]float64{"seed_blended": 38.0},
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.4,
-		Notes:           "free quota; lightweight tasks",
+		Notes:           "gemini-2.0-flash SHUT DOWN June 2026; use gemini-2.5-flash or gemini-3-flash-preview",
+	},
+	{
+		ID: "gemini-3-flash", Name: "Gemini 3 Flash Preview", Family: "gemini", Tier: "mid",
+		ProviderIDs: map[string]string{
+			"gemini":     "gemini-3-flash-preview",
+			"openrouter": "google/gemini-3-flash-preview",
+		},
+		AiderAliases:    []string{"gemini-3-flash-preview", "gemini 3 flash"},
+		Scores:          map[string]float64{"seed_blended": 60.0},
+		InputCostPer1M:  0.3,
+		OutputCostPer1M: 2.5,
+		Notes:           "Gemini 3 Flash Preview; recommended replacement for 2.5 Flash",
+	},
+	{
+		ID: "gemini-3-1-pro", Name: "Gemini 3.1 Pro Preview", Family: "gemini", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"gemini":     "gemini-3.1-pro-preview",
+			"openrouter": "google/gemini-3.1-pro-preview",
+		},
+		AiderAliases:    []string{"gemini-3.1-pro-preview", "gemini 3.1 pro"},
+		Scores:          map[string]float64{"seed_blended": 83.0},
+		InputCostPer1M:  1.25,
+		OutputCostPer1M: 10.0,
+		Notes:           "Gemini 3.1 Pro Preview; recommended replacement for 2.5 Pro",
+	},
+	{
+		ID: "gemini-2-5-flash-lite", Name: "Gemini 2.5 Flash-Lite", Family: "gemini", Tier: "fast",
+		ProviderIDs: map[string]string{
+			"gemini":     "gemini-2.5-flash-lite",
+			"openrouter": "google/gemini-2.5-flash-lite-preview",
+		},
+		AiderAliases:    []string{"gemini-2.5-flash-lite", "gemini 2.5 flash lite"},
+		Scores:          map[string]float64{"seed_blended": 42.0},
+		InputCostPer1M:  0.1,
+		OutputCostPer1M: 0.4,
+		Notes:           "Gemini 2.5 Flash-Lite; most cost-efficient Gemini; stable",
 	},
 
 	// ── DeepSeek ─────────────────────────────────────────────────────────────
@@ -355,6 +366,7 @@ var seedData = []CanonicalModel{
 		ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Family: "deepseek", Tier: "flagship",
 		ProviderIDs: map[string]string{
 			"deepseek": "deepseek-v4-pro",
+			"together": "deepseek-ai/DeepSeek-V4-Pro",
 		},
 		AiderAliases:    []string{"deepseek-v4-pro"},
 		Scores:          map[string]float64{"seed_blended": 74.0},
@@ -378,6 +390,7 @@ var seedData = []CanonicalModel{
 	{
 		ID: "llama-4-scout", Name: "Llama 4 Scout", Family: "llama", Tier: "fast",
 		ProviderIDs: map[string]string{
+			"groq":       "meta-llama/llama-4-scout-17b-16e-instruct",
 			"openrouter": "meta-llama/llama-4-scout",
 		},
 		AiderAliases:    []string{"llama-4-scout", "llama 4 scout"},
@@ -390,7 +403,6 @@ var seedData = []CanonicalModel{
 		ID: "llama-3-3-70b", Name: "Llama 3.3 70B", Family: "llama", Tier: "mid",
 		ProviderIDs: map[string]string{
 			"groq":         "llama-3.3-70b-versatile",
-			"cerebras":     "llama-3.3-70b",
 			"huggingface":  "meta-llama/Llama-3.3-70B-Instruct",
 			"together":     "meta-llama/Llama-3.3-70B-Instruct-Turbo",
 			"openrouter":   "meta-llama/llama-3.3-70b-instruct",
@@ -423,6 +435,7 @@ var seedData = []CanonicalModel{
 	{
 		ID: "qwen3-235b", Name: "Qwen3 235B A22B", Family: "qwen", Tier: "flagship",
 		ProviderIDs: map[string]string{
+			"together":   "Qwen/Qwen3-235B-A22B-Instruct-2507-tput",
 			"openrouter": "qwen/qwen3-235b-a22b",
 		},
 		AiderAliases:    []string{"qwen3 235b a22b", "qwen3-235b-a22b"},
@@ -432,8 +445,21 @@ var seedData = []CanonicalModel{
 		Notes:           "Qwen3 MoE flagship; strong coding",
 	},
 	{
+		ID: "qwen3-5-397b", Name: "Qwen3.5 397B A17B", Family: "qwen", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"together":   "Qwen/Qwen3.5-397B-A17B",
+			"openrouter": "qwen/qwen3.5-397b-a17b",
+		},
+		AiderAliases:    []string{"qwen3.5-397b-a17b", "qwen3.5 397b"},
+		Scores:          map[string]float64{"seed_blended": 68.0},
+		InputCostPer1M:  0.6,
+		OutputCostPer1M: 3.6,
+		Notes:           "Qwen3.5 MoE flagship; 262K context",
+	},
+	{
 		ID: "qwen3-coder", Name: "Qwen3 Coder 480B", Family: "qwen", Tier: "mid",
 		ProviderIDs: map[string]string{
+			"together":   "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8",
 			"openrouter": "qwen/qwen3-coder",
 			"opencode":   "qwen3-coder-480b",
 		},
@@ -487,7 +513,6 @@ var seedData = []CanonicalModel{
 	{
 		ID: "mixtral-8x7b", Name: "Mixtral 8x7B", Family: "mistral", Tier: "fast",
 		ProviderIDs: map[string]string{
-			"together":    "mistralai/Mixtral-8x7B-Instruct-v0.1",
 			"openrouter":  "mistralai/mixtral-8x7b-instruct",
 			"huggingface": "mistralai/Mixtral-8x7B-Instruct-v0.1",
 		},
@@ -496,6 +521,42 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.24,
 		OutputCostPer1M: 0.24,
 		Notes:           "Mixtral MoE 8x7B; ageing but cost-effective",
+	},
+	{
+		ID: "magistral-medium", Name: "Magistral Medium", Family: "mistral", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"mistral":    "magistral-medium-latest",
+			"openrouter": "mistralai/magistral-medium-2507",
+		},
+		AiderAliases:    []string{"magistral-medium-2507", "magistral-medium"},
+		Scores:          map[string]float64{"seed_blended": 70.0},
+		InputCostPer1M:  2.0,
+		OutputCostPer1M: 5.0,
+		Notes:           "Mistral reasoning flagship; free tier available",
+	},
+	{
+		ID: "devstral-small", Name: "Devstral Small", Family: "mistral", Tier: "mid",
+		ProviderIDs: map[string]string{
+			"mistral":    "devstral-small-2507",
+			"openrouter": "mistralai/devstral-small-2507",
+		},
+		AiderAliases:    []string{"devstral-small-2507", "devstral-small"},
+		Scores:          map[string]float64{"seed_blended": 58.0},
+		InputCostPer1M:  0.1,
+		OutputCostPer1M: 0.3,
+		Notes:           "Mistral agentic coding model; free tier",
+	},
+	{
+		ID: "mistral-small", Name: "Mistral Small 3.2", Family: "mistral", Tier: "fast",
+		ProviderIDs: map[string]string{
+			"mistral":    "mistral-small-latest",
+			"openrouter": "mistralai/mistral-small-2506",
+		},
+		AiderAliases:    []string{"mistral-small-2506", "mistral-small"},
+		Scores:          map[string]float64{"seed_blended": 38.0},
+		InputCostPer1M:  0.1,
+		OutputCostPer1M: 0.3,
+		Notes:           "Mistral Small 3.2; efficient general purpose, free tier",
 	},
 
 	// ── xAI Grok ─────────────────────────────────────────────────────────────
@@ -526,6 +587,7 @@ var seedData = []CanonicalModel{
 	{
 		ID: "kimi-k2.6", Name: "Kimi K2.6", Family: "kimi", Tier: "flagship",
 		ProviderIDs: map[string]string{
+			"together":   "moonshotai/Kimi-K2.6",
 			"openrouter": "moonshotai/kimi-k2.6",
 		},
 		AiderAliases:    []string{"kimi k2.6", "kimi-k2.6"},
@@ -545,6 +607,18 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.57,
 		OutputCostPer1M: 2.3,
 		Notes:           "Moonshot K2; strong coding",
+	},
+	{
+		ID: "kimi-k2.5", Name: "Kimi K2.5", Family: "kimi", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"together":   "moonshotai/Kimi-K2.5",
+			"openrouter": "moonshotai/kimi-k2.5",
+		},
+		AiderAliases:    []string{"kimi k2.5", "kimi-k2.5"},
+		Scores:          map[string]float64{"seed_blended": 58.5},
+		InputCostPer1M:  0.5,
+		OutputCostPer1M: 2.8,
+		Notes:           "Moonshot K2.5; strong coding + tool use",
 	},
 
 	// ── MiniMax ───────────────────────────────────────────────────────────────
@@ -611,6 +685,8 @@ var seedData = []CanonicalModel{
 		ID: "gpt-oss-120b", Name: "GPT-OSS 120B", Family: "gpt", Tier: "mid",
 		ProviderIDs: map[string]string{
 			"groq":       "openai/gpt-oss-120b",
+			"cerebras":   "gpt-oss-120b",
+			"together":   "openai/gpt-oss-120b",
 			"openrouter": "openai/gpt-oss-120b",
 			"opencode":   "gpt-oss-120b",
 		},
@@ -619,6 +695,20 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.04,
 		OutputCostPer1M: 0.18,
 		Notes:           "OpenAI OSS 120B; strong free-tier option",
+	},
+	{
+		ID: "gpt-oss-20b", Name: "GPT-OSS 20B", Family: "gpt", Tier: "fast",
+		ProviderIDs: map[string]string{
+			"groq":       "openai/gpt-oss-20b",
+			"cerebras":   "gpt-oss-20b",
+			"together":   "openai/gpt-oss-20b",
+			"openrouter": "openai/gpt-oss-20b",
+		},
+		AiderAliases:    []string{"gpt-oss-20b", "openai/gpt-oss-20b"},
+		Scores:          map[string]float64{"seed_blended": 35.0},
+		InputCostPer1M:  0.04,
+		OutputCostPer1M: 0.14,
+		Notes:           "OpenAI OSS 20B; fastest (~1000 t/s on Groq/Cerebras)",
 	},
 
 	// ── GLM ───────────────────────────────────────────────────────────────────
@@ -632,5 +722,18 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.13,
 		OutputCostPer1M: 0.85,
 		Notes:           "Zhipu GLM 4.5 Air; free on OpenRouter",
+	},
+	{
+		ID: "glm-4-7", Name: "Z.ai GLM 4.7", Family: "glm", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"cerebras":   "zai-glm-4.7",
+			"together":   "zai-org/GLM-5.1",
+			"openrouter": "z-ai/glm-4.7",
+		},
+		AiderAliases:    []string{"zai-glm-4.7", "glm-4.7", "GLM-5.1"},
+		Scores:          map[string]float64{"seed_blended": 65.0},
+		InputCostPer1M:  1.4,
+		OutputCostPer1M: 4.4,
+		Notes:           "Z.ai GLM 4.7 (355B); strong coding + tool use; on Cerebras at preview",
 	},
 }
