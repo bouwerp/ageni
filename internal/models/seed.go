@@ -92,6 +92,78 @@ var seedData = []CanonicalModel{
 
 	// ── OpenAI ───────────────────────────────────────────────────────────────
 	{
+		ID: "gpt-5.5-pro", Name: "GPT-5.5 Pro", Family: "gpt", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5.5-pro",
+			"openrouter": "openai/gpt-5.5-pro",
+		},
+		AiderAliases:    []string{"gpt-5.5-pro"},
+		Scores:          map[string]float64{"seed_blended": 94.0},
+		InputCostPer1M:  30.0,
+		OutputCostPer1M: 180.0,
+		Notes:           "OpenAI GPT-5.5 Pro; highest-capability premium tier",
+	},
+	{
+		ID: "gpt-5.5", Name: "GPT-5.5", Family: "gpt", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5.5",
+			"openrouter": "openai/gpt-5.5",
+		},
+		AiderAliases:    []string{"gpt-5.5"},
+		Scores:          map[string]float64{"seed_blended": 92.0},
+		InputCostPer1M:  5.0,
+		OutputCostPer1M: 30.0,
+		Notes:           "OpenAI GPT-5.5; latest flagship generation",
+	},
+	{
+		ID: "gpt-5.4-pro", Name: "GPT-5.4 Pro", Family: "gpt", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5.4-pro",
+			"openrouter": "openai/gpt-5.4-pro",
+		},
+		AiderAliases:    []string{"gpt-5.4-pro"},
+		Scores:          map[string]float64{"seed_blended": 91.0},
+		InputCostPer1M:  30.0,
+		OutputCostPer1M: 180.0,
+		Notes:           "GPT-5.4 premium; high-effort reasoning",
+	},
+	{
+		ID: "gpt-5.4", Name: "GPT-5.4", Family: "gpt", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5.4",
+			"openrouter": "openai/gpt-5.4",
+		},
+		AiderAliases:    []string{"gpt-5.4"},
+		Scores:          map[string]float64{"seed_blended": 90.0},
+		InputCostPer1M:  2.5,
+		OutputCostPer1M: 15.0,
+		Notes:           "GPT-5.4 standard; strong coding + reasoning",
+	},
+	{
+		ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", Family: "gpt", Tier: "mid",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5.4-mini",
+			"openrouter": "openai/gpt-5.4-mini",
+		},
+		AiderAliases:    []string{"gpt-5.4-mini"},
+		Scores:          map[string]float64{"seed_blended": 72.0},
+		InputCostPer1M:  0.75,
+		OutputCostPer1M: 4.5,
+		Notes:           "GPT-5.4 Mini; efficient sub-agent tier",
+	},
+	{
+		ID: "gpt-5-pro", Name: "GPT-5 Pro", Family: "gpt", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5-pro",
+			"openrouter": "openai/gpt-5-pro",
+		},
+		AiderAliases:    []string{"gpt-5-pro"},
+		Scores:          map[string]float64{"seed_blended": 89.0},
+		InputCostPer1M:  15.0,
+		OutputCostPer1M: 120.0,
+		Notes:           "GPT-5 Pro; premium reasoning budget",
+	},
+	{
 		ID: "gpt-5", Name: "GPT-5", Family: "gpt", Tier: "flagship",
 		ProviderIDs: map[string]string{
 			"openai":     "gpt-5",
@@ -102,6 +174,18 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.25,
 		OutputCostPer1M: 10.0,
 		Notes:           "OpenAI flagship; top Aider polyglot score",
+	},
+	{
+		ID: "gpt-5-mini", Name: "GPT-5 Mini", Family: "gpt", Tier: "fast",
+		ProviderIDs: map[string]string{
+			"openai":     "gpt-5-mini",
+			"openrouter": "openai/gpt-5-mini",
+		},
+		AiderAliases:    []string{"gpt-5-mini"},
+		Scores:          map[string]float64{"seed_blended": 55.0},
+		InputCostPer1M:  0.25,
+		OutputCostPer1M: 2.0,
+		Notes:           "GPT-5 Mini; cheap + capable sub-agent",
 	},
 	{
 		ID: "o3-pro", Name: "o3-pro", Family: "gpt", Tier: "flagship",
