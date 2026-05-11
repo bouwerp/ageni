@@ -380,6 +380,25 @@ func (a *App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 	}
 
+	// Agent relay messages must be processed regardless of the active UI mode
+	// so that the subscription chain stays alive and agent output is never
+	// dropped while the user browses settings or rankings.
+	// The tick chain must also be kept alive so the spinner continues to work
+	// when returning to chat mode.
+	if a.mode != ModeChat {
+		switch msg := msg.(type) {
+		case relayMsg:
+			a.handleEvent(agent.Event(msg.ev))
+			return a, a.subscribeOne(msg.sub)
+		case relayUsageMsg:
+			a.usage = a.renderUsageFromTracker()
+			return a, a.subscribeUsageOne(msg.sub)
+		case tickMsg:
+			a.spinFrame++
+			return a, tickCmd()
+		}
+	}
+
 	if a.mode == ModeSettings {
 		return a.updateSettings(msg)
 	}
