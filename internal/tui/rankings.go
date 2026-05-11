@@ -160,10 +160,11 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		aiderScore = "—"
 	}
 
-	// Tier with colour.
+	// Tier with colour. Use lipgloss Width() so trailing-space padding is not
+	// stripped by the renderer (lipgloss trims trailing spaces in Render).
 	tierStr := m.Tier
 	if c, ok := tierColor[m.Tier]; ok {
-		tierStr = lipgloss.NewStyle().Foreground(c).Render(padRight(m.Tier, colTier))
+		tierStr = lipgloss.NewStyle().Foreground(c).Width(colTier).Render(m.Tier)
 	} else {
 		tierStr = padRight(tierStr, colTier)
 	}

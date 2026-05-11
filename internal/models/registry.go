@@ -103,6 +103,11 @@ func (r *Registry) seedModels(entries []CanonicalModel) {
 		if m.Scores == nil {
 			m.Scores = make(map[string]float64)
 		}
+		// Static availability: any provider listed in ProviderIDs is considered
+		// available by default (it is part of the known/seeded data set).
+		for provider := range m.ProviderIDs {
+			m.AvailableProviders = append(m.AvailableProviders, provider)
+		}
 		r.models[m.ID] = &m
 		for provider, id := range m.ProviderIDs {
 			r.providerIndex[provider+":"+id] = m.ID
@@ -173,13 +178,32 @@ func (r *Registry) ApplyAiderScores(scores map[string]float64) {
 
 // ApplyAvailability refreshes which configured providers currently serve each
 // model. available is a set of "provider:modelID" keys (value always true).
+// Only the providers represented in the available map are updated; providers
+// sourced from the seed (static ProviderIDs) are preserved unchanged.
 func (r *Registry) ApplyAvailability(available map[string]bool) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	// Clear previous live availability.
-	for _, m := range r.models {
-		m.AvailableProviders = nil
+
+	// Determine which provider namespaces this live fetch covers (e.g. "openrouter").
+	liveProviders := make(map[string]bool)
+	for key := range available {
+		if idx := strings.Index(key, ":"); idx >= 0 {
+			liveProviders[key[:idx]] = true
+		}
 	}
+
+	// Remove only the live-fetched provider entries so the seed-derived ones
+	// (from ProviderIDs) survive.
+	for _, m := range r.models {
+		kept := m.AvailableProviders[:0]
+		for _, p := range m.AvailableProviders {
+			if !liveProviders[p] {
+				kept = append(kept, p)
+			}
+		}
+		m.AvailableProviders = kept
+	}
+
 	for key := range available {
 		idx := strings.Index(key, ":")
 		if idx < 0 {
