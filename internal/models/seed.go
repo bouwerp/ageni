@@ -346,6 +346,15 @@ var seedData = []CanonicalModel{
 
 	// ── Kimi / MoonshotAI ────────────────────────────────────────────────────
 	{
+		ID: "kimi-k2.6", Name: "Kimi K2.6", Family: "kimi", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openrouter": "moonshotai/kimi-k2.6",
+		},
+		AiderAliases: []string{"kimi k2.6", "kimi-k2.6"},
+		Scores:       map[string]float64{"seed_blended": 61.0},
+		Notes:        "Moonshot K2.6; latest Kimi flagship",
+	},
+	{
 		ID: "kimi-k2", Name: "Kimi K2", Family: "kimi", Tier: "flagship",
 		ProviderIDs: map[string]string{
 			"openrouter": "moonshotai/kimi-k2",
@@ -354,6 +363,55 @@ var seedData = []CanonicalModel{
 		AiderAliases: []string{"kimi k2", "kimi-k2"},
 		Scores:       map[string]float64{"seed_blended": 59.1},
 		Notes:        "Moonshot K2; strong coding",
+	},
+
+	// ── MiniMax ───────────────────────────────────────────────────────────────
+	{
+		ID: "minimax-m2.7", Name: "MiniMax M2.7", Family: "minimax", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openrouter": "minimax/minimax-m2.7",
+		},
+		AiderAliases: []string{"minimax m2.7", "minimax-m2.7"},
+		Scores:       map[string]float64{"seed_blended": 58.0},
+		Notes:        "MiniMax M2.7; latest MiniMax flagship",
+	},
+
+	// ── NVIDIA Nemotron ───────────────────────────────────────────────────────
+	{
+		ID: "nemotron-3-super-120b", Name: "Nemotron 3 Super 120B", Family: "nemotron", Tier: "flagship",
+		ProviderIDs: map[string]string{
+			"openrouter": "nvidia/nemotron-3-super-120b-a12b",
+		},
+		AiderAliases: []string{"nemotron-3-super-120b-a12b", "nemotron 3 super"},
+		Scores:       map[string]float64{"seed_blended": 62.0},
+		Notes:        "NVIDIA 120B hybrid MoE (12B active); strong agentic workloads",
+	},
+	{
+		ID: "llama-3.3-nemotron-super-49b", Name: "Llama 3.3 Nemotron Super 49B", Family: "nemotron", Tier: "mid",
+		ProviderIDs: map[string]string{
+			"openrouter": "nvidia/llama-3.3-nemotron-super-49b-v1.5",
+		},
+		AiderAliases: []string{"llama-3.3-nemotron-super-49b-v1.5", "llama 3.3 nemotron super 49b"},
+		Scores:       map[string]float64{"seed_blended": 52.0},
+		Notes:        "NVIDIA fine-tune of Llama 3.3 70B; agentic + RAG",
+	},
+	{
+		ID: "nemotron-3-nano-30b", Name: "Nemotron 3 Nano 30B", Family: "nemotron", Tier: "fast",
+		ProviderIDs: map[string]string{
+			"openrouter": "nvidia/nemotron-3-nano-30b-a3b",
+		},
+		AiderAliases: []string{"nemotron-3-nano-30b-a3b", "nemotron 3 nano 30b"},
+		Scores:       map[string]float64{"seed_blended": 37.0},
+		Notes:        "NVIDIA 30B MoE (3B active); efficient edge/agent model",
+	},
+	{
+		ID: "nemotron-nano-9b", Name: "Nemotron Nano 9B", Family: "nemotron", Tier: "tiny",
+		ProviderIDs: map[string]string{
+			"openrouter": "nvidia/nemotron-nano-9b-v2",
+		},
+		AiderAliases: []string{"nemotron-nano-9b-v2", "nemotron nano 9b"},
+		Scores:       map[string]float64{"seed_blended": 26.0},
+		Notes:        "NVIDIA 9B unified reasoning/chat; smallest Nemotron",
 	},
 
 	// ── GPT-OSS ───────────────────────────────────────────────────────────────
