@@ -42,7 +42,7 @@ func newRankingsModel(width, height int) *rankingsModel {
 	return r
 }
 
-const rankingsHeaderLines = 4 // title + subtitle + blank + column-header
+const rankingsHeaderLines = 5 // title+hint · blank · subtitle · blank · column-header
 
 func (r *rankingsModel) Update(msg tea.Msg) (*rankingsModel, tea.Cmd) {
 	switch m := msg.(type) {
@@ -80,12 +80,17 @@ func (r *rankingsModel) View() string {
 		}
 	}
 
+	// Newlines must be OUTSIDE Render() calls: lipgloss pads every line in a
+	// multi-line Render to the same width as the widest line, which causes the
+	// blank lines to be filled with spaces. Those trailing spaces then
+	// concatenate with the next content and shift it right.
 	header := titleStyle.Render("Model Rankings") +
-		statusStyle.Render("  Ctrl+R=close · ↑↓ scroll\n\n")
+		statusStyle.Render("  Ctrl+R=close · ↑↓ scroll") +
+		"\n\n"
 	sub := statusStyle.Render(fmt.Sprintf(
-		"Blended score: 60%% Aider-polyglot + 40%% curated baseline   │   Updated: %s\n\n",
+		"Blended score: 60%% Aider-polyglot + 40%% curated baseline   │   Updated: %s",
 		age,
-	))
+	)) + "\n\n"
 	colHeader := buildColHeader(r.width)
 	return header + sub + colHeader + "\n" + r.vp.View()
 }

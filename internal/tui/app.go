@@ -1679,12 +1679,12 @@ func (a *App) View() string {
 		return titleStyle.Render("Model Rankings") + "\n(loading…)"
 	}
 	if a.mode == ModeSettings {
-		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=save & exit\n\n")
+		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=save & exit") + "\n\n"
 		if a.settingsPhase == 0 && a.providerList != nil {
 			return header + a.providerList.View()
 		}
 		if a.settingsForm != nil {
-			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits   (Enter=advance  Tab=next field)\n\n")
+			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits   (Enter=advance  Tab=next field)") + "\n\n"
 			return header + sub + a.settingsForm.View()
 		}
 		return header
