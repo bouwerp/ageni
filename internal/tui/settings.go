@@ -55,6 +55,12 @@ type settingsState struct {
 	localFleet     string
 	localFleetMode string
 
+	// subagentPool is the raw SUBAGENT_POOL env-var value — a
+	// comma-separated list of "provider" or "provider/model" entries.
+	// When set, sub-agents are spread across these providers with
+	// registry-guided best-model selection per tier.
+	subagentPool string
+
 	// verifyResults is populated by save() with one entry per enabled
 	// provider showing the outcome of a quick auth probe. Surfaced to
 	// the user as a flash message after save.
@@ -90,6 +96,7 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
 		localFleet:      existing["LLAMACPP_FLEET"],
 		localFleetMode:  existing["LLAMACPP_FLEET_MODE"],
+		subagentPool:    existing["SUBAGENT_POOL"],
 	}
 	// Initialise keyPtrs with existing values; the provider list will overwrite
 	// them when the user advances to the form phase.
@@ -261,6 +268,10 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Title("Local Fleet · Endpoints").
 			Description("Comma-separated list of baseURL|model pairs.\nExample: http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral\nLeave blank to disable.").
 			Value(&st.localFleet),
+		huh.NewInput().
+			Title("Sub-agent Pool · Providers  (optional)").
+			Description("Comma-separated cloud providers for sub-agent load balancing.\nThe registry picks the best ROI model per tier from this set.\nExample: anthropic,openai,groq  or  anthropic/claude-haiku-4-5,groq/llama-3.3-70b\nLeave blank to use the single Sub-agent Provider above.").
+			Value(&st.subagentPool),
 	)
 
 	form := huh.NewForm(groupMaster, groupSub, groupLead, groupCritic, groupFallbacks, groupLimits, groupFleet).
@@ -288,6 +299,7 @@ func (s *settingsState) save() error {
 		"SUBAGENT_FALLBACKS":    strings.Join(s.subFallbacks, ","),
 		"LLAMACPP_FLEET":        strings.TrimSpace(s.localFleet),
 		"LLAMACPP_FLEET_MODE":   s.localFleetMode,
+		"SUBAGENT_POOL":         strings.TrimSpace(s.subagentPool),
 	})
 
 	// Models default to provider defaults when unset.

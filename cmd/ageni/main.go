@@ -179,12 +179,18 @@ func run() error {
 	// Local fleet: build one adapter per endpoint and wrap in a round-robin pool.
 	fleet := buildFleet(cfg.LocalFleet)
 
+	// Cloud sub-agent pool: optional multi-provider round-robin pool with
+	// registry-guided model selection. Configured via SUBAGENT_POOL.
+	subPool := buildCloudSubPool(cfg.SubagentPool)
+	if subPool != nil {
+		fmt.Printf("Sub-agent pool: %d provider(s) (registry-guided tier selection)\n", len(subPool.entries))
+	}
+
 	// Tier factory.
 	//   opus          → master adapter (complex synthesis turns)
-	//   haiku         → local fleet (if fleet active & mode is full or subset)
-	//   sonnet/other  → local fleet (if fleet active & mode is full)
-	//                   otherwise cloud sub-agent adapter
-	factory := buildFactory(cfg, masterAdapter, subAdapter, fleet)
+	//   haiku         → local fleet → cloud sub-pool → single sub adapter
+	//   sonnet/other  → local fleet (full mode only) → cloud sub-pool → single sub adapter
+	factory := buildFactory(cfg, masterAdapter, subAdapter, fleet, subPool)
 
 	// Build a base set of tools used by both master and sub-agents.
 	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect
@@ -414,7 +420,8 @@ func run() error {
 		newMasterAdapter := buildChain("master", newCfg.Master, newCfg.MasterFallbacks, onFallback("master"))
 		newSubAdapter := buildChain("subagent", newCfg.Subagent, newCfg.SubagentFallbacks, onFallback("subagent"))
 		newFleet := buildFleet(newCfg.LocalFleet)
-		newFactory := buildFactory(newCfg, newMasterAdapter, newSubAdapter, newFleet)
+		newSubPool := buildCloudSubPool(newCfg.SubagentPool)
+		newFactory := buildFactory(newCfg, newMasterAdapter, newSubAdapter, newFleet, newSubPool)
 		master.UpdateAdapter(newMasterAdapter, newCfg.Master.Model)
 		if newCfg.MasterLeadActive {
 			master.SetLead(buildAdapter(newCfg.MasterLead), newCfg.MasterLead.Model)
@@ -515,15 +522,91 @@ func buildFleet(endpoints []config.LocalEndpoint) *localFleetPool {
 	return &localFleetPool{entries: entries}
 }
 
+// cloudSubPool holds multiple cloud provider adapters for sub-agents.
+// Sub-agents are distributed across providers using registry-guided
+// best-model selection (highest ROI for the requested tier) with
+// round-robin fallback when the registry has no data.
+type cloudSubPool struct {
+	entries []cloudSubEntry
+	counter uint64
+}
+
+type cloudSubEntry struct {
+	adapter      llm.Adapter
+	providerName string
+	defaultModel string // from config; used when registry cannot select
+}
+
+// buildCloudSubPool constructs a cloudSubPool from the config entries.
+// Returns nil when the slice is empty.
+func buildCloudSubPool(entries []config.RoleConfig) *cloudSubPool {
+	if len(entries) == 0 {
+		return nil
+	}
+	pool := &cloudSubPool{}
+	for _, rc := range entries {
+		a := buildAdapter(rc)
+		pool.entries = append(pool.entries, cloudSubEntry{
+			adapter:      a,
+			providerName: rc.Provider.Name,
+			defaultModel: rc.Model,
+		})
+	}
+	return pool
+}
+
+// pickForTier selects the best adapter+model for the given agent tier
+// ("haiku"→"fast", "sonnet"→"mid", "opus"→"flagship") using the global
+// model registry. Falls back to round-robin when the registry has no
+// data for the requested tier.
+func (p *cloudSubPool) pickForTier(tier string) (llm.Adapter, string) {
+	// Map spawn_subagent tier names → registry tier names.
+	registryTier := map[string]string{
+		"haiku":  "fast",
+		"sonnet": "mid",
+		"opus":   "flagship",
+	}[tier]
+	if registryTier == "" {
+		registryTier = "mid"
+	}
+
+	// Collect provider names from the pool.
+	providerNames := make([]string, len(p.entries))
+	for i, e := range p.entries {
+		providerNames[i] = e.providerName
+	}
+
+	// Ask the registry for the best model+provider for this tier.
+	if _, providerID, modelID := models.Global.BestForTier(registryTier, providerNames); providerID != "" && modelID != "" {
+		for _, e := range p.entries {
+			if e.providerName == providerID {
+				return e.adapter, modelID
+			}
+		}
+	}
+
+	// Fallback: round-robin with each entry's configured default model.
+	idx := atomic.AddUint64(&p.counter, 1) - 1
+	e := p.entries[idx%uint64(len(p.entries))]
+	return e.adapter, e.defaultModel
+}
+
 // buildFactory constructs the AdapterFactory for the Manager, incorporating
-// the local fleet when configured.
+// the local fleet and optional cloud sub-agent pool.
 //
+// Tier routing (evaluated in order):
 //   opus              → master adapter (flagship model for complex synthesis)
-//   haiku             → local fleet if fleet active (full or subset mode)
-//                       otherwise cloud sub-agent
-//   sonnet / default  → local fleet if fleet active and mode == "full"
-//                       otherwise cloud sub-agent
-func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleetPool) agent.AdapterFactory {
+//   haiku             → local fleet if active (full or subset mode)
+//                       otherwise cloud sub-pool (registry-guided best ROI)
+//                       otherwise single cloud sub-agent adapter
+//   sonnet / default  → local fleet if active and mode == "full"
+//                       otherwise cloud sub-pool (registry-guided best ROI)
+//                       otherwise single cloud sub-agent adapter
+//
+// The master adapter is intentionally excluded from rotation: prompt
+// caching (Anthropic/OpenAI) makes repeated context reads ≈10× cheaper;
+// rotating the master to a different provider discards that discount.
+func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleetPool, subPool *cloudSubPool) agent.AdapterFactory {
 	return func(tier string) (llm.Adapter, string) {
 		switch tier {
 		case "opus":
@@ -532,10 +615,16 @@ func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleet
 			if fleet != nil && (cfg.LocalFleetMode == "full" || cfg.LocalFleetMode == "subset") {
 				return fleet.next()
 			}
+			if subPool != nil {
+				return subPool.pickForTier(tier)
+			}
 			return sub, cfg.Subagent.Model
 		default: // sonnet and anything else
 			if fleet != nil && cfg.LocalFleetMode == "full" {
 				return fleet.next()
+			}
+			if subPool != nil {
+				return subPool.pickForTier(tier)
 			}
 			return sub, cfg.Subagent.Model
 		}

@@ -55,6 +55,24 @@ type Config struct {
 	MasterFallbacks   []RoleConfig
 	SubagentFallbacks []RoleConfig
 
+	// SubagentPool is an optional set of cloud providers used for
+	// sub-agent spawning, enabling round-robin load balancing and
+	// registry-guided best-model selection per tier.  Configured via
+	// SUBAGENT_POOL (comma-separated "<provider>" or
+	// "<provider>/<model>" entries, same format as SUBAGENT_FALLBACKS).
+	//
+	// When set, the AdapterFactory uses the pool for haiku/sonnet tiers
+	// instead of the single SUBAGENT_PROVIDER, spreading load across
+	// providers and consulting the rankings registry to pick the
+	// highest-ROI model for each tier at spawn time.  Opus-tier tasks
+	// (complex synthesis) still use the master adapter.
+	//
+	// NOTE: the master adapter intentionally never rotates — prompt
+	// caching (Anthropic / OpenAI) makes repeated context reads ≈10×
+	// cheaper; rotating providers throws away that discount.
+	SubagentPool       []RoleConfig
+	SubagentPoolActive bool
+
 	MaxSubagents int
 	// SubagentBudget is the default cap on tool calls per sub-agent when
 	// the master doesn't override it via spawn_subagent's
@@ -151,6 +169,12 @@ func Load() (*Config, error) {
 
 	cfg.MasterFallbacks = parseFallbacks(os.Getenv("MASTER_FALLBACKS"))
 	cfg.SubagentFallbacks = parseFallbacks(os.Getenv("SUBAGENT_FALLBACKS"))
+
+	// SubagentPool is opt-in; parse errors silently yield an empty pool.
+	if pool := parseFallbacks(os.Getenv("SUBAGENT_POOL")); len(pool) > 0 {
+		cfg.SubagentPool = pool
+		cfg.SubagentPoolActive = true
+	}
 
 	// Local fleet is opt-in — a parse error silently yields an empty fleet.
 	cfg.LocalFleet = parseLocalFleet(os.Getenv("LLAMACPP_FLEET"))

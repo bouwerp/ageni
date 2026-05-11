@@ -154,6 +154,69 @@ func (r *Registry) Ranked() []*CanonicalModel {
 	return out
 }
 
+// BestForTier returns the highest-ROI model (falling back to BlendedScore when
+// ROI is unavailable) for the given canonical tier ("flagship", "mid", "fast",
+// "tiny") that is served by at least one of the listed providers.
+//
+// providers is the list of configured provider names (e.g. "anthropic",
+// "openrouter", "openai"). The returned providerID is the specific provider to
+// use, and modelID is the provider-specific model string.
+//
+// Returns nil, "", "" when no match is found (e.g. registry not yet populated
+// or no configured provider carries any model for the tier).
+func (r *Registry) BestForTier(tier string, providers []string) (model *CanonicalModel, providerID, modelID string) {
+	if len(providers) == 0 {
+		return nil, "", ""
+	}
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		providerSet[p] = struct{}{}
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	// ranked is sorted by BlendedScore descending; we want the best
+	// ROI-ranked model in tier that has an available provider.
+	// Build a candidate list first, then sort by ROI (then BlendedScore).
+	type candidate struct {
+		m          *CanonicalModel
+		provider   string
+		specificID string
+		roi        float64
+	}
+	var candidates []candidate
+	for _, m := range r.ranked {
+		if m.Tier != tier {
+			continue
+		}
+		// Find first available provider from the configured set.
+		for _, ap := range m.AvailableProviders {
+			if _, ok := providerSet[ap]; ok {
+				if sid, ok2 := m.ProviderIDs[ap]; ok2 && sid != "" {
+					roi := m.ROIScore
+					if roi == 0 {
+						roi = m.BlendedScore // fallback ordering
+					}
+					candidates = append(candidates, candidate{m, ap, sid, roi})
+					break
+				}
+			}
+		}
+	}
+	if len(candidates) == 0 {
+		return nil, "", ""
+	}
+	// Pick highest ROI candidate.
+	best := candidates[0]
+	for _, c := range candidates[1:] {
+		if c.roi > best.roi {
+			best = c
+		}
+	}
+	return best.m, best.provider, best.specificID
+}
+
 // UpdatedAt returns when the registry was last recomputed.
 func (r *Registry) UpdatedAt() time.Time {
 	r.mu.RLock()
