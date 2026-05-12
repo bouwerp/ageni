@@ -15,7 +15,6 @@ import (
 
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
-	"github.com/bouwerp/ageni/internal/secrets"
 )
 
 // runInit walks the user through choosing providers + models for the master
@@ -81,32 +80,12 @@ func runInit() error {
 	config.SetOrClear(out, "SUBAGENT_BASE_URL", subRole.baseURL, subRole.spec.BaseURL)
 	config.SetOrClear(out, "MASTER_API_KEY", masterRole.roleKey, "")
 	config.SetOrClear(out, "SUBAGENT_API_KEY", subRole.roleKey, "")
-
-	// Store API keys in the OS keychain (secure). If the keychain is
-	// unavailable, fall back to writing them to .env with a warning.
-	store, storeErr := secrets.OpenDefault()
-	if storeErr != nil {
-		store, _ = secrets.OpenEnvOnly()
+	if masterRole.spec.APIKeyEnv != "" && masterRole.providerKey != "" {
+		out[masterRole.spec.APIKeyEnv] = masterRole.providerKey
 	}
-	storeKeyInVault := func(alias, value string) {
-		if value == "" || alias == "" {
-			return
-		}
-		if store != nil && storeErr == nil {
-			if err := store.Set(alias, value); err != nil {
-				// Vault write failed — fall back to .env.
-				fmt.Printf("  ⚠  Could not store %s in keychain (%v) — falling back to .env\n", alias, err)
-				out[alias] = value
-			}
-			// Remove from .env if we successfully vaulted it.
-			delete(out, alias)
-		} else {
-			// No keychain — keep in .env.
-			out[alias] = value
-		}
+	if subRole.spec.APIKeyEnv != "" && subRole.providerKey != "" {
+		out[subRole.spec.APIKeyEnv] = subRole.providerKey
 	}
-	storeKeyInVault(masterRole.spec.APIKeyEnv, masterRole.providerKey)
-	storeKeyInVault(subRole.spec.APIKeyEnv, subRole.providerKey)
 
 	if err := config.WriteEnvFile(envPath, out); err != nil {
 		return fmt.Errorf("write %s: %w", envPath, err)
@@ -114,9 +93,6 @@ func runInit() error {
 
 	fmt.Println()
 	fmt.Printf("Wrote %s\n", envPath)
-	if storeErr == nil {
-		fmt.Println("API keys stored securely in the system keychain.")
-	}
 	fmt.Println()
 	fmt.Println("Configuration:")
 	fmt.Printf("  Master:    %s / %s\n", masterRole.spec.Label, masterRole.model)

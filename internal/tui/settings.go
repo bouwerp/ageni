@@ -13,7 +13,6 @@ import (
 
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
-	"github.com/bouwerp/ageni/internal/secrets"
 )
 
 // settingsState holds the in-progress edit values bound to the form.
@@ -27,9 +26,10 @@ import (
 type settingsState struct {
 	envPath string
 
-	// secretStore, if non-nil, is used to read/write API keys securely.
-	// When nil, keys fall back to reading/writing the .env file.
-	secretStore *secrets.Store
+	// liveModelCache stores the result of live model fetches keyed by
+	// provider name. Populated once by prefetchModels() before the form
+	// is built so OptionsFunc closures never block on network I/O.
+	liveModelCache map[string][]llm.ModelSuggestion
 
 	// enabled is the multi-select result — provider names the user has
 	// ticked. Drives the option lists for role selection + fallbacks.
@@ -77,7 +77,7 @@ const leadDisabled = ""
 // newSettingsState builds only the settingsState (no huh form). The caller
 // owns the provider list component and populates st.enabled / st.keyPtrs from
 // it before building the huh form with newSettingsFormFromState.
-func newSettingsState(store *secrets.Store) (*settingsState, map[string]string, error) {
+func newSettingsState() (*settingsState, map[string]string, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
 		return nil, nil, err
@@ -86,7 +86,6 @@ func newSettingsState(store *secrets.Store) (*settingsState, map[string]string, 
 
 	st := &settingsState{
 		envPath:         envPath,
-		secretStore:     store,
 		keyPtrs:         make(map[string]*string),
 		masterProvider:  orDefault(existing["MASTER_PROVIDER"], "anthropic"),
 		masterModel:     existing["MASTER_MODEL"],
@@ -117,12 +116,7 @@ func newSettingsState(store *secrets.Store) (*settingsState, map[string]string, 
 	for _, p := range llm.AllProviders() {
 		key := ""
 		if p.APIKeyEnv != "" {
-			// Prefer vault over .env for reading existing key presence.
-			if store != nil && store.Has(p.APIKeyEnv) {
-				key = "••••" // placeholder so provider shows as enabled
-			} else {
-				key = existing[p.APIKeyEnv]
-			}
+			key = existing[p.APIKeyEnv]
 		}
 		k := key
 		st.keyPtrs[p.Name] = &k
@@ -151,6 +145,10 @@ func (s *settingsState) applyProviderList(pl *providerListModel) {
 // The provider section is managed separately by providerListModel.
 // Fields are split across focused groups so each "page" covers one topic.
 func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, error) {
+	// Pre-fetch live model lists once before building the form so that the
+	// OptionsFunc closures never block on network I/O during rendering.
+	st.prefetchModels()
+
 	groupMaster := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Master · Provider").
@@ -164,7 +162,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 		huh.NewSelect[string]().
 			Title("Master · Model").
 			OptionsFunc(func() []huh.Option[string] {
-				return modelOptionsFor(st.masterProvider, st.masterModel)
+				return st.modelOptionsFor(st.masterProvider, st.masterModel)
 			}, &st.masterProvider).
 			Value(&st.masterModel).
 			Filtering(true).
@@ -184,7 +182,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 		huh.NewSelect[string]().
 			Title("Sub-agent · Model").
 			OptionsFunc(func() []huh.Option[string] {
-				return modelOptionsFor(st.subProvider, st.subModel)
+				return st.modelOptionsFor(st.subProvider, st.subModel)
 			}, &st.subProvider).
 			Value(&st.subModel).
 			Filtering(true).
@@ -208,7 +206,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 				if st.leadProvider == leadDisabled {
 					return nil
 				}
-				return modelOptionsFor(st.leadProvider, st.leadModel)
+				return st.modelOptionsFor(st.leadProvider, st.leadModel)
 			}, &st.leadProvider).
 			Value(&st.leadModel).
 			Filtering(true).
@@ -232,7 +230,7 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 				if st.criticProvider == leadDisabled {
 					return nil
 				}
-				return modelOptionsFor(st.criticProvider, st.criticModel)
+				return st.modelOptionsFor(st.criticProvider, st.criticModel)
 			}, &st.criticProvider).
 			Value(&st.criticModel).
 			Filtering(true).
@@ -355,24 +353,15 @@ func (s *settingsState) save() error {
 		out["CRITIC_MODEL"] = orDefault(s.criticModel, criticSpec.DefaultModel)
 	}
 
-	// API keys: write to vault when available, fallback to .env otherwise.
-	// Skip blank values and skip the "••••" placeholder (means "already in vault").
+	// API keys: write whatever the user typed, blank-skip otherwise.
 	for _, p := range llm.AllProviders() {
 		if !p.NeedsKey || p.APIKeyEnv == "" {
 			continue
 		}
 		key := *s.keyPtrs[p.Name]
-		if key == "" || key == "••••" {
-			continue // blank = unchanged; •••• = vault placeholder, leave as-is
+		if key == "" {
+			continue
 		}
-		if s.secretStore != nil {
-			if err := s.secretStore.Set(p.APIKeyEnv, key); err == nil {
-				// Successfully stored in vault — don't write plaintext to .env.
-				delete(out, p.APIKeyEnv)
-				continue
-			}
-		}
-		// Vault unavailable — fall back to .env.
 		out[p.APIKeyEnv] = key
 	}
 
@@ -473,12 +462,52 @@ func fallbackOptions(enabled []string, primary string) []huh.Option[string] {
 	return out
 }
 
-// modelOptionsFor returns Select options for a provider's models, with
-// the currently-configured value pinned at the top so users with
-// custom IDs still see them. Each label is enriched with a 0-100
-// blended ranking score (when known) and price-per-1M-tokens (when
-// known), so the picker is informative at a glance.
-func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
+// prefetchModels populates liveModelCache by fetching live model lists for all
+// enabled providers that support it. This is called once before building the
+// huh form so that OptionsFunc closures can read from cache without blocking.
+func (s *settingsState) prefetchModels() {
+	if s.liveModelCache == nil {
+		s.liveModelCache = make(map[string][]llm.ModelSuggestion)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	type result struct {
+		name   string
+		models []llm.ModelSuggestion
+	}
+	ch := make(chan result, len(s.enabled))
+	fetching := 0
+	for _, name := range s.enabled {
+		if _, cached := s.liveModelCache[name]; cached {
+			continue
+		}
+		spec, ok := llm.LookupProvider(name)
+		if !ok || !shouldFetchLive(spec.Name) {
+			continue
+		}
+		fetching++
+		go func(spec llm.ProviderSpec) {
+			apiKey := os.Getenv(spec.APIKeyEnv)
+			live, err := llm.FetchModels(ctx, spec, apiKey)
+			if err != nil || len(live) == 0 {
+				ch <- result{name: spec.Name}
+				return
+			}
+			ch <- result{name: spec.Name, models: live}
+		}(spec)
+	}
+	for i := 0; i < fetching; i++ {
+		r := <-ch
+		if len(r.models) > 0 {
+			s.liveModelCache[r.name] = r.models
+		}
+	}
+}
+
+// modelOptionsFor returns Select options for a provider's models using the
+// pre-fetched liveModelCache. Never blocks on network I/O.
+func (s *settingsState) modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
 		if currentValue != "" {
@@ -487,14 +516,9 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 		return nil
 	}
 
-	apiKey := os.Getenv(spec.APIKeyEnv)
 	models := append([]llm.ModelSuggestion(nil), spec.RecommendedModels...)
-	if shouldFetchLive(spec.Name) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if live, err := llm.FetchModels(ctx, spec, apiKey); err == nil && len(live) > 0 {
-			models = llm.MergeModels(models, live)
-		}
-		cancel()
+	if live, cached := s.liveModelCache[spec.Name]; cached && len(live) > 0 {
+		models = llm.MergeModels(models, live)
 	}
 
 	// Sort by ranking desc (unranked at the bottom), so the strongest
