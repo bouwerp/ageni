@@ -17,6 +17,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/awnumar/memguard"
+
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/agentsmd"
 	"github.com/bouwerp/ageni/internal/config"
@@ -24,6 +26,7 @@ import (
 	"github.com/bouwerp/ageni/internal/mcp"
 	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/repomap"
+	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
@@ -121,6 +124,19 @@ func printUsage(w *os.File) {
 }
 
 func run() error {
+	// Protect secret values in memory: zero all mlock'd buffers on interrupt
+	// or panic, and on clean shutdown via defer.
+	memguard.CatchInterrupt()
+	defer memguard.Purge()
+
+	// Open the secrets store (OS keychain → age file vault → env-var fallback).
+	// Non-fatal: if the store can't be opened we run in env-var-only mode.
+	secretStore, storeErr := secrets.OpenDefault()
+	if storeErr != nil {
+		fmt.Fprintf(os.Stderr, "ageni: secrets store unavailable (%v) — using env vars only\n", storeErr)
+		secretStore, _ = secrets.OpenEnvOnly()
+	}
+
 	// Force lipgloss + termenv to TrueColor before Bubble Tea starts. Auto-
 	// detection inside the alt-screen sometimes lands on the Ascii profile
 	// (most commonly when stdout's TTY query fails), which strips every
@@ -211,14 +227,14 @@ func run() error {
 	}
 
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
-		r.Register(tools.ReadFile{})
+		r.Register(secrets.NewGuardedReadFile())
 		r.Register(tools.WriteFile{Tracker: tr})
 		r.Register(tools.EditFile{Tracker: tr})
 		r.Register(tools.MultiEdit{Tracker: tr})
 		r.Register(tools.ApplyDiff{Tracker: tr})
 		r.Register(tools.ListDir{})
 		r.Register(tools.Glob{})
-		r.Register(tools.Grep{})
+		r.Register(secrets.NewGuardedGrep())
 		r.Register(tools.MakeDir{Tracker: tr})
 		r.Register(tools.MoveFile{Tracker: tr})
 		r.Register(tools.DeleteFile{Tracker: tr})
@@ -238,6 +254,15 @@ func run() error {
 		}
 		for _, t := range mcpTools {
 			r.Register(t)
+		}
+		// Secrets tools: list_secrets, run_with_secret, http_with_auth.
+		// request_secret_store is wired separately once the TUI channel exists.
+		if secretStore != nil {
+			r.Register(secrets.NewListSecretsTool(secretStore))
+			r.Register(secrets.NewRunWithSecretTool(secretStore))
+			r.Register(secrets.NewHTTPWithAuthTool(secretStore))
+			// Backstop: scrub any value that escaped into tool output.
+			r.SetScrubber(secretStore.Redactor().Scrub)
 		}
 	}
 

@@ -22,14 +22,26 @@ type Tool interface {
 	Call(ctx context.Context, args json.RawMessage) (string, error)
 }
 
+// OutputScrubber is a function applied to every tool result before it is
+// returned to the LLM. It is used to remove secret values from output,
+// replacing them with a [REDACTED:alias] placeholder.
+type OutputScrubber func(string) string
+
 // Registry holds tools and produces deterministic ToolDef lists for the LLM.
 type Registry struct {
-	tools map[string]Tool
+	tools   map[string]Tool
+	scrubber OutputScrubber
 }
 
 func NewRegistry() *Registry {
 	return &Registry{tools: make(map[string]Tool)}
 }
+
+// SetScrubber attaches an OutputScrubber to the registry. Every result
+// returned by Execute (both success and error) is passed through the scrubber
+// before being given to the LLM. This is a backstop against accidental secret
+// leakage through tool output.
+func (r *Registry) SetScrubber(s OutputScrubber) { r.scrubber = s }
 
 func (r *Registry) Register(t Tool) {
 	r.tools[t.Name()] = t
@@ -76,13 +88,21 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 	call.Name = name
 	out, err := t.Call(ctx, call.Arguments)
 	if err != nil {
+		msg := "Error: " + sanitizeOutput(err.Error())
+		if r.scrubber != nil {
+			msg = r.scrubber(msg)
+		}
 		return llm.ToolResult{
 			ToolCallID: call.ID,
-			Content:    "Error: " + sanitizeOutput(err.Error()),
+			Content:    msg,
 			IsError:    true,
 		}
 	}
-	return llm.ToolResult{ToolCallID: call.ID, Content: sanitizeOutput(out)}
+	content := sanitizeOutput(out)
+	if r.scrubber != nil {
+		content = r.scrubber(content)
+	}
+	return llm.ToolResult{ToolCallID: call.ID, Content: content}
 }
 
 // sanitizeToolName strips any suffix that begins with a character not valid in
