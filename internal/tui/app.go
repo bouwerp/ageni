@@ -90,10 +90,11 @@ type App struct {
 	// Settings — the settings screen has two phases:
 	//   Phase 0: providerList (custom component, inline checkbox + key inputs)
 	//   Phase 1: settingsForm (huh form for roles / fallbacks / limits)
-	settingsPhase int
-	providerList  *providerListModel
-	settingsForm  *huh.Form
-	settingsState *settingsState
+	settingsPhase    int
+	settingsGroupIdx int // index of the currently shown huh group (phase 1 only)
+	providerList     *providerListModel
+	settingsForm     *huh.Form
+	settingsState    *settingsState
 	flashMessage  string
 
 	// mouseOn tracks whether Bubble Tea's mouse capture is enabled.
@@ -826,6 +827,7 @@ func (a *App) openSettings() tea.Cmd {
 	a.settingsState = st
 	a.settingsForm = nil
 	a.settingsPhase = 0
+	a.settingsGroupIdx = 0
 	a.providerList = newProviderListModel(existing, a.width, a.height-settingsHeaderLines)
 	a.mode = ModeSettings
 	return a.providerList.Init()
@@ -834,17 +836,26 @@ func (a *App) openSettings() tea.Cmd {
 // enterSettingsForm transitions from the provider list (phase 0) to the
 // role-selection / limits form (phase 1), applying any provider list changes
 // into the settings state first.
+// If the form was already built (user navigated back from phase 1), the
+// existing form is reused so in-progress edits are not lost.
 func (a *App) enterSettingsForm() (tea.Model, tea.Cmd) {
 	a.settingsState.applyProviderList(a.providerList)
-	form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
-	if err != nil {
-		a.flashMessage = "settings: " + err.Error()
-		a.mode = ModeChat
-		return a, nil
+	if a.settingsForm == nil {
+		form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
+		if err != nil {
+			a.flashMessage = "settings: " + err.Error()
+			a.mode = ModeChat
+			return a, nil
+		}
+		a.settingsForm = form
+		a.settingsGroupIdx = 0
+		a.settingsPhase = 1
+		return a, a.settingsForm.Init()
 	}
-	a.settingsForm = form
+	// Form already exists — just switch back to phase 1 at the group the user
+	// was last on (group index is unchanged).
 	a.settingsPhase = 1
-	return a, a.settingsForm.Init()
+	return a, nil
 }
 
 func (a *App) openRankings() tea.Cmd {
@@ -904,17 +915,23 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// Advance from provider list to the first config group.
 				return a.enterSettingsForm()
 			}
-			// Advance to the next config group (on the last group this completes
-			// the form and triggers the normal save-and-exit flow below).
+			// Advance to the next config group. huh will set StateCompleted
+			// on the last group, which triggers save-and-exit below.
+			a.settingsGroupIdx++
 			return a, a.settingsForm.NextGroup()
 
 		case tea.KeyLeft:
 			if a.settingsPhase == 1 {
-				// Go back to the provider list from any config group.
-				a.settingsPhase = 0
-				return a, nil
+				if a.settingsGroupIdx == 0 {
+					// On the first config group — go back to the provider list.
+					a.settingsPhase = 0
+					return a, nil
+				}
+				// Go to the previous config group.
+				a.settingsGroupIdx--
+				return a, a.settingsForm.PrevGroup()
 			}
-			// Already on the first page — nothing to do.
+			// Already on the provider list — nothing to do.
 			return a, nil
 		}
 	}
