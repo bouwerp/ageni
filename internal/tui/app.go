@@ -831,6 +831,22 @@ func (a *App) openSettings() tea.Cmd {
 	return a.providerList.Init()
 }
 
+// enterSettingsForm transitions from the provider list (phase 0) to the
+// role-selection / limits form (phase 1), applying any provider list changes
+// into the settings state first.
+func (a *App) enterSettingsForm() (tea.Model, tea.Cmd) {
+	a.settingsState.applyProviderList(a.providerList)
+	form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
+	if err != nil {
+		a.flashMessage = "settings: " + err.Error()
+		a.mode = ModeChat
+		return a, nil
+	}
+	a.settingsForm = form
+	a.settingsPhase = 1
+	return a, a.settingsForm.Init()
+}
+
 func (a *App) openRankings() tea.Cmd {
 	if a.rankings == nil {
 		a.rankings = newRankingsModel(a.width, a.height)
@@ -878,6 +894,31 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 
+	// Left / Right navigate between settings pages (provider list ↔ config groups).
+	// Only intercept when not actively editing a key text-input.
+	editing := a.settingsPhase == 0 && a.providerList != nil && a.providerList.editing
+	if k, ok := msg.(tea.KeyMsg); ok && !editing {
+		switch k.Type {
+		case tea.KeyRight:
+			if a.settingsPhase == 0 {
+				// Advance from provider list to the first config group.
+				return a.enterSettingsForm()
+			}
+			// Advance to the next config group (on the last group this completes
+			// the form and triggers the normal save-and-exit flow below).
+			return a, a.settingsForm.NextGroup()
+
+		case tea.KeyLeft:
+			if a.settingsPhase == 1 {
+				// Go back to the provider list from any config group.
+				a.settingsPhase = 0
+				return a, nil
+			}
+			// Already on the first page — nothing to do.
+			return a, nil
+		}
+	}
+
 	// Keep components sized to the usable height when the terminal is resized.
 	if ws, ok := msg.(tea.WindowSizeMsg); ok {
 		usable := ws.Height - settingsHeaderLines
@@ -893,19 +934,9 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	// Phase 0 — provider list with inline key inputs.
 	if a.settingsPhase == 0 {
-		// Check for the "advance to next section" signal.
+		// Check for the "advance to next section" signal (Tab from last row).
 		if _, ok := msg.(providerListDoneMsg); ok {
-			// Transfer provider selections into the state, then build the huh form.
-			a.settingsState.applyProviderList(a.providerList)
-			form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
-			if err != nil {
-				a.flashMessage = "settings: " + err.Error()
-				a.mode = ModeChat
-				return a, nil
-			}
-			a.settingsForm = form
-			a.settingsPhase = 1
-			return a, a.settingsForm.Init()
+			return a.enterSettingsForm()
 		}
 		m, cmd := a.providerList.Update(msg)
 		if pl, ok := m.(*providerListModel); ok {
@@ -915,16 +946,6 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	// Phase 1 — role selection / limits (huh form).
-	// Left/right arrows navigate between groups (pages) in the form.
-	if k, ok := msg.(tea.KeyMsg); ok {
-		switch k.Type {
-		case tea.KeyLeft:
-			return a, a.settingsForm.PrevGroup()
-		case tea.KeyRight:
-			return a, a.settingsForm.NextGroup()
-		}
-	}
-
 	f, cmd := a.settingsForm.Update(msg)
 	if form, ok := f.(*huh.Form); ok {
 		a.settingsForm = form

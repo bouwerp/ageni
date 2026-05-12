@@ -100,6 +100,14 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 	}
 	// Initialise keyPtrs with existing values; the provider list will overwrite
 	// them when the user advances to the form phase.
+	// Providers that were explicitly disabled in a previous session are saved
+	// under AGENI_DISABLED_PROVIDERS so we can restore that state here.
+	disabledSet := map[string]bool{}
+	for _, name := range strings.Split(existing["AGENI_DISABLED_PROVIDERS"], ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			disabledSet[name] = true
+		}
+	}
 	for _, p := range llm.AllProviders() {
 		key := ""
 		if p.APIKeyEnv != "" {
@@ -107,7 +115,7 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 		}
 		k := key
 		st.keyPtrs[p.Name] = &k
-		if !p.NeedsKey || key != "" {
+		if (!p.NeedsKey || key != "") && !disabledSet[p.Name] {
 			st.enabled = append(st.enabled, p.Name)
 		}
 	}
@@ -301,6 +309,20 @@ func (s *settingsState) save() error {
 		"LLAMACPP_FLEET_MODE":   s.localFleetMode,
 		"SUBAGENT_POOL":         strings.TrimSpace(s.subagentPool),
 	})
+
+	// Persist which no-key providers the user explicitly disabled so the
+	// provider list opens with the correct state next session.
+	enabledSet := map[string]bool{}
+	for _, name := range s.enabled {
+		enabledSet[name] = true
+	}
+	var disabled []string
+	for _, p := range llm.AllProviders() {
+		if !p.NeedsKey && !enabledSet[p.Name] {
+			disabled = append(disabled, p.Name)
+		}
+	}
+	out["AGENI_DISABLED_PROVIDERS"] = strings.Join(disabled, ",")
 
 	// Models default to provider defaults when unset.
 	masterSpec, _ := llm.LookupProvider(s.masterProvider)

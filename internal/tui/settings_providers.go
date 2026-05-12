@@ -181,24 +181,21 @@ func (m *providerListModel) updateNavigating(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		}
 	case tea.KeySpace:
 		r := &m.rows[m.cursor]
-		// Local providers without a key can't be disabled.
-		if !r.spec.Local || r.spec.NeedsKey {
-			r.enabled = !r.enabled
-		}
-	case tea.KeyTab, tea.KeyRight:
+		r.enabled = !r.enabled
+	case tea.KeyTab:
 		r := &m.rows[m.cursor]
 		if r.spec.NeedsKey {
 			m.enterEditMode()
 			return m, m.rows[m.cursor].input.Focus()
 		}
-		// No key needed — just advance.
+		// No key needed — just advance to next row.
 		m.cursor++
 		if m.cursor >= len(m.rows) {
 			m.cursor = len(m.rows) - 1
 			return m, func() tea.Msg { return providerListDoneMsg{} }
 		}
 		m.clampScroll()
-	case tea.KeyShiftTab, tea.KeyLeft:
+	case tea.KeyShiftTab:
 		if m.cursor > 0 {
 			m.cursor--
 			m.clampScroll()
@@ -277,7 +274,7 @@ func (m *providerListModel) View() string {
 	var b strings.Builder
 
 	// Header / hint line
-	hint := "  ↑↓ move  ·  Space enable  ·  Tab/→ edit key  ·  Esc=save & exit  ·  Tab from last row → next section"
+	hint := "  ↑↓ move  ·  Space toggle  ·  Tab/Enter edit key  ·  → next page  ·  Esc save & exit"
 	b.WriteString(titleStyle.Render("Providers") + statusStyle.Render(hint) + "\n\n")
 
 	visible := m.visibleRowCount()
