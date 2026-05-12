@@ -791,7 +791,39 @@ func (a *App) sendToMaster(expanded string) {
 
 // settingsHeaderLines is the number of lines rendered above the content in
 // View() so we can pass the correct usable height to components.
+// Layout: title line + tab bar line + blank line = 3.
 const settingsHeaderLines = 3
+
+// settingsTabBar renders a horizontal row of tab labels with the currently
+// active tab highlighted.  Phase 0 ("Providers") is tab 0; each huh group is
+// tabs 1–7 in order.
+func (a *App) settingsTabBar() string {
+	labels := []string{"Providers", "Master", "Sub-agent", "Lead", "Critic", "Fallbacks", "Limits", "Fleet"}
+	active := 0
+	if a.settingsPhase == 1 {
+		active = a.settingsGroupIdx + 1
+	}
+
+	activeTab := lipgloss.NewStyle().
+		Foreground(colorAccent).
+		Bold(true).
+		Underline(true)
+	inactiveTab := lipgloss.NewStyle().
+		Foreground(colorMuted)
+
+	parts := make([]string, len(labels))
+	for i, label := range labels {
+		if i == active {
+			parts[i] = activeTab.Render(label)
+		} else {
+			parts[i] = inactiveTab.Render(label)
+		}
+		if i < len(labels)-1 {
+			parts[i] += inactiveTab.Render(" · ")
+		}
+	}
+	return strings.Join(parts, "")
+}
 
 // saveAndExitSettings collects the current state from whichever phase is
 // active, writes it to disk, triggers a hot-reload, and returns to chat mode.
@@ -1704,13 +1736,13 @@ func (a *App) View() string {
 		return titleStyle.Render("Model Rankings") + "\n(loading…)"
 	}
 	if a.mode == ModeSettings {
-		header := titleStyle.Render("Settings") + statusStyle.Render("  Esc=save & exit") + "\n\n"
+		header := titleStyle.Render("Settings") + statusStyle.Render("  ←/→ page · Esc save & exit") + "\n" +
+			a.settingsTabBar() + "\n\n"
 		if a.settingsPhase == 0 && a.providerList != nil {
 			return header + a.providerList.View()
 		}
 		if a.settingsForm != nil {
-			sub := statusStyle.Render("Master → Sub-agent → Lead → Critic → Fallbacks → Limits → Fleet   (←/→=page  Enter=advance  Tab=next field)") + "\n\n"
-			return header + sub + a.settingsForm.View()
+			return header + a.settingsForm.View()
 		}
 		return header
 	}
