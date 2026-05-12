@@ -263,6 +263,45 @@ func (s *Store) loadFromEnv() {
 	}
 }
 
+// ExportToEnv sets each keychain-stored secret as an OS environment variable,
+// but only when the variable is not already set. Call this before config.Load()
+// so that keychain-stored API keys are visible to the configuration system
+// without requiring them to also be written to .env files.
+func (s *Store) ExportToEnv() {
+	s.mu.RLock()
+	aliases := make([]string, 0, len(s.enclaves))
+	for a := range s.enclaves {
+		aliases = append(aliases, a)
+	}
+	s.mu.RUnlock()
+
+	for _, alias := range aliases {
+		if os.Getenv(alias) != "" {
+			continue // existing env var wins; don't overwrite
+		}
+		s.mu.RLock()
+		enc, ok := s.enclaves[alias]
+		s.mu.RUnlock()
+		if !ok {
+			continue
+		}
+		buf, err := enc.Open()
+		if err != nil {
+			continue
+		}
+		val := string(buf.Bytes())
+		buf.Destroy()
+		os.Setenv(alias, val) // nolint:errcheck
+	}
+}
+
+// SeedFromEnv re-loads provider API keys from the current OS environment
+// into the store. Call this after loading .env files so the redactor and
+// run_with_secret tool see all keys, including those not yet in the keychain.
+func (s *Store) SeedFromEnv() {
+	s.loadFromEnv()
+}
+
 // persistToKeyring serialises all in-memory enclaves to a single JSON blob
 // and writes it to the keyring. Must be called with s.mu held for writing.
 func (s *Store) persistToKeyring() error {

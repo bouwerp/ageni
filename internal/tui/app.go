@@ -20,6 +20,7 @@ import (
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/tools"
 )
@@ -75,6 +76,9 @@ type App struct {
 	shellStatus map[string]agent.ShellStatus
 	shellOrder  []string
 	shellMgr    *agent.ShellManager
+
+	// Secret store for reading/writing API keys in the settings UI.
+	secretStore *secrets.Store
 
 	// Incremental glamour-render cache for live streaming.
 	// masterRenderedUpTo is the byte offset in currentMaster through which we
@@ -156,7 +160,7 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager, secretStore *secrets.Store) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -193,6 +197,7 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		shellBufs:   make(map[string]*strings.Builder),
 		shellStatus: make(map[string]agent.ShellStatus),
 		shellMgr:    shellMgr,
+		secretStore: secretStore,
 		history:      LoadHistory(),
 		historyIdx:   -1,
 		mouseOn:      true,
@@ -865,10 +870,24 @@ func (a *App) saveAndExitSettings() {
 }
 
 func (a *App) openSettings() tea.Cmd {
-	st, existing, err := newSettingsState()
+	st, existing, err := newSettingsState(a.secretStore)
 	if err != nil {
 		a.flashMessage = "settings: " + err.Error()
 		return nil
+	}
+	// Inject vault presence markers into the existing map so that
+	// newProviderListModel shows vault-stored keys as "set" (with the •••• placeholder).
+	if a.secretStore != nil {
+		for alias := range existing {
+			if a.secretStore.Has(alias) {
+				existing[alias] = "••••"
+			}
+		}
+		for _, alias := range a.secretStore.List() {
+			if existing[alias] == "" {
+				existing[alias] = "••••"
+			}
+		}
 	}
 	a.settingsState = st
 	a.settingsForm = nil

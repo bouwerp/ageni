@@ -13,6 +13,7 @@ import (
 
 	"github.com/bouwerp/ageni/internal/config"
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/secrets"
 )
 
 // settingsState holds the in-progress edit values bound to the form.
@@ -25,6 +26,10 @@ import (
 // don't move between renders.
 type settingsState struct {
 	envPath string
+
+	// secretStore, if non-nil, is used to read/write API keys securely.
+	// When nil, keys fall back to reading/writing the .env file.
+	secretStore *secrets.Store
 
 	// enabled is the multi-select result — provider names the user has
 	// ticked. Drives the option lists for role selection + fallbacks.
@@ -72,7 +77,7 @@ const leadDisabled = ""
 // newSettingsState builds only the settingsState (no huh form). The caller
 // owns the provider list component and populates st.enabled / st.keyPtrs from
 // it before building the huh form with newSettingsFormFromState.
-func newSettingsState() (*settingsState, map[string]string, error) {
+func newSettingsState(store *secrets.Store) (*settingsState, map[string]string, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
 		return nil, nil, err
@@ -81,6 +86,7 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 
 	st := &settingsState{
 		envPath:         envPath,
+		secretStore:     store,
 		keyPtrs:         make(map[string]*string),
 		masterProvider:  orDefault(existing["MASTER_PROVIDER"], "anthropic"),
 		masterModel:     existing["MASTER_MODEL"],
@@ -111,7 +117,12 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 	for _, p := range llm.AllProviders() {
 		key := ""
 		if p.APIKeyEnv != "" {
-			key = existing[p.APIKeyEnv]
+			// Prefer vault over .env for reading existing key presence.
+			if store != nil && store.Has(p.APIKeyEnv) {
+				key = "••••" // placeholder so provider shows as enabled
+			} else {
+				key = existing[p.APIKeyEnv]
+			}
 		}
 		k := key
 		st.keyPtrs[p.Name] = &k
@@ -344,15 +355,24 @@ func (s *settingsState) save() error {
 		out["CRITIC_MODEL"] = orDefault(s.criticModel, criticSpec.DefaultModel)
 	}
 
-	// API keys: write whatever the user typed, blank-skip otherwise.
+	// API keys: write to vault when available, fallback to .env otherwise.
+	// Skip blank values and skip the "••••" placeholder (means "already in vault").
 	for _, p := range llm.AllProviders() {
 		if !p.NeedsKey || p.APIKeyEnv == "" {
 			continue
 		}
 		key := *s.keyPtrs[p.Name]
-		if key == "" {
-			continue
+		if key == "" || key == "••••" {
+			continue // blank = unchanged; •••• = vault placeholder, leave as-is
 		}
+		if s.secretStore != nil {
+			if err := s.secretStore.Set(p.APIKeyEnv, key); err == nil {
+				// Successfully stored in vault — don't write plaintext to .env.
+				delete(out, p.APIKeyEnv)
+				continue
+			}
+		}
+		// Vault unavailable — fall back to .env.
 		out[p.APIKeyEnv] = key
 	}
 

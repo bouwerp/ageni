@@ -137,6 +137,13 @@ func run() error {
 		secretStore, _ = secrets.OpenEnvOnly()
 	}
 
+	// Export keychain-stored secrets into the OS environment so config.Load()
+	// can find them via os.Getenv(). This allows API keys stored in the
+	// keychain (via ageni init) to work without being duplicated in .env.
+	if secretStore != nil {
+		secretStore.ExportToEnv()
+	}
+
 	// Force lipgloss + termenv to TrueColor before Bubble Tea starts. Auto-
 	// detection inside the alt-screen sometimes lands on the Ascii profile
 	// (most commonly when stdout's TTY query fails), which strips every
@@ -161,6 +168,16 @@ func run() error {
 		} else {
 			return err
 		}
+	}
+
+	// After loading .env files, re-seed the store from env so the redactor
+	// and run_with_secret tool see keys that exist only in .env (not keychain).
+	if secretStore != nil {
+		secretStore.SeedFromEnv()
+		// Auto-migrate: if a provider key is in the environment (from .env)
+		// but not yet in the keychain, quietly persist it to the keychain so
+		// future runs won't need the plaintext value in .env.
+		migrateEnvKeysToVault(secretStore, cfg)
 	}
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -489,7 +506,7 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr, secretStore)
 	if len(resumeHistory) > 0 {
 		app.LoadHistory(resumeHistory)
 	}
@@ -859,4 +876,32 @@ func handleSignals(cancel context.CancelFunc) {
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 	cancel()
+}
+
+// migrateEnvKeysToVault silently copies provider API keys from the process
+// environment (i.e. from .env) into the keychain for any key that isn't
+// already stored there. This is a one-time automatic migration so that users
+// who previously stored keys in .env get vault protection on their next run
+// without needing to re-run `ageni init`.
+func migrateEnvKeysToVault(store *secrets.Store, cfg *config.Config) {
+	candidates := []string{
+		cfg.Master.Provider.APIKeyEnv,
+		cfg.Subagent.Provider.APIKeyEnv,
+	}
+	// De-dup.
+	seen := map[string]bool{}
+	for _, alias := range candidates {
+		if alias == "" || seen[alias] {
+			continue
+		}
+		seen[alias] = true
+		if store.Has(alias) {
+			continue // already in vault
+		}
+		val := os.Getenv(alias)
+		if val == "" {
+			continue // not set in env either
+		}
+		_ = store.Set(alias, val) // best-effort; ignore error silently
+	}
 }
