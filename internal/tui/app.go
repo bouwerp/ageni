@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -68,6 +69,12 @@ type App struct {
 	subBufs           map[string]*strings.Builder
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
+
+	// Shell sessions opened by the master or sub-agents.
+	shellBufs   map[string]*strings.Builder
+	shellStatus map[string]agent.ShellStatus
+	shellOrder  []string
+	shellMgr    *agent.ShellManager
 
 	// Incremental glamour-render cache for live streaming.
 	// masterRenderedUpTo is the byte offset in currentMaster through which we
@@ -149,7 +156,7 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker) *App {
+func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -183,6 +190,9 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		subActivity:    make(map[string]string),
 		subRenderedUpTo:  make(map[string]int),
 		subRenderedCache: make(map[string]string),
+		shellBufs:   make(map[string]*strings.Builder),
+		shellStatus: make(map[string]agent.ShellStatus),
+		shellMgr:    shellMgr,
 		history:      LoadHistory(),
 		historyIdx:   -1,
 		mouseOn:      true,
@@ -257,6 +267,10 @@ type tickMsg time.Time
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const spinnerInterval = 120 * time.Millisecond
+
+// ansiEscape strips terminal escape sequences so shell output is legible
+// when rendered in the non-terminal viewport.
+var ansiEscape = regexp.MustCompile(`\x1b(?:\[[0-9;?]*[A-Za-z]|\][^\x07]*\x07|[^[])|\r`)
 
 func tickCmd() tea.Cmd {
 	return tea.Tick(spinnerInterval, func(t time.Time) tea.Msg { return tickMsg(t) })
@@ -1044,25 +1058,26 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-// cycleView steps through the sub-agent panes. dir=1 goes master→newest→...→oldest→master
-// (matching the side-pane display order); dir=-1 reverses (Shift+Tab).
+// cycleView steps through the sub-agent and shell panes.
+// dir=1 goes master→newest→...→oldest→master; dir=-1 reverses (Shift+Tab).
 func (a *App) cycleView(dir int) {
-	n := len(a.subOrder)
+	all := make([]string, 0, len(a.subOrder)+len(a.shellOrder))
+	all = append(all, a.subOrder...)
+	all = append(all, a.shellOrder...)
+	n := len(all)
 	if n == 0 {
 		return
 	}
 	prevSub := a.viewSub
 	if a.viewSub == "" {
 		if dir > 0 {
-			// Tab from master: go to newest sub-agent.
-			a.viewSub = a.subOrder[n-1]
+			a.viewSub = all[n-1]
 		} else {
-			// Shift+Tab from master: go to oldest sub-agent.
-			a.viewSub = a.subOrder[0]
+			a.viewSub = all[0]
 		}
 	} else {
 		idx := -1
-		for i, id := range a.subOrder {
+		for i, id := range all {
 			if id == a.viewSub {
 				idx = i
 				break
@@ -1071,18 +1086,16 @@ func (a *App) cycleView(dir int) {
 		if idx < 0 {
 			a.viewSub = ""
 		} else if dir > 0 {
-			// Tab: newest→next newer→...→oldest→master (wrap).
 			if idx == 0 {
-				a.viewSub = "" // oldest → back to master
+				a.viewSub = ""
 			} else {
-				a.viewSub = a.subOrder[idx-1] // toward older (lower index = older)
+				a.viewSub = all[idx-1]
 			}
 		} else {
-			// Shift+Tab: oldest→next older→...→newest→master (wrap).
 			if idx == n-1 {
-				a.viewSub = "" // newest → back to master
+				a.viewSub = ""
 			} else {
-				a.viewSub = a.subOrder[idx+1] // toward newer
+				a.viewSub = all[idx+1]
 			}
 		}
 	}
@@ -1321,6 +1334,35 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshSide()
 	case agent.EvFlash:
 		a.flashMessage = ev.Text
+	case agent.EvShellOpened:
+		id := ev.SubagentID
+		if a.shellBufs[id] == nil {
+			a.shellBufs[id] = &strings.Builder{}
+			a.shellStatus[id] = agent.ShellStatusOpen
+			a.shellOrder = append(a.shellOrder, id)
+		}
+		a.refreshSide()
+	case agent.EvShellOutput:
+		id := ev.SubagentID
+		if a.shellBufs[id] == nil {
+			a.shellBufs[id] = &strings.Builder{}
+			a.shellStatus[id] = agent.ShellStatusOpen
+			a.shellOrder = append(a.shellOrder, id)
+		}
+		// Strip ANSI escape codes so output is legible in the viewport.
+		clean := ansiEscape.ReplaceAllString(ev.Text, "")
+		a.shellBufs[id].WriteString(clean)
+		if a.viewSub == id {
+			a.refreshChatForce()
+		}
+		a.refreshSide()
+	case agent.EvShellExited:
+		id := ev.SubagentID
+		a.shellStatus[id] = agent.ShellStatusExited
+		a.refreshSide()
+		if a.viewSub == id {
+			a.refreshChatForce()
+		}
 	}
 }
 
@@ -1500,9 +1542,25 @@ func (a *App) setChat(gotoBottom bool) {
 }
 
 // buildChatContent assembles the string to show in the chat viewport for the
-// currently selected view (master or a specific sub-agent).
+// currently selected view (master, a sub-agent, or a shell session).
 func (a *App) buildChatContent() string {
 	if a.viewSub != "" {
+		// Shell session pane.
+		if strings.HasPrefix(a.viewSub, "sh") {
+			if b, ok := a.shellBufs[a.viewSub]; ok {
+				st := a.shellStatus[a.viewSub]
+				header := titleStyle.Render(fmt.Sprintf("shell %s", a.viewSub)) + "\n\n"
+				footer := ""
+				switch st {
+				case agent.ShellStatusExited:
+					footer = "\n" + mutedStyle.Render("[process exited]")
+				case agent.ShellStatusClosed:
+					footer = "\n" + mutedStyle.Render("[session closed]")
+				}
+				return header + b.String() + footer
+			}
+		}
+		// Sub-agent pane.
 		if b, ok := a.subBufs[a.viewSub]; ok {
 			body := b.String()
 			if cur, ok := a.currentSubText[a.viewSub]; ok && cur.Len() > 0 {
@@ -1638,6 +1696,33 @@ func (a *App) refreshSide() {
 			line = lipgloss.NewStyle().Reverse(true).Render(line)
 		}
 		sb.WriteString(st2.Render(line) + "\n")
+	}
+
+	// Shell sessions — listed after sub-agents.
+	if len(a.shellOrder) > 0 {
+		sb.WriteString("\n" + titleStyle.Render("shells") + "\n\n")
+		for i := len(a.shellOrder) - 1; i >= 0; i-- {
+			id := a.shellOrder[i]
+			st := a.shellStatus[id]
+			marker := "●"
+			stStyle := subRunningStyle
+			label := "open"
+			switch st {
+			case agent.ShellStatusExited:
+				stStyle = mutedStyle
+				marker = "·"
+				label = "exited"
+			case agent.ShellStatusClosed:
+				stStyle = mutedStyle
+				marker = "·"
+				label = "closed"
+			}
+			line := fmt.Sprintf("%s %s  %s", marker, id, label)
+			if id == a.viewSub {
+				line = lipgloss.NewStyle().Reverse(true).Render(line)
+			}
+			sb.WriteString(stStyle.Render(line) + "\n")
+		}
 	}
 
 	// Changed files — single source of truth for "what has this session

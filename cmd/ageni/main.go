@@ -295,6 +295,10 @@ func run() error {
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 	manager.SetDefaultBudget(cfg.SubagentBudget)
 
+	// Shell session manager — shared across master and all sub-agents.
+	shellMgr := agent.NewShellManager(bus)
+	defer shellMgr.CancelAll()
+
 	// find_in_codebase is available to sub-agents as well as the master.
 	// The master's prompt promotes it heavily, that vocabulary leaks into
 	// spawn_subagent contexts, and workers were hallucinating the call —
@@ -303,6 +307,15 @@ func run() error {
 	// the Librarian sub-agent itself can't recurse because its own
 	// AllowedTools whitelist (in find_tool.go) excludes find_in_codebase.
 	registry.Register(agent.FindInCodebase{M: manager, Bus: bus})
+
+	// Shell session tools are available to both master and sub-agents.
+	registry.Register(agent.OpenShellTool{SM: shellMgr})
+	registry.Register(agent.ShellExecTool{SM: shellMgr})
+	registry.Register(agent.ShellReadTool{SM: shellMgr})
+	registry.Register(agent.ShellWaitTool{SM: shellMgr})
+	registry.Register(agent.ShellSendInputTool{SM: shellMgr})
+	registry.Register(agent.CloseShellTool{SM: shellMgr})
+	registry.Register(agent.ListShellsTool{SM: shellMgr})
 
 	masterReg := tools.NewRegistry()
 	registerBase(masterReg, todo, changes)
@@ -313,6 +326,13 @@ func run() error {
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
+	masterReg.Register(agent.OpenShellTool{SM: shellMgr})
+	masterReg.Register(agent.ShellExecTool{SM: shellMgr})
+	masterReg.Register(agent.ShellReadTool{SM: shellMgr})
+	masterReg.Register(agent.ShellWaitTool{SM: shellMgr})
+	masterReg.Register(agent.ShellSendInputTool{SM: shellMgr})
+	masterReg.Register(agent.CloseShellTool{SM: shellMgr})
+	masterReg.Register(agent.ListShellsTool{SM: shellMgr})
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
@@ -469,7 +489,7 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes)
+	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
 	if len(resumeHistory) > 0 {
 		app.LoadHistory(resumeHistory)
 	}

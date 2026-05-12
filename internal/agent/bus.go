@@ -35,6 +35,11 @@ const (
 	// when the user presses Esc. The master discards any accumulated
 	// pending sub-agent events and skips the next turn.
 	EvCancelAll EventKind = "cancel_all"
+
+	// Shell session events. SubagentID holds the shell session ID (sh1, sh2, …).
+	EvShellOpened EventKind = "shell_opened"
+	EvShellOutput EventKind = "shell_output"
+	EvShellExited EventKind = "shell_exited"
 )
 
 // Event is a single message on the bus.
