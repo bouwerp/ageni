@@ -868,11 +868,15 @@ func (a *App) openSettings() tea.Cmd {
 // enterSettingsForm transitions from the provider list (phase 0) to the
 // role-selection / limits form (phase 1), applying any provider list changes
 // into the settings state first.
-// If the form was already built (user navigated back from phase 1), the
-// existing form is reused so in-progress edits are not lost.
+// The form is preserved across phase 0↔1 switches to keep in-progress edits,
+// but is rebuilt when the set of enabled providers changes (so that the
+// fallback option lists reflect the new provider set).
 func (a *App) enterSettingsForm() (tea.Model, tea.Cmd) {
+	prevEnabled := append([]string(nil), a.settingsState.enabled...)
 	a.settingsState.applyProviderList(a.providerList)
-	if a.settingsForm == nil {
+	enabledChanged := !stringSlicesEqual(prevEnabled, a.settingsState.enabled)
+
+	if a.settingsForm == nil || enabledChanged {
 		form, err := newSettingsFormFromState(a.settingsState, a.height-settingsHeaderLines)
 		if err != nil {
 			a.flashMessage = "settings: " + err.Error()
@@ -884,8 +888,8 @@ func (a *App) enterSettingsForm() (tea.Model, tea.Cmd) {
 		a.settingsPhase = 1
 		return a, a.settingsForm.Init()
 	}
-	// Form already exists — just switch back to phase 1 at the group the user
-	// was last on (group index is unchanged).
+	// Form already exists and providers haven't changed — switch back to phase 1
+	// at the group the user was last on (group index is unchanged).
 	a.settingsPhase = 1
 	return a, nil
 }

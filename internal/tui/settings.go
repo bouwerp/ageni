@@ -232,18 +232,14 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Master").
 			Description("On 429 / 5xx / timeout, ageni tries these providers in order.").
-			OptionsFunc(func() []huh.Option[string] {
-				return fallbackOptions(st.enabled, st.masterProvider)
-			}, &st.enabled).
+			Options(fallbackOptions(st.enabled, st.masterProvider)...).
 			Value(&st.masterFallbacks).
 			Filterable(true).
 			Height(8),
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Sub-agent").
 			Description("Same fallback behaviour for sub-agent workers.").
-			OptionsFunc(func() []huh.Option[string] {
-				return fallbackOptions(st.enabled, st.subProvider)
-			}, &st.enabled).
+			Options(fallbackOptions(st.enabled, st.subProvider)...).
 			Value(&st.subFallbacks).
 			Filterable(true).
 			Height(8),
@@ -556,6 +552,20 @@ func parseFallbackProviders(spec string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// stringSlicesEqual reports whether two string slices have the same elements
+// in the same order.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldFetchLive(name string) bool {
