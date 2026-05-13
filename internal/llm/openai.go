@@ -164,8 +164,30 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		msgs = append(msgs, openai.SystemMessage(SanitizeText(req.System)))
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, messageToOpenAI(m))
+		if m.Role == RoleTool && len(m.ToolResults) > 1 {
+			// Each tool result must be its own tool message so that every
+			// tool_call_id from the preceding assistant message is satisfied.
+			for _, tr := range m.ToolResults {
+				msgs = append(msgs, openai.ToolMessage(SanitizeText(tr.Content), tr.ToolCallID))
+			}
+		} else {
+			msgs = append(msgs, messageToOpenAI(m))
+		}
 	}
+
+	// DeepSeek (and strict OpenAI-compat providers) reject a message list
+	// that ends with an assistant tool_calls message without corresponding
+	// tool responses for every call. Trim any such trailing assistant message
+	// to avoid the 400 error.
+	for len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		if a := last.OfAssistant; a != nil && len(a.ToolCalls) > 0 {
+			msgs = msgs[:len(msgs)-1]
+		} else {
+			break
+		}
+	}
+
 	params.Messages = msgs
 
 	if len(req.Tools) > 0 {
@@ -230,9 +252,7 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 		}
 		return openai.ChatCompletionMessageParamUnion{OfAssistant: &ap}
 	case RoleTool:
-		// One tool-result message per result.
-		// If multiple results in a single Message, the caller should split them
-		// upstream — for now emit only the first.
+		// Single result — the multi-result case is expanded in buildParams.
 		if len(m.ToolResults) > 0 {
 			tr := m.ToolResults[0]
 			return openai.ToolMessage(SanitizeText(tr.Content), tr.ToolCallID)
