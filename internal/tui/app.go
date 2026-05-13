@@ -71,12 +71,15 @@ type App struct {
 	subOrder       []string
 
 	// Shell sessions opened by the master or sub-agents.
-	shellBufs   map[string]*strings.Builder
-	shellStatus map[string]agent.ShellStatus
-	shellLabels map[string]string
-	shellKinds  map[string]agent.ShellKind
-	shellOrder  []string
-	shellMgr    *agent.ShellManager
+	shellBufs     map[string]*strings.Builder
+	shellStatus   map[string]agent.ShellStatus
+	shellLabels   map[string]string
+	shellKinds    map[string]agent.ShellKind
+	shellCmds     map[string]string // last command dispatched to each shell
+	shellBusy     map[string]bool   // true while shell_exec is in flight (sync mode)
+	shellLastExit map[string]*int   // nil=never run, else last exit code
+	shellOrder    []string
+	shellMgr      *agent.ShellManager
 
 	// Incremental glamour-render cache for live streaming.
 	// masterRenderedUpTo is the byte offset in currentMaster through which we
@@ -192,11 +195,14 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		subActivity:    make(map[string]string),
 		subRenderedUpTo:  make(map[string]int),
 		subRenderedCache: make(map[string]string),
-		shellBufs:   make(map[string]*strings.Builder),
-		shellStatus: make(map[string]agent.ShellStatus),
-		shellLabels: make(map[string]string),
-		shellKinds:  make(map[string]agent.ShellKind),
-		shellMgr:    shellMgr,
+		shellBufs:     make(map[string]*strings.Builder),
+		shellStatus:   make(map[string]agent.ShellStatus),
+		shellLabels:   make(map[string]string),
+		shellKinds:    make(map[string]agent.ShellKind),
+		shellCmds:     make(map[string]string),
+		shellBusy:     make(map[string]bool),
+		shellLastExit: make(map[string]*int),
+		shellMgr:      shellMgr,
 		history:      LoadHistory(),
 		historyIdx:   -1,
 		mouseOn:      true,
@@ -1169,6 +1175,8 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
 			a.masterToolIn = ev.ToolCall.Name
 			a.pendingCalls[ev.ToolCall.ID] = *ev.ToolCall
+			// Track shell commands so we can display them in the shell pane.
+			a.trackShellToolCall(ev.ToolCall)
 			a.refreshChat()
 			a.refreshSide()
 		}
@@ -1181,6 +1189,9 @@ func (a *App) handleEvent(ev agent.Event) {
 				if diff := a.diffForCall(call); diff != "" {
 					rendered += "\n" + diff
 				}
+			}
+			if hasPending {
+				a.trackShellToolDone(ev.ToolResult, call)
 			}
 			a.chatBuf.WriteString(rendered + "\n\n")
 			a.refreshChat()
@@ -1560,7 +1571,22 @@ func (a *App) buildChatContent() string {
 				if shellLabel != "" {
 					title = fmt.Sprintf("%s  %s", a.viewSub, shellLabel)
 				}
-				header := titleStyle.Render(title) + "\n\n"
+				header := titleStyle.Render(title) + "\n"
+
+				// Show the last command dispatched to this shell, visually
+				// distinct from the output (dim prompt prefix, bold command).
+				if cmd := a.shellCmds[a.viewSub]; cmd != "" {
+					prompt := mutedStyle.Render("$")
+					cmdStyle := lipgloss.NewStyle().Bold(true)
+					if a.shellBusy[a.viewSub] {
+						cmdStyle = cmdStyle.Foreground(colorAccent)
+					} else {
+						cmdStyle = cmdStyle.Foreground(colorMuted)
+					}
+					header += cmdStyle.Render(fmt.Sprintf("%s %s", prompt, cmd)) + "\n"
+				}
+				header += "\n"
+
 				footer := ""
 				switch st {
 				case agent.ShellStatusExited:
@@ -1723,6 +1749,8 @@ func (a *App) refreshSide() {
 			st := a.shellStatus[id]
 			kind := a.shellKinds[id]
 			shellLabel := a.shellLabels[id]
+			busy := a.shellBusy[id]
+			lastExit := a.shellLastExit[id]
 
 			var marker, statusText string
 			var stStyle lipgloss.Style
@@ -1731,24 +1759,52 @@ func (a *App) refreshSide() {
 
 			switch st {
 			case agent.ShellStatusOpen:
-				if isService {
+				if busy {
+					// Actively running a command — show spinner.
+					marker = a.spinner()
+					stStyle = subRunningStyle
+					statusText = "running…"
+				} else if isService {
 					marker = "⚙"
 					stStyle = subRunningStyle
-					statusText = "running"
+					if lastExit != nil && *lastExit != 0 {
+						statusText = fmt.Sprintf("err=%d", *lastExit)
+					} else {
+						statusText = "running"
+					}
 				} else {
 					marker = "●"
 					stStyle = subRunningStyle
-					statusText = "open"
+					if lastExit != nil {
+						if *lastExit == 0 {
+							stStyle = subDoneStyle
+							statusText = "✓ 0"
+						} else {
+							stStyle = subErrStyle
+							statusText = fmt.Sprintf("✗ %d", *lastExit)
+						}
+					} else {
+						statusText = "idle"
+					}
 				}
 			case agent.ShellStatusExited:
 				if isService {
 					marker = "⚙"
-					stStyle = subErrStyle // service exit is unexpected → warn
-					statusText = "exited!"
+					stStyle = subErrStyle
+					if lastExit != nil {
+						statusText = fmt.Sprintf("exited! (%d)", *lastExit)
+					} else {
+						statusText = "exited!"
+					}
 				} else {
 					marker = "·"
-					stStyle = mutedStyle
-					statusText = "done"
+					if lastExit != nil && *lastExit != 0 {
+						stStyle = subErrStyle
+						statusText = fmt.Sprintf("✗ %d", *lastExit)
+					} else {
+						stStyle = mutedStyle
+						statusText = "done ✓"
+					}
 				}
 			case agent.ShellStatusClosed:
 				marker = "·"
@@ -2086,4 +2142,75 @@ func (a *App) diffForCall(call llm.ToolCall) string {
 		return ""
 	}
 	return renderDiff(diff, diffMaxLines)
+}
+
+// trackShellToolCall captures a shell_exec or shell_send_input tool call so
+// the shell pane can display the active command and mark the shell as busy.
+func (a *App) trackShellToolCall(tc *llm.ToolCall) {
+if tc == nil {
+return
+}
+switch tc.Name {
+case "shell_exec":
+var args struct {
+ID      string `json:"id"`
+Command string `json:"command"`
+Mode    string `json:"mode"`
+}
+if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
+return
+}
+a.shellCmds[args.ID] = args.Command
+// Only mark busy for sync mode (async returns immediately).
+if args.Mode != "async" {
+a.shellBusy[args.ID] = true
+}
+if a.viewSub == args.ID {
+a.refreshChatForce()
+}
+case "shell_send_input":
+var args struct {
+ID    string `json:"id"`
+Input string `json:"input"`
+}
+if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
+return
+}
+// Show the input as the "active command" but don't mark busy
+// (send_input is fire-and-forget from the tool perspective).
+a.shellCmds[args.ID] = args.Input
+if a.viewSub == args.ID {
+a.refreshChatForce()
+}
+}
+}
+
+// trackShellToolDone clears the busy flag and records the exit code when a
+// shell_exec tool result arrives.
+func (a *App) trackShellToolDone(result *llm.ToolResult, call llm.ToolCall) {
+if call.Name != "shell_exec" {
+return
+}
+var args struct {
+ID   string `json:"id"`
+Mode string `json:"mode"`
+}
+if err := json.Unmarshal(call.Arguments, &args); err != nil || args.ID == "" {
+return
+}
+a.shellBusy[args.ID] = false
+
+// Parse exit code from result content: Exec() appends "[exit N]" on
+// non-zero exits; absence of that suffix implies exit 0.
+code := 0
+if strings.Contains(result.Content, "[exit ") {
+idx := strings.LastIndex(result.Content, "[exit ")
+if idx >= 0 {
+fmt.Sscanf(result.Content[idx:], "[exit %d]", &code)
+}
+}
+a.shellLastExit[args.ID] = &code
+if a.viewSub == args.ID {
+a.refreshChatForce()
+}
 }
