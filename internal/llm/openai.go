@@ -175,16 +175,35 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		}
 	}
 
-	// DeepSeek (and strict OpenAI-compat providers) reject a message list
-	// that ends with an assistant tool_calls message without corresponding
-	// tool responses for every call. Trim any such trailing assistant message
-	// to avoid the 400 error.
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if a := last.OfAssistant; a != nil && len(a.ToolCalls) > 0 {
-			msgs = msgs[:len(msgs)-1]
+	// DeepSeek (and strict OpenAI-compat providers) require every assistant
+	// tool_calls message to be immediately followed by tool messages that
+	// respond to EACH tool_call_id. Two failure modes:
+	//   (a) trailing: assistant tool_calls at end with no tool responses
+	//       (e.g. streaming error happened before tools executed)
+	//   (b) mid-history gap: streaming error on one turn, user sends next turn,
+	//       so the bad assistant+partial tools sit in the middle of history
+	// Scan the full list; when a gap is found, remove the bad assistant message
+	// and any partial tool responses, splicing in whatever comes after.
+	for i := 0; i < len(msgs); i++ {
+		assist := msgs[i].OfAssistant
+		if assist == nil || len(assist.ToolCalls) == 0 {
+			continue
+		}
+		needed := make(map[string]struct{}, len(assist.ToolCalls))
+		for _, tc := range assist.ToolCalls {
+			needed[tc.ID] = struct{}{}
+		}
+		j := i + 1
+		for j < len(msgs) && msgs[j].OfTool != nil {
+			delete(needed, msgs[j].OfTool.ToolCallID)
+			j++
+		}
+		if len(needed) > 0 {
+			// Remove the incomplete assistant + partial tool responses; keep rest.
+			msgs = append(msgs[:i], msgs[j:]...)
+			i-- // recheck position i (now holds what was at j)
 		} else {
-			break
+			i = j - 1 // skip past the valid tool messages
 		}
 	}
 
