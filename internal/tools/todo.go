@@ -25,6 +25,7 @@ const (
 type TodoItem struct {
 	ID        int        `json:"id"`
 	Content   string     `json:"content"`
+	Notes     string     `json:"notes,omitempty"`      // extended description / context; not shown in sidebar summary
 	Status    TodoStatus `json:"status"`
 	ClaimedBy string     `json:"claimed_by,omitempty"` // sub-agent ID, "master", or empty
 }
@@ -74,17 +75,19 @@ func (*TodoWrite) Schema() json.RawMessage {
 "properties":{
   "action":{"type":"string","enum":["list","add","update","replace","clear","claim","release"]},
   "content":{"type":"string","description":"For action=add: a single todo's content."},
+  "notes":{"type":"string","description":"For action=add or action=update: extended description, context, or acceptance criteria for this item. Not shown in the sidebar summary — visible on demand."},
   "id":{"type":"integer","description":"For action=update."},
   "ids":{"type":"array","items":{"type":"integer"},"description":"For action=claim or action=release: the item IDs to operate on."},
   "claimed_by":{"type":"string","description":"For action=claim: who's claiming the items (sub-agent ID like 's3' or 'master')."},
   "status":{"type":"string","enum":["pending","in_progress","completed"],"description":"For action=update."},
   "items":{
     "type":"array",
-    "description":"For action=add or action=replace: full list. Each item: {content, status?}.",
+    "description":"For action=add or action=replace: full list. Each item: {content, notes?, status?}.",
     "items":{
       "type":"object",
       "properties":{
         "content":{"type":"string"},
+        "notes":{"type":"string","description":"Extended description / context for this item."},
         "status":{"type":"string","enum":["pending","in_progress","completed"]}
       },
       "required":["content"]
@@ -107,12 +110,14 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 	var p struct {
 		Action    string     `json:"action"`
 		Content   string     `json:"content"`
+		Notes     string     `json:"notes"`
 		ID        int        `json:"id"`
 		IDs       []int      `json:"ids"`
 		ClaimedBy string     `json:"claimed_by"`
 		Status    TodoStatus `json:"status"`
 		Items     []struct {
 			Content string     `json:"content"`
+			Notes   string     `json:"notes"`
 			Status  TodoStatus `json:"status"`
 		} `json:"items"`
 	}
@@ -128,8 +133,9 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 		if p.Content != "" {
 			toAdd = append(toAdd, struct {
 				Content string     `json:"content"`
+				Notes   string     `json:"notes"`
 				Status  TodoStatus `json:"status"`
-			}{Content: p.Content})
+			}{Content: p.Content, Notes: p.Notes})
 		}
 		if len(toAdd) == 0 {
 			return "", errors.New("add requires 'content' or 'items'")
@@ -140,19 +146,24 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 			if st == "" {
 				st = TodoPending
 			}
-			t.items = append(t.items, TodoItem{ID: t.nextID, Content: it.Content, Status: st})
+			t.items = append(t.items, TodoItem{ID: t.nextID, Content: it.Content, Notes: it.Notes, Status: st})
 		}
 	case "update":
 		if p.ID == 0 {
 			return "", errors.New("update requires 'id'")
 		}
-		if p.Status == "" {
-			return "", errors.New("update requires 'status'")
+		if p.Status == "" && p.Notes == "" {
+			return "", errors.New("update requires 'status' or 'notes'")
 		}
 		found := false
 		for i := range t.items {
 			if t.items[i].ID == p.ID {
-				t.items[i].Status = p.Status
+				if p.Status != "" {
+					t.items[i].Status = p.Status
+				}
+				if p.Notes != "" {
+					t.items[i].Notes = p.Notes
+				}
 				found = true
 				break
 			}
@@ -169,7 +180,7 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 			if st == "" {
 				st = TodoPending
 			}
-			t.items = append(t.items, TodoItem{ID: t.nextID, Content: it.Content, Status: st})
+			t.items = append(t.items, TodoItem{ID: t.nextID, Content: it.Content, Notes: it.Notes, Status: st})
 		}
 	case "clear":
 		t.items = nil
@@ -293,6 +304,9 @@ func (t *TodoWrite) render() string {
 			owner = " (→ " + it.ClaimedBy + ")"
 		}
 		sb.WriteString(fmt.Sprintf("%s #%d %s%s\n", mark, it.ID, it.Content, owner))
+		if it.Notes != "" {
+			sb.WriteString(fmt.Sprintf("       %s\n", it.Notes))
+		}
 	}
 	return strings.TrimRight(sb.String(), "\n")
 }

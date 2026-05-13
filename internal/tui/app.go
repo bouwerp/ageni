@@ -300,10 +300,11 @@ const spinnerInterval = 120 * time.Millisecond
 // Sentinel IDs used in the Tab-cycle list for the "show more" / "collapse"
 // rows. They are never real sub-agent or shell IDs (which are sN / shN).
 const (
-	sentinelMoreSubs    = "__subs_more__"
-	sentinelMoreShells  = "__shells_more__"
-	sentinelMoreTodos   = "__todos_more__"
-	sentinelOlderTodos  = "__todos_older__"
+	sentinelMoreSubs   = "__subs_more__"
+	sentinelMoreShells = "__shells_more__"
+	sentinelMoreTodos  = "__todos_more__"
+	sentinelOlderTodos = "__todos_older__"
+	sentinelTodoPrefix = "__todo_" // followed by numeric ID, e.g. "__todo_3"
 )
 
 // ansiEscape strips terminal escape sequences so shell output is legible
@@ -549,6 +550,11 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs ||
 				a.viewSub == sentinelMoreTodos || a.viewSub == sentinelOlderTodos):
 			a.openMorePopover()
+			return a, nil
+
+		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
+			strings.HasPrefix(a.viewSub, sentinelTodoPrefix):
+			a.openTodoDetail(a.viewSub)
 			return a, nil
 
 		case msg.Type == tea.KeyTab:
@@ -1215,11 +1221,40 @@ func (a *App) cycleView(dir int) {
 func (a *App) sidebarCycleList() []string {
 	var all []string
 
-	// Todos sentinel — todos appear in sidebar after master, before shells.
+	// Todos section — each visible todo is selectable; hidden overflow goes behind sentinel.
 	if a.todo != nil {
 		items := a.todo.Items()
-		if len(items) > a.sidebarMaxSubs {
-			// "…N more" sentinel is at the BOTTOM of the todos section.
+		sorted := sortedTodos(items)
+
+		// Recompute visible window (same logic as refreshSide).
+		activeCount := 0
+		for _, it := range sorted {
+			if it.Status != tools.TodoCompleted {
+				activeCount++
+			}
+		}
+		completedSlots := a.sidebarMaxSubs - activeCount
+		if completedSlots < 0 {
+			completedSlots = 0
+		} else if completedSlots > 2 {
+			completedSlots = 2
+		}
+		visibleCap := activeCount + completedSlots
+		if visibleCap > a.sidebarMaxSubs {
+			visibleCap = a.sidebarMaxSubs
+		}
+		if visibleCap < 1 && len(sorted) > 0 {
+			visibleCap = 1
+		}
+		visible := sorted
+		if len(sorted) > visibleCap {
+			visible = sorted[:visibleCap]
+		}
+
+		for _, it := range visible {
+			all = append(all, fmt.Sprintf("%s%d", sentinelTodoPrefix, it.ID))
+		}
+		if len(sorted) > len(visible) {
 			all = append(all, sentinelMoreTodos)
 		}
 	}
@@ -1931,7 +1966,17 @@ func (a *App) refreshSide() {
 				if it.ClaimedBy != "" {
 					owner = mutedStyle.Render(" →" + it.ClaimedBy)
 				}
-				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
+				sentinel := fmt.Sprintf("%s%d", sentinelTodoPrefix, it.ID)
+				if a.viewSub == sentinel {
+					// Selected: render highlighted; hint at notes if present.
+					hint := ""
+					if it.Notes != "" {
+						hint = mutedStyle.Render(" ↵")
+					}
+					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(fmt.Sprintf("%s %s", mark, content)) + hint + "\n")
+				} else {
+					sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
+				}
 			}
 
 			if activeCount == 0 {
@@ -2251,6 +2296,34 @@ func (a *App) View() string {
 	return lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
 }
 
+// openTodoDetail opens a popover showing the notes for the todo identified by
+// the given sentinel string (format: sentinelTodoPrefix + strconv.Itoa(id)).
+// If the item has no notes, nothing happens.
+func (a *App) openTodoDetail(sentinel string) {
+	if a.todo == nil {
+		return
+	}
+	idStr := strings.TrimPrefix(sentinel, sentinelTodoPrefix)
+	id := 0
+	fmt.Sscanf(idStr, "%d", &id)
+	if id == 0 {
+		return
+	}
+	for _, it := range a.todo.Items() {
+		if it.ID == id {
+			if it.Notes == "" {
+				return // nothing to show
+			}
+			a.popoverPrevSub = a.viewSub
+			a.popoverSel = 0
+			a.popoverItems = []string{idStr} // stores the todo ID as string
+			a.showMorePopup = "todo_detail"
+			a.refreshSide()
+			return
+		}
+	}
+}
+
 // openMorePopover initialises and opens the older-items popover.
 // The popover replaces the sidebar content with a selectable list of hidden
 // shells or sub-agents. Navigating the list switches the main pane live.
@@ -2429,6 +2502,50 @@ func (a *App) renderPopoverSidebar() string {
 						sb.WriteString(mutedStyle.Render(line) + "\n")
 					}
 				}
+				if idx == a.popoverSel && item.Notes != "" {
+					maxW := a.side.Width - 4
+					if maxW < 10 {
+						maxW = 10
+					}
+					notes := item.Notes
+					for len(notes) > 0 {
+						chunk := notes
+						if len(chunk) > maxW {
+							chunk = chunk[:maxW]
+						}
+						sb.WriteString(mutedStyle.Render("  "+chunk) + "\n")
+						notes = notes[len(chunk):]
+					}
+				}
+			}
+		}
+	case "todo_detail":
+		if a.todo != nil && len(a.popoverItems) > 0 {
+			id := 0
+			fmt.Sscanf(a.popoverItems[0], "%d", &id)
+			for _, it := range a.todo.Items() {
+				if it.ID == id {
+					sb.WriteString(titleStyle.Render(fmt.Sprintf("todo #%d", it.ID)) + "\n\n")
+					sb.WriteString(lipgloss.NewStyle().Bold(true).Render(it.Content) + "\n\n")
+					if it.Notes != "" {
+						maxW := a.side.Width - 4
+						if maxW < 10 {
+							maxW = 10
+						}
+						notes := it.Notes
+						for len(notes) > 0 {
+							chunk := notes
+							if len(chunk) > maxW {
+								chunk = chunk[:maxW]
+							}
+							sb.WriteString(mutedStyle.Render(chunk) + "\n")
+							notes = notes[len(chunk):]
+						}
+					} else {
+						sb.WriteString(mutedStyle.Render("(no notes)") + "\n")
+					}
+					break
+				}
 			}
 		}
 	}
@@ -2436,6 +2553,8 @@ func (a *App) renderPopoverSidebar() string {
 	footer := "↑↓ navigate · Enter select · Esc cancel"
 	if a.showMorePopup == "todos" {
 		footer = "↑↓ scroll · Enter/Esc close"
+	} else if a.showMorePopup == "todo_detail" {
+		footer = "Esc close"
 	}
 	sb.WriteString("\n" + mutedStyle.Render(footer))
 	return sb.String()
