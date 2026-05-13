@@ -1071,21 +1071,31 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // cycleView steps through the sub-agent and shell panes.
-// dir=1 goes master→newest→...→oldest→master; dir=-1 reverses (Shift+Tab).
+// dir=1 (Tab) goes master→newest shell→…→oldest shell→newest sub→…→oldest sub→master.
+// dir=-1 (ShiftTab) reverses. The order matches the sidebar's visual top-to-bottom layout.
 func (a *App) cycleView(dir int) {
-	all := make([]string, 0, len(a.subOrder)+len(a.shellOrder))
-	all = append(all, a.subOrder...)
-	all = append(all, a.shellOrder...)
+	// Build display order: shells newest-first, then sub-agents newest-first.
+	// This must match refreshSide's rendering order so Tab/ShiftTab move
+	// between visually adjacent items.
+	var all []string
+	for i := len(a.shellOrder) - 1; i >= 0; i-- {
+		all = append(all, a.shellOrder[i])
+	}
+	for i := len(a.subOrder) - 1; i >= 0; i-- {
+		all = append(all, a.subOrder[i])
+	}
 	n := len(all)
 	if n == 0 {
 		return
 	}
+
 	prevSub := a.viewSub
 	if a.viewSub == "" {
+		// Currently at master — move to first (dir>0) or last (dir<0) in list.
 		if dir > 0 {
-			a.viewSub = all[n-1]
-		} else {
 			a.viewSub = all[0]
+		} else {
+			a.viewSub = all[n-1]
 		}
 	} else {
 		idx := -1
@@ -1096,18 +1106,19 @@ func (a *App) cycleView(dir int) {
 			}
 		}
 		if idx < 0 {
+			// Current selection was removed — return to master.
 			a.viewSub = ""
 		} else if dir > 0 {
-			if idx == 0 {
-				a.viewSub = ""
-			} else {
-				a.viewSub = all[idx-1]
-			}
-		} else {
 			if idx == n-1 {
-				a.viewSub = ""
+				a.viewSub = "" // wrap around to master
 			} else {
 				a.viewSub = all[idx+1]
+			}
+		} else {
+			if idx == 0 {
+				a.viewSub = "" // wrap around to master
+			} else {
+				a.viewSub = all[idx-1]
 			}
 		}
 	}
@@ -1679,20 +1690,48 @@ func (a *App) subInlineIndicator(id string) string {
 
 func (a *App) refreshSide() {
 	var sb strings.Builder
+	frame := a.spinner()
 
-	// Todos first — always at the top so they stay visible even when many
-	// sub-agents are listed below them.
+	// ── master ──────────────────────────────────────────────────────────────
+	// Always show master as the first selectable entry so the user can see
+	// which pane is active and cycle back easily.
+	{
+		var masterMarker string
+		var masterSt lipgloss.Style
+		var masterLabel string
+		switch {
+		case a.masterToolIn != "":
+			masterMarker = frame
+			masterSt = subRunningStyle
+			masterLabel = a.masterToolIn
+		case a.masterBusy:
+			masterMarker = frame
+			masterSt = subRunningStyle
+			masterLabel = "thinking…"
+		default:
+			masterMarker = "◆"
+			masterSt = mutedStyle
+			masterLabel = "idle"
+		}
+		line := fmt.Sprintf("%s master  %s", masterMarker, masterLabel)
+		if a.viewSub == "" {
+			sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+		} else {
+			sb.WriteString(masterSt.Render(line) + "\n")
+		}
+	}
+
+	// ── todos ────────────────────────────────────────────────────────────────
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > 0 {
-			sb.WriteString(titleStyle.Render("todos") + "\n\n")
-			frame0 := a.spinner()
+			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
 			for _, it := range items {
 				mark := "[ ]"
 				style := mutedStyle
 				switch it.Status {
 				case tools.TodoInProgress:
-					mark = "[" + frame0 + "]"
+					mark = "[" + frame + "]"
 					style = subRunningStyle
 				case tools.TodoCompleted:
 					mark = "[✓]"
@@ -1704,46 +1743,11 @@ func (a *App) refreshSide() {
 				}
 				sb.WriteString(style.Render(fmt.Sprintf("%s %s", mark, it.Content)) + owner + "\n")
 			}
-			sb.WriteString("\n")
 		}
 	}
 
-	sb.WriteString(titleStyle.Render("sub-agents") + "\n\n")
-	if len(a.subOrder) == 0 {
-		sb.WriteString(mutedStyle.Render("(none yet)\n"))
-	}
-	frame := a.spinner()
-	// Newest first — iterate subOrder in reverse so the most recent agent
-	// is at the top, closest to the todos section.
-	for i := len(a.subOrder) - 1; i >= 0; i-- {
-		id := a.subOrder[i]
-		st := a.subStatus[id]
-		marker := "•"
-		st2 := subRunningStyle
-		label := string(st)
-		switch st {
-		case agent.StatusRunning:
-			marker = frame
-			if act := a.subActivity[id]; act != "" {
-				label = act
-			}
-		case agent.StatusDone:
-			st2 = subDoneStyle
-			marker = "✓"
-		case agent.StatusError, agent.StatusCancelled:
-			st2 = subErrStyle
-			marker = "✗"
-		}
-		line := fmt.Sprintf("%s %s  %s", marker, id, label)
-		if id == a.viewSub {
-			line = lipgloss.NewStyle().Reverse(true).Render(line)
-		}
-		sb.WriteString(st2.Render(line) + "\n")
-	}
-
-	// Shell sessions — listed after sub-agents.
-	// Services and tasks are rendered differently: services use a ⚙ icon and
-	// warn in red if they exit unexpectedly; tasks use ● / · and mute on exit.
+	// ── shells ───────────────────────────────────────────────────────────────
+	// Listed before sub-agents; newest first.
 	if len(a.shellOrder) > 0 {
 		sb.WriteString("\n" + titleStyle.Render("shells") + "\n\n")
 		for i := len(a.shellOrder) - 1; i >= 0; i-- {
@@ -1770,8 +1774,7 @@ func (a *App) refreshSide() {
 			switch st {
 			case agent.ShellStatusOpen:
 				if busy {
-					// A command is executing — braille spinner for both kinds.
-					marker = a.spinner()
+					marker = frame
 					stStyle = subRunningStyle
 					if isService {
 						statusText = "executing…"
@@ -1779,12 +1782,10 @@ func (a *App) refreshSide() {
 						statusText = "running…"
 					}
 				} else if isService {
-					// Service is alive and waiting — pulse ◉/○ to show heartbeat.
 					marker = servicePulse()
 					stStyle = subRunningStyle
 					statusText = "alive"
 				} else {
-					// Task shell — static icons based on last outcome.
 					if lastExit == nil {
 						marker = "○"
 						stStyle = mutedStyle
@@ -1801,7 +1802,6 @@ func (a *App) refreshSide() {
 				}
 			case agent.ShellStatusExited:
 				if isService {
-					// Unexpected termination — ⊗ signals "dead server", needs attention.
 					marker = "⊗"
 					stStyle = subErrStyle
 					if lastExit != nil {
@@ -1810,7 +1810,6 @@ func (a *App) refreshSide() {
 						statusText = "terminated!"
 					}
 				} else {
-					// Task finished — show final exit result.
 					if lastExit != nil && *lastExit != 0 {
 						marker = "✗"
 						stStyle = subErrStyle
@@ -1833,16 +1832,46 @@ func (a *App) refreshSide() {
 			}
 			line := fmt.Sprintf("%s %s  %s", marker, display, statusText)
 			if id == a.viewSub {
-				line = lipgloss.NewStyle().Reverse(true).Render(line)
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+			} else {
+				sb.WriteString(stStyle.Render(line) + "\n")
 			}
-			sb.WriteString(stStyle.Render(line) + "\n")
 		}
 	}
 
-	// Changed files — single source of truth for "what has this session
-	// touched on disk". Refreshed on every refreshSide() call (cheap; just
-	// reads the in-memory list). Most-recent first, capped to the side
-	// pane's reasonable height.
+	// ── sub-agents ───────────────────────────────────────────────────────────
+	// Listed after shells; newest first.
+	if len(a.subOrder) > 0 {
+		sb.WriteString("\n" + titleStyle.Render("sub-agents") + "\n\n")
+		for i := len(a.subOrder) - 1; i >= 0; i-- {
+			id := a.subOrder[i]
+			st := a.subStatus[id]
+			marker := "•"
+			st2 := subRunningStyle
+			label := string(st)
+			switch st {
+			case agent.StatusRunning:
+				marker = frame
+				if act := a.subActivity[id]; act != "" {
+					label = act
+				}
+			case agent.StatusDone:
+				st2 = subDoneStyle
+				marker = "✓"
+			case agent.StatusError, agent.StatusCancelled:
+				st2 = subErrStyle
+				marker = "✗"
+			}
+			line := fmt.Sprintf("%s %s  %s", marker, id, label)
+			if id == a.viewSub {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+			} else {
+				sb.WriteString(st2.Render(line) + "\n")
+			}
+		}
+	}
+
+	// ── changed files ────────────────────────────────────────────────────────
 	if a.changes != nil {
 		summary := a.changes.Summary()
 		if len(summary) > 0 {
