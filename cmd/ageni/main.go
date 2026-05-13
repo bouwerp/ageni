@@ -254,6 +254,17 @@ func run() error {
 		r.Register(tools.GitHub{})
 		r.Register(tools.PkgInfo{})
 		r.Register(todo)
+		// Vision: use master provider credentials; fall back to gpt-4o model name.
+		// Providers that don't support vision will return an error per-call.
+		visionModel := cfg.Master.Model
+		if vm := os.Getenv("VISION_MODEL"); vm != "" {
+			visionModel = vm
+		}
+		r.Register(tools.ViewImage{
+			APIKey:  cfg.Master.APIKey,
+			BaseURL: cfg.Master.BaseURL,
+			Model:   visionModel,
+		})
 		if skillReg != nil {
 			r.Register(skills.ReadSkill{Registry: skillReg})
 		}
