@@ -310,6 +310,9 @@ func run() error {
 	// inherit a lifetime that outlives any individual master turn.
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 	manager.SetDefaultBudget(cfg.SubagentBudget)
+	if secretStore != nil {
+		manager.SetScrubber(secretStore.Redactor().Scrub)
+	}
 
 	// Shell session manager — shared across master and all sub-agents.
 	shellMgr := agent.NewShellManager(bus)
@@ -353,6 +356,9 @@ func run() error {
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	master.SetTodo(todo)
+	if secretStore != nil {
+		master.SetScrubber(secretStore.Redactor().Scrub)
+	}
 	if masterLeadAdapter != nil {
 		master.SetLead(masterLeadAdapter, cfg.MasterLead.Model)
 		fmt.Printf("Master lead model: %s/%s (worker: %s/%s)\n",

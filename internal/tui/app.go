@@ -300,9 +300,10 @@ const spinnerInterval = 120 * time.Millisecond
 // Sentinel IDs used in the Tab-cycle list for the "show more" / "collapse"
 // rows. They are never real sub-agent or shell IDs (which are sN / shN).
 const (
-	sentinelMoreSubs   = "__subs_more__"
-	sentinelMoreShells = "__shells_more__"
-	sentinelMoreTodos  = "__todos_more__"
+	sentinelMoreSubs    = "__subs_more__"
+	sentinelMoreShells  = "__shells_more__"
+	sentinelMoreTodos   = "__todos_more__"
+	sentinelOlderTodos  = "__todos_older__"
 )
 
 // ansiEscape strips terminal escape sequences so shell output is legible
@@ -545,7 +546,8 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── open popover ─────────────────────────────────────────────────────
 		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
-			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs || a.viewSub == sentinelMoreTodos):
+			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs ||
+				a.viewSub == sentinelMoreTodos || a.viewSub == sentinelOlderTodos):
 			a.openMorePopover()
 			return a, nil
 
@@ -1217,7 +1219,8 @@ func (a *App) sidebarCycleList() []string {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > a.sidebarMaxSubs {
-			all = append(all, sentinelMoreTodos)
+			// "…N older" sentinel is at the TOP of the todos section.
+			all = append(all, sentinelOlderTodos)
 		}
 	}
 
@@ -1865,14 +1868,27 @@ func (a *App) refreshSide() {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > 0 {
-			// Show the first sidebarMaxSubs items (oldest at top); newer ones behind the popover.
-			visible := items
+			// Natural insertion order: oldest at top, newest at bottom.
+			// Show the last sidebarMaxSubs items; older ones overflow behind "…N older" at top.
+			start := 0
 			if len(items) > a.sidebarMaxSubs {
-				visible = items[:a.sidebarMaxSubs]
+				start = len(items) - a.sidebarMaxSubs
 			}
-			hiddenTodos := len(items) - len(visible)
+			visible := items[start:]
+			olderCount := start
 
 			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
+
+			// "… N older" sentinel at the TOP for items that fell off.
+			if olderCount > 0 {
+				olderText := fmt.Sprintf("  … %d older  ↵", olderCount)
+				if a.viewSub == sentinelOlderTodos {
+					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(olderText) + "\n")
+				} else {
+					sb.WriteString(mutedStyle.Render(olderText) + "\n")
+				}
+			}
+
 			for _, it := range visible {
 				var mark string
 				var lineStyle lipgloss.Style
@@ -1902,16 +1918,6 @@ func (a *App) refreshSide() {
 					owner = mutedStyle.Render(" →" + it.ClaimedBy)
 				}
 				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
-			}
-
-			// "… N newer" sentinel row for todos.
-			if hiddenTodos > 0 {
-				moreText := fmt.Sprintf("  … %d newer  ↵", hiddenTodos)
-				if a.viewSub == sentinelMoreTodos {
-					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
-				} else {
-					sb.WriteString(mutedStyle.Render(moreText) + "\n")
-				}
 			}
 		}
 	}
@@ -2245,16 +2251,18 @@ func (a *App) openMorePopover() {
 		for i := subEnd - 1; i >= 0; i-- {
 			a.popoverItems = append(a.popoverItems, a.subOrder[i])
 		}
-	case sentinelMoreTodos:
+	case sentinelMoreTodos, sentinelOlderTodos:
 		a.showMorePopup = "todos"
 		a.popoverItems = nil
 		if a.todo != nil {
 			items := a.todo.Items()
-			// Newer = items after the visible cap (shown oldest-first in sidebar).
+			start := 0
 			if len(items) > a.sidebarMaxSubs {
-				for i := a.sidebarMaxSubs; i < len(items); i++ {
-					a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
-				}
+				start = len(items) - a.sidebarMaxSubs
+			}
+			// Popover shows the older items (before the visible window).
+			for i := 0; i < start; i++ {
+				a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
 			}
 		}
 	}
@@ -2360,17 +2368,16 @@ func (a *App) renderPopoverSidebar() string {
 			}
 		}
 	case "todos":
-		sb.WriteString(titleStyle.Render("newer todos") + "\n\n")
+		sb.WriteString(titleStyle.Render("older todos") + "\n\n")
 		if a.todo != nil {
 			items := a.todo.Items()
-			// Newer = items after the visible cap.
-			start := a.sidebarMaxSubs
-			if start > len(items) {
-				start = len(items)
+			start := 0
+			if len(items) > a.sidebarMaxSubs {
+				start = len(items) - a.sidebarMaxSubs
 			}
-			for i := start; i < len(items); i++ {
+			for i := 0; i < start; i++ {
 				item := items[i]
-				idx := i - start // selection index within this popover
+				idx := i // selection index within this popover
 				var line string
 				text := item.Content
 				if len(text) > 34 {

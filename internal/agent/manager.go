@@ -62,6 +62,14 @@ func (m *Manager) SetSkillCatalog(catalog string) {
 	m.mu.Unlock()
 }
 
+// SetScrubber sets the scrubber function that will be applied to all
+// newly-spawned sub-agents. Existing sub-agents are unaffected.
+func (m *Manager) SetScrubber(f func(string) string) {
+	m.mu.Lock()
+	m.scrubber = f
+	m.mu.Unlock()
+}
+
 // SetDefaultBudget updates the default tool-call budget applied to every
 // spawn that doesn't override it. Existing sub-agents are unaffected.
 func (m *Manager) SetDefaultBudget(n int) {
@@ -116,6 +124,9 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
 	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog)
+	if m.scrubber != nil {
+		sub.SetScrubber(m.scrubber)
+	}
 	m.subs[id] = sub
 	rootCtx := m.rootCtx
 	m.mu.Unlock()
