@@ -69,6 +69,8 @@ type App struct {
 	subBufs           map[string]*strings.Builder
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
+	subObjectives  map[string]string // first line of each sub-agent's objective
+	sidebarMaxSubs int               // max sub-agents shown in sidebar (AGENI_SIDEBAR_SUBAGENTS)
 
 	// Shell sessions opened by the master or sub-agents.
 	shellBufs     map[string]*strings.Builder
@@ -193,6 +195,8 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		currentSubText: make(map[string]*strings.Builder),
 		subStatus:      make(map[string]agent.SubagentStatus),
 		subActivity:    make(map[string]string),
+		subObjectives:  make(map[string]string),
+		sidebarMaxSubs: intFromEnvOr("AGENI_SIDEBAR_SUBAGENTS", 5),
 		subRenderedUpTo:  make(map[string]int),
 		subRenderedCache: make(map[string]string),
 		shellBufs:     make(map[string]*strings.Builder),
@@ -269,6 +273,17 @@ func (a *App) LoadHistory(messages []llm.Message) {
 type busEvtMsg agent.Event
 type usageMsg llm.TrackerSnapshot
 type tickMsg time.Time
+
+// intFromEnvOr reads an integer from an env var, falling back to def.
+func intFromEnvOr(key string, def int) int {
+	if v := os.Getenv(key); v != "" {
+		var n int
+		if _, err := fmt.Sscanf(v, "%d", &n); err == nil && n > 0 {
+			return n
+		}
+	}
+	return def
+}
 
 // spinnerFrames is a 10-frame braille animation. Picked over dots because it
 // reads as motion at the 120ms tick rate and renders correctly in a single
@@ -1075,13 +1090,18 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 // dir=-1 (ShiftTab) reverses. The order matches the sidebar's visual top-to-bottom layout.
 func (a *App) cycleView(dir int) {
 	// Build display order: shells newest-first, then sub-agents newest-first.
+	// Only include sub-agents that are visible in the sidebar (the last sidebarMaxSubs).
 	// This must match refreshSide's rendering order so Tab/ShiftTab move
 	// between visually adjacent items.
 	var all []string
 	for i := len(a.shellOrder) - 1; i >= 0; i-- {
 		all = append(all, a.shellOrder[i])
 	}
-	for i := len(a.subOrder) - 1; i >= 0; i-- {
+	subStart := 0
+	if len(a.subOrder) > a.sidebarMaxSubs {
+		subStart = len(a.subOrder) - a.sidebarMaxSubs
+	}
+	for i := len(a.subOrder) - 1; i >= subStart; i-- {
 		all = append(all, a.subOrder[i])
 	}
 	n := len(all)
@@ -1234,6 +1254,12 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.subStatus[ev.SubagentID] = agent.StatusRunning
 		a.subActivity[ev.SubagentID] = "spawning"
 		a.subOrder = append(a.subOrder, ev.SubagentID)
+		// Store a compact version of the objective for sidebar display.
+		obj := ev.SubagentTask
+		if i := strings.IndexAny(obj, "\n\r"); i >= 0 {
+			obj = obj[:i]
+		}
+		a.subObjectives[ev.SubagentID] = obj
 		header := titleStyle.Render(ev.SubagentID+" — "+ev.SubagentModel) + "\n" +
 			styledLines(toolArgsStyle, ev.SubagentTask) + "\n\n"
 		a.subBufs[ev.SubagentID].WriteString(header)
@@ -1840,11 +1866,24 @@ func (a *App) refreshSide() {
 	}
 
 	// ── sub-agents ───────────────────────────────────────────────────────────
-	// Listed after shells; newest first.
+	// Listed after shells; newest first, capped to sidebarMaxSubs.
 	if len(a.subOrder) > 0 {
-		sb.WriteString("\n" + titleStyle.Render("sub-agents") + "\n\n")
-		for i := len(a.subOrder) - 1; i >= 0; i-- {
-			id := a.subOrder[i]
+		// Determine visible slice: newest sidebarMaxSubs entries.
+		start := 0
+		if len(a.subOrder) > a.sidebarMaxSubs {
+			start = len(a.subOrder) - a.sidebarMaxSubs
+		}
+		visible := a.subOrder[start:]
+		hidden := len(a.subOrder) - len(visible)
+
+		header := "sub-agents"
+		if hidden > 0 {
+			header = fmt.Sprintf("sub-agents (+%d older)", hidden)
+		}
+		sb.WriteString("\n" + titleStyle.Render(header) + "\n\n")
+
+		for i := len(visible) - 1; i >= 0; i-- {
+			id := visible[i]
 			st := a.subStatus[id]
 			marker := "•"
 			st2 := subRunningStyle
@@ -1867,6 +1906,14 @@ func (a *App) refreshSide() {
 				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
 			} else {
 				sb.WriteString(st2.Render(line) + "\n")
+			}
+			// Show a short, truncated objective beneath the status line.
+			if obj := a.subObjectives[id]; obj != "" {
+				maxW := 28
+				if len(obj) > maxW {
+					obj = obj[:maxW-1] + "…"
+				}
+				sb.WriteString(mutedStyle.Render("  "+obj) + "\n")
 			}
 		}
 	}
