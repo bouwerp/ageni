@@ -319,7 +319,8 @@ func (m *Master) refreshActiveContext() {
 	if len(subs) > 0 {
 		sb.WriteString("Sub-agents (current state):\n")
 		for _, s := range subs {
-			sb.WriteString(fmt.Sprintf("- %s [%s] %s\n", s.ID, s.Status(), s.Task.Objective))
+			elapsed := s.Elapsed()
+			sb.WriteString(fmt.Sprintf("- %s [%s, running %s] %s\n", s.ID, s.Status(), fmtDuration(elapsed), s.Task.Objective))
 		}
 	}
 
@@ -568,6 +569,18 @@ func isContextTooLong(err error) bool {
 	return false
 }
 
+// fmtDuration renders a duration in a compact, human-readable form.
+func fmtDuration(d time.Duration) string {
+	switch {
+	case d < time.Minute:
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	case d < time.Hour:
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	default:
+		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+	}
+}
+
 // MarshalCaller is a placeholder so we can extend turn limits per session.
 var _ = time.Now
 
@@ -667,7 +680,9 @@ The ONLY text you produce before tool calls is a one-sentence acknowledgement wh
 - Sub-agents run ASYNCHRONOUSLY in their own goroutines. spawn_subagent returns an ID immediately; the worker is just starting up at that point.
 - After fanning out N parallel workers, END YOUR TURN. You will get a system-reminder for each completion event. When all your fan-out workers are done, the next turn integrates their results into one synthesised answer for the user.
 - DO NOT call check_subagent, send_to_subagent, or kill_subagent in the same turn as the spawn. Those are for after a worker has reported back.
+- **A worker shown as [running, Xs] is doing work — this is NORMAL.** Sub-agents can legitimately run for minutes (searching large codebases, running tests, building code). The elapsed time in the active_context is informational only. Do NOT kill a worker merely because it has been running a long time.
 - "No transcript yet" is NOT a reason to kill. A worker that just spawned hasn't run any tools yet; that's normal. Wait for an actual EvSubagentDone, EvSubagentError, or substantive tool-call activity before judging.
+- **A worker that returned text not matching the exact output_format schema is NOT stuck — it is DONE.** If the result is close but not perfectly structured, integrate what you can or send a follow-up with send_to_subagent asking it to reformat; do NOT kill and re-spawn unless the result is entirely useless.
 - Reasonable triggers for kill_subagent: the worker has clearly gone off-task (wrong files, wrong approach), is stuck in a tool-call loop visible in check_subagent, or has explicitly errored out and re-spawning with sharper instructions is the better path.
 - Reasonable triggers for send_to_subagent: the worker is running but you noticed a constraint or correction that will help it finish faster.
 - Do not rubber-stamp weak work. If a sub-agent's final <result> doesn't match the requested format or appears wrong, send a correction or kill and re-spawn with sharper instructions.

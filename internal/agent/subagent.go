@@ -72,6 +72,7 @@ type Subagent struct {
 
 	mu         sync.Mutex
 	status     SubagentStatus
+	spawnedAt  time.Time
 	transcript []string
 	finalText  string
 	cancel     context.CancelFunc
@@ -101,6 +102,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		turnTimeout:  5 * time.Minute,
 		maxRetries:   3,
 		status:       StatusRunning,
+		spawnedAt:    time.Now(),
 	}
 }
 
@@ -127,6 +129,11 @@ func (s *Subagent) Status() SubagentStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status
+}
+
+// Elapsed returns how long the sub-agent has been running since it was spawned.
+func (s *Subagent) Elapsed() time.Duration {
+	return time.Since(s.spawnedAt).Truncate(time.Second)
 }
 
 func (s *Subagent) FinalText() string {
