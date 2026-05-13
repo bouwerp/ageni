@@ -71,8 +71,7 @@ type App struct {
 	subOrder       []string
 	subObjectives  map[string]string // first line of each sub-agent's objective
 	sidebarMaxSubs int               // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
-	subsExpanded   bool              // show all sub-agents (beyond sidebarMaxSubs)
-	shellsExpanded bool              // show all shells (beyond sidebarMaxSubs)
+	showMorePopup  string            // "shells" or "subs" when the older-items popup is open
 
 	// Shell sessions opened by the master or sub-agents.
 	shellBufs     map[string]*strings.Builder
@@ -490,10 +489,33 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.Type == tea.KeyCtrlC:
 			a.cancel()
 			return a, tea.Quit
+		case msg.Type == tea.KeyEsc && a.showMorePopup != "":
+			a.showMorePopup = ""
+			a.refreshSide()
+			return a, nil
+		case (msg.Type == tea.KeyEnter || msg.String() == " ") && a.showMorePopup != "":
+			a.showMorePopup = ""
+			a.refreshSide()
+			return a, nil
+		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
+			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs):
+			if a.viewSub == sentinelMoreShells {
+				a.showMorePopup = "shells"
+			} else {
+				a.showMorePopup = "subs"
+			}
+			a.refreshSide()
+			return a, nil
 		case msg.Type == tea.KeyTab:
+			if a.showMorePopup != "" {
+				a.showMorePopup = ""
+			}
 			a.cycleView(1)
 			return a, nil
 		case msg.Type == tea.KeyShiftTab:
+			if a.showMorePopup != "" {
+				a.showMorePopup = ""
+			}
 			a.cycleView(-1)
 			return a, nil
 		case msg.Type == tea.KeyEsc:
@@ -1098,8 +1120,8 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 // cycleView steps through the master, shell, and sub-agent panes.
 // dir=1 (Tab) moves down the sidebar; dir=-1 (ShiftTab) moves up.
 // The order matches the sidebar's visual top-to-bottom layout exactly.
-// Sentinel IDs (sentinelMoreShells, sentinelMoreSubs) expand collapsed sections
-// and are consumed immediately — the cursor jumps to the next real item.
+// Sentinels (sentinelMoreShells, sentinelMoreSubs) are real stops; pressing
+// Enter/Space while on one opens the older-items popup.
 func (a *App) cycleView(dir int) {
 	all := a.sidebarCycleList()
 	n := len(all)
@@ -1139,21 +1161,6 @@ func (a *App) cycleView(dir int) {
 		}
 	}
 
-	// Sentinels are not real panes — consume them: expand the section and
-	// advance one more step in the same direction.
-	if a.viewSub == sentinelMoreShells {
-		a.shellsExpanded = true
-		a.viewSub = prevSub // rebuild with expanded list
-		a.cycleView(dir)
-		return
-	}
-	if a.viewSub == sentinelMoreSubs {
-		a.subsExpanded = true
-		a.viewSub = prevSub
-		a.cycleView(dir)
-		return
-	}
-
 	if a.viewSub != prevSub {
 		a.refreshChatForce()
 	} else {
@@ -1162,32 +1169,32 @@ func (a *App) cycleView(dir int) {
 }
 
 // sidebarCycleList returns the ordered list of IDs that Tab can cycle through,
-// matching the sidebar's visual top-to-bottom order. Sentinels are included so
-// they can trigger section expansion.
+// matching the sidebar's visual top-to-bottom order. Includes sentinel IDs when
+// a section has hidden entries — pressing Enter/Space on a sentinel opens the popup.
 func (a *App) sidebarCycleList() []string {
 	var all []string
 
-	// Shells section.
+	// Shells section: newest first, capped.
 	shellStart := 0
-	if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+	if len(a.shellOrder) > a.sidebarMaxSubs {
 		shellStart = len(a.shellOrder) - a.sidebarMaxSubs
 	}
 	for i := len(a.shellOrder) - 1; i >= shellStart; i-- {
 		all = append(all, a.shellOrder[i])
 	}
-	if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+	if len(a.shellOrder) > a.sidebarMaxSubs {
 		all = append(all, sentinelMoreShells)
 	}
 
-	// Sub-agents section.
+	// Sub-agents section: newest first, capped.
 	subStart := 0
-	if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+	if len(a.subOrder) > a.sidebarMaxSubs {
 		subStart = len(a.subOrder) - a.sidebarMaxSubs
 	}
 	for i := len(a.subOrder) - 1; i >= subStart; i-- {
 		all = append(all, a.subOrder[i])
 	}
-	if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+	if len(a.subOrder) > a.sidebarMaxSubs {
 		all = append(all, sentinelMoreSubs)
 	}
 
@@ -1819,10 +1826,10 @@ func (a *App) refreshSide() {
 	}
 
 	// ── shells ───────────────────────────────────────────────────────────────
-	// Listed before sub-agents; newest first, capped to sidebarMaxSubs unless expanded.
+	// Listed before sub-agents; newest first, capped to sidebarMaxSubs.
 	if len(a.shellOrder) > 0 {
 		shellStart := 0
-		if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+		if len(a.shellOrder) > a.sidebarMaxSubs {
 			shellStart = len(a.shellOrder) - a.sidebarMaxSubs
 		}
 		visibleShells := a.shellOrder[shellStart:]
@@ -1916,9 +1923,9 @@ func (a *App) refreshSide() {
 			}
 		}
 
-		// "… N older" row — selectable, triggers expansion.
+		// "… N older" sentinel row — highlighted when selected; Enter/Space opens popup.
 		if hiddenShells > 0 {
-			moreText := fmt.Sprintf("  … %d older", hiddenShells)
+			moreText := fmt.Sprintf("  … %d older  ↵", hiddenShells)
 			if a.viewSub == sentinelMoreShells {
 				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
 			} else {
@@ -1928,10 +1935,10 @@ func (a *App) refreshSide() {
 	}
 
 	// ── sub-agents ───────────────────────────────────────────────────────────
-	// Listed after shells; newest first, capped to sidebarMaxSubs unless expanded.
+	// Listed after shells; newest first, capped to sidebarMaxSubs.
 	if len(a.subOrder) > 0 {
 		subStart := 0
-		if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+		if len(a.subOrder) > a.sidebarMaxSubs {
 			subStart = len(a.subOrder) - a.sidebarMaxSubs
 		}
 		visibleSubs := a.subOrder[subStart:]
@@ -1974,9 +1981,9 @@ func (a *App) refreshSide() {
 			}
 		}
 
-		// "… N older" row — selectable, triggers expansion.
+		// "… N older" sentinel row — highlighted when selected; Enter/Space opens popup.
 		if hiddenSubs > 0 {
-			moreText := fmt.Sprintf("  … %d older", hiddenSubs)
+			moreText := fmt.Sprintf("  … %d older  ↵", hiddenSubs)
 			if a.viewSub == sentinelMoreSubs {
 				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
 			} else {
@@ -2116,7 +2123,125 @@ func (a *App) View() string {
 		suggest := a.atComp.render(a.width)
 		return lipgloss.JoinVertical(lipgloss.Left, body, suggest, in, bottom)
 	}
-	return lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
+	base := lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
+	if a.showMorePopup != "" {
+		return a.overlayMorePopup(base)
+	}
+	return base
+}
+
+// overlayMorePopup renders the full-screen view with a centered popup overlaid.
+// We do this by drawing the popup box using lipgloss.Place(), which centers it
+// on a blank canvas the same size as the terminal. The caller's base view is
+// shown in the background through the terminal's own previous rendering.
+func (a *App) overlayMorePopup(base string) string {
+	popup := a.renderMorePopup()
+	// Place the popup centered on a canvas the size of the terminal.
+	// lipgloss.Place fills unused space with blanks, effectively dimming the bg.
+	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, popup)
+}
+
+// renderMorePopup builds the bordered popup box listing all older shells or subs.
+func (a *App) renderMorePopup() string {
+	popupW := min(a.width-8, 60)
+
+	var title string
+	var lines []string
+
+	switch a.showMorePopup {
+	case "shells":
+		title = "older shells"
+		shellEnd := len(a.shellOrder) - a.sidebarMaxSubs
+		if shellEnd < 0 {
+			shellEnd = 0
+		}
+		for i := shellEnd - 1; i >= 0; i-- {
+			id := a.shellOrder[i]
+			st := a.shellStatus[id]
+			kind := a.shellKinds[id]
+			shellLabel := a.shellLabels[id]
+			lastExit := a.shellLastExit[id]
+
+			marker := "·"
+			statusText := string(st)
+			switch st {
+			case agent.ShellStatusOpen:
+				if kind == agent.ShellKindService {
+					marker = "○"
+					statusText = "alive"
+				} else {
+					marker = "○"
+					statusText = "ready"
+				}
+			case agent.ShellStatusExited:
+				if kind == agent.ShellKindService {
+					marker = "⊗"
+					statusText = "terminated"
+				} else if lastExit != nil && *lastExit != 0 {
+					marker = "✗"
+					statusText = fmt.Sprintf("exit %d", *lastExit)
+				} else {
+					marker = "✓"
+					statusText = "done"
+				}
+			case agent.ShellStatusClosed:
+				marker = "·"
+				statusText = "closed"
+			}
+
+			display := id
+			if shellLabel != "" {
+				display = fmt.Sprintf("%s  %s", id, shellLabel)
+			}
+			lines = append(lines, fmt.Sprintf("%s %s  %s", marker, display, statusText))
+		}
+
+	case "subs":
+		title = "older sub-agents"
+		subEnd := len(a.subOrder) - a.sidebarMaxSubs
+		if subEnd < 0 {
+			subEnd = 0
+		}
+		for i := subEnd - 1; i >= 0; i-- {
+			id := a.subOrder[i]
+			st := a.subStatus[id]
+			marker := "•"
+			label := string(st)
+			switch st {
+			case agent.StatusDone:
+				marker = "✓"
+			case agent.StatusError, agent.StatusCancelled:
+				marker = "✗"
+			}
+			line := fmt.Sprintf("%s %s  %s", marker, id, label)
+			if obj := a.subObjectives[id]; obj != "" {
+				maxW := popupW - 8
+				if len(obj) > maxW {
+					obj = obj[:maxW-1] + "…"
+				}
+				line += "\n  " + mutedStyle.Render(obj)
+			}
+			lines = append(lines, line)
+		}
+	}
+
+	if len(lines) == 0 {
+		lines = []string{"(none)"}
+	}
+
+	inner := strings.Join(lines, "\n")
+	footer := mutedStyle.Render("Esc · Space · Enter  to close")
+
+	content := titleStyle.Render(title) + "\n\n" + inner + "\n\n" + footer
+
+	box := lipgloss.NewStyle().
+		Border(lipgloss.RoundedBorder()).
+		BorderForeground(lipgloss.Color("99")).
+		Padding(1, 2).
+		Width(popupW).
+		Render(content)
+
+	return box
 }
 
 func (a *App) statusLine() string {
