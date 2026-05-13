@@ -1219,8 +1219,8 @@ func (a *App) sidebarCycleList() []string {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > a.sidebarMaxSubs {
-			// "…N older" sentinel is at the TOP of the todos section.
-			all = append(all, sentinelOlderTodos)
+			// "…N more" sentinel is at the BOTTOM of the todos section.
+			all = append(all, sentinelMoreTodos)
 		}
 	}
 
@@ -1868,26 +1868,17 @@ func (a *App) refreshSide() {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > 0 {
-			// Natural insertion order: oldest at top, newest at bottom.
-			// Show the last sidebarMaxSubs items; older ones overflow behind "…N older" at top.
-			start := 0
-			if len(items) > a.sidebarMaxSubs {
-				start = len(items) - a.sidebarMaxSubs
+			// Display sort: active items (pending/in-progress, oldest first) at
+			// top so they're always visible; completed items at bottom (oldest
+			// first). This is display-only — the backing store is untouched.
+			sorted := sortedTodos(items)
+			visible := sorted
+			if len(sorted) > a.sidebarMaxSubs {
+				visible = sorted[:a.sidebarMaxSubs]
 			}
-			visible := items[start:]
-			olderCount := start
+			hiddenCount := len(sorted) - len(visible)
 
 			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
-
-			// "… N older" sentinel at the TOP for items that fell off.
-			if olderCount > 0 {
-				olderText := fmt.Sprintf("  … %d older  ↵", olderCount)
-				if a.viewSub == sentinelOlderTodos {
-					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(olderText) + "\n")
-				} else {
-					sb.WriteString(mutedStyle.Render(olderText) + "\n")
-				}
-			}
 
 			for _, it := range visible {
 				var mark string
@@ -1918,6 +1909,16 @@ func (a *App) refreshSide() {
 					owner = mutedStyle.Render(" →" + it.ClaimedBy)
 				}
 				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
+			}
+
+			// "… N more" sentinel at the BOTTOM for hidden items (usually completed).
+			if hiddenCount > 0 {
+				moreText := fmt.Sprintf("  … %d more  ↵", hiddenCount)
+				if a.viewSub == sentinelMoreTodos {
+					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
+				} else {
+					sb.WriteString(mutedStyle.Render(moreText) + "\n")
+				}
 			}
 		}
 	}
@@ -2255,14 +2256,9 @@ func (a *App) openMorePopover() {
 		a.showMorePopup = "todos"
 		a.popoverItems = nil
 		if a.todo != nil {
-			items := a.todo.Items()
-			start := 0
-			if len(items) > a.sidebarMaxSubs {
-				start = len(items) - a.sidebarMaxSubs
-			}
-			// Popover shows the older items (before the visible window).
-			for i := 0; i < start; i++ {
-				a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
+			sorted := sortedTodos(a.todo.Items())
+			for i := a.sidebarMaxSubs; i < len(sorted); i++ {
+				a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", sorted[i].ID))
 			}
 		}
 	}
@@ -2368,16 +2364,16 @@ func (a *App) renderPopoverSidebar() string {
 			}
 		}
 	case "todos":
-		sb.WriteString(titleStyle.Render("older todos") + "\n\n")
+		sb.WriteString(titleStyle.Render("more todos") + "\n\n")
 		if a.todo != nil {
-			items := a.todo.Items()
-			start := 0
-			if len(items) > a.sidebarMaxSubs {
-				start = len(items) - a.sidebarMaxSubs
+			sorted := sortedTodos(a.todo.Items())
+			start := a.sidebarMaxSubs
+			if start > len(sorted) {
+				start = len(sorted)
 			}
-			for i := 0; i < start; i++ {
-				item := items[i]
-				idx := i // selection index within this popover
+			for i := start; i < len(sorted); i++ {
+				item := sorted[i]
+				idx := i - start
 				var line string
 				text := item.Content
 				if len(text) > 34 {
@@ -2680,4 +2676,22 @@ a.shellLastExit[args.ID] = &code
 if a.viewSub == args.ID {
 a.refreshChatForce()
 }
+}
+
+// sortedTodos returns a display-order copy of items: active items (pending +
+// in-progress) first, sorted by ID ascending (oldest first), followed by
+// completed items sorted by ID ascending (oldest first). This ensures active
+// work is always visible at the top of the sidebar regardless of the order
+// the backing store holds items in (e.g. after a replace action).
+func sortedTodos(items []tools.TodoItem) []tools.TodoItem {
+var active, done []tools.TodoItem
+for _, it := range items {
+if it.Status == tools.TodoCompleted {
+done = append(done, it)
+} else {
+active = append(active, it)
+}
+}
+// Both slices already arrive in ID order from the store; no explicit sort needed.
+return append(active, done...)
 }
