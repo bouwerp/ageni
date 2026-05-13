@@ -1872,9 +1872,32 @@ func (a *App) refreshSide() {
 			// top so they're always visible; completed items at bottom (oldest
 			// first). This is display-only — the backing store is untouched.
 			sorted := sortedTodos(items)
+
+			// Count active items so we can reserve space for them.
+			activeCount := 0
+			for _, it := range sorted {
+				if it.Status != tools.TodoCompleted {
+					activeCount++
+				}
+			}
+			// Cap completed items in the visible window: at most 2, so active
+			// items always get priority even when there are many completed ones.
+			completedSlots := a.sidebarMaxSubs - activeCount
+			if completedSlots < 0 {
+				completedSlots = 0
+			} else if completedSlots > 2 {
+				completedSlots = 2
+			}
+			visibleCap := activeCount + completedSlots
+			if visibleCap > a.sidebarMaxSubs {
+				visibleCap = a.sidebarMaxSubs
+			}
+			if visibleCap < 1 {
+				visibleCap = 1
+			}
 			visible := sorted
-			if len(sorted) > a.sidebarMaxSubs {
-				visible = sorted[:a.sidebarMaxSubs]
+			if len(sorted) > visibleCap {
+				visible = sorted[:visibleCap]
 			}
 			hiddenCount := len(sorted) - len(visible)
 
@@ -1909,6 +1932,10 @@ func (a *App) refreshSide() {
 					owner = mutedStyle.Render(" →" + it.ClaimedBy)
 				}
 				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
+			}
+
+			if activeCount == 0 {
+				sb.WriteString(mutedStyle.Render("  ✓ all tasks done") + "\n")
 			}
 
 			// "… N more" sentinel at the BOTTOM for hidden items (usually completed).
