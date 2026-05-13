@@ -18,14 +18,43 @@ func (t OpenShellTool) Description() string {
 	return "Open a new persistent bash shell session. Returns the session ID for use with shell_exec, shell_read, etc."
 }
 func (t OpenShellTool) Schema() json.RawMessage {
-	return json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"label": {
+				"type": "string",
+				"description": "Human-readable name for this shell, e.g. 'Metro Server', 'Webpack Dev'. Optional but recommended."
+			},
+			"kind": {
+				"type": "string",
+				"enum": ["task", "service"],
+				"description": "task (default) = short-lived command; service = long-running server or daemon that should stay visible in the UI."
+			}
+		},
+		"required": []
+	}`)
 }
 func (t OpenShellTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
-	s, err := t.SM.Open()
+	var a struct {
+		Label string `json:"label"`
+		Kind  string `json:"kind"`
+	}
+	if len(args) > 0 {
+		_ = json.Unmarshal(args, &a)
+	}
+	kind := ShellKind(a.Kind)
+	if kind != ShellKindService {
+		kind = ShellKindTask
+	}
+	s, err := t.SM.Open(a.Label, kind)
 	if err != nil {
 		return "", fmt.Errorf("open shell: %w", err)
 	}
-	return fmt.Sprintf("opened shell session %s", s.ID()), nil
+	desc := string(kind)
+	if a.Label != "" {
+		desc = fmt.Sprintf("%s (%s)", a.Label, kind)
+	}
+	return fmt.Sprintf("opened shell session %s [%s]", s.ID(), desc), nil
 }
 
 // ShellExecTool executes a command in a shell session.
@@ -263,7 +292,13 @@ func (t ListShellsTool) Call(ctx context.Context, args json.RawMessage) (string,
 		case ShellStatusClosed:
 			status = "closed"
 		}
-		fmt.Fprintf(&sb, "%s: %s (total bytes: %d)\n", s.ID(), status, s.TotalBytes())
+		label := s.Label()
+		if label == "" {
+			label = s.ID()
+		} else {
+			label = fmt.Sprintf("%s (%s)", s.ID(), label)
+		}
+		fmt.Fprintf(&sb, "%s  kind=%s  status=%s  bytes=%d\n", label, s.Kind(), status, s.TotalBytes())
 	}
 	return strings.TrimRight(sb.String(), "\n"), nil
 }

@@ -73,6 +73,8 @@ type App struct {
 	// Shell sessions opened by the master or sub-agents.
 	shellBufs   map[string]*strings.Builder
 	shellStatus map[string]agent.ShellStatus
+	shellLabels map[string]string
+	shellKinds  map[string]agent.ShellKind
 	shellOrder  []string
 	shellMgr    *agent.ShellManager
 
@@ -192,6 +194,8 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 		subRenderedCache: make(map[string]string),
 		shellBufs:   make(map[string]*strings.Builder),
 		shellStatus: make(map[string]agent.ShellStatus),
+		shellLabels: make(map[string]string),
+		shellKinds:  make(map[string]agent.ShellKind),
 		shellMgr:    shellMgr,
 		history:      LoadHistory(),
 		historyIdx:   -1,
@@ -1339,6 +1343,8 @@ func (a *App) handleEvent(ev agent.Event) {
 		if a.shellBufs[id] == nil {
 			a.shellBufs[id] = &strings.Builder{}
 			a.shellStatus[id] = agent.ShellStatusOpen
+			a.shellLabels[id] = ev.Text // Text carries the label
+			a.shellKinds[id] = ev.ShellKind
 			a.shellOrder = append(a.shellOrder, id)
 		}
 		a.refreshSide()
@@ -1549,11 +1555,20 @@ func (a *App) buildChatContent() string {
 		if strings.HasPrefix(a.viewSub, "sh") {
 			if b, ok := a.shellBufs[a.viewSub]; ok {
 				st := a.shellStatus[a.viewSub]
-				header := titleStyle.Render(fmt.Sprintf("shell %s", a.viewSub)) + "\n\n"
+				shellLabel := a.shellLabels[a.viewSub]
+				title := a.viewSub
+				if shellLabel != "" {
+					title = fmt.Sprintf("%s  %s", a.viewSub, shellLabel)
+				}
+				header := titleStyle.Render(title) + "\n\n"
 				footer := ""
 				switch st {
 				case agent.ShellStatusExited:
-					footer = "\n" + mutedStyle.Render("[process exited]")
+					if a.shellKinds[a.viewSub] == agent.ShellKindService {
+						footer = "\n" + subErrStyle.Render("[service exited unexpectedly]")
+					} else {
+						footer = "\n" + mutedStyle.Render("[process exited]")
+					}
 				case agent.ShellStatusClosed:
 					footer = "\n" + mutedStyle.Render("[session closed]")
 				}
@@ -1699,25 +1714,53 @@ func (a *App) refreshSide() {
 	}
 
 	// Shell sessions — listed after sub-agents.
+	// Services and tasks are rendered differently: services use a ⚙ icon and
+	// warn in red if they exit unexpectedly; tasks use ● / · and mute on exit.
 	if len(a.shellOrder) > 0 {
 		sb.WriteString("\n" + titleStyle.Render("shells") + "\n\n")
 		for i := len(a.shellOrder) - 1; i >= 0; i-- {
 			id := a.shellOrder[i]
 			st := a.shellStatus[id]
-			marker := "●"
-			stStyle := subRunningStyle
-			label := "open"
+			kind := a.shellKinds[id]
+			shellLabel := a.shellLabels[id]
+
+			var marker, statusText string
+			var stStyle lipgloss.Style
+
+			isService := kind == agent.ShellKindService
+
 			switch st {
+			case agent.ShellStatusOpen:
+				if isService {
+					marker = "⚙"
+					stStyle = subRunningStyle
+					statusText = "running"
+				} else {
+					marker = "●"
+					stStyle = subRunningStyle
+					statusText = "open"
+				}
 			case agent.ShellStatusExited:
-				stStyle = mutedStyle
-				marker = "·"
-				label = "exited"
+				if isService {
+					marker = "⚙"
+					stStyle = subErrStyle // service exit is unexpected → warn
+					statusText = "exited!"
+				} else {
+					marker = "·"
+					stStyle = mutedStyle
+					statusText = "done"
+				}
 			case agent.ShellStatusClosed:
-				stStyle = mutedStyle
 				marker = "·"
-				label = "closed"
+				stStyle = mutedStyle
+				statusText = "closed"
 			}
-			line := fmt.Sprintf("%s %s  %s", marker, id, label)
+
+			display := id
+			if shellLabel != "" {
+				display = fmt.Sprintf("%s  %s", id, shellLabel)
+			}
+			line := fmt.Sprintf("%s %s  %s", marker, display, statusText)
 			if id == a.viewSub {
 				line = lipgloss.NewStyle().Reverse(true).Render(line)
 			}

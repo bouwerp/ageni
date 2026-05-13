@@ -20,6 +20,18 @@ const (
 	ShellStatusClosed             // closed by Close()
 )
 
+// ShellKind distinguishes long-running service shells from short-lived task shells.
+type ShellKind string
+
+const (
+	// ShellKindTask is a short-lived shell for one-off commands (default).
+	ShellKindTask ShellKind = "task"
+	// ShellKindService is a long-running shell for servers/daemons (e.g. a dev
+	// server). It is displayed more prominently in the TUI and an unexpected
+	// exit is treated as a warning rather than normal completion.
+	ShellKindService ShellKind = "service"
+)
+
 const (
 	ringBufSize   = 512 * 1024 // 512 KB
 	shellSentinel = "__AGENI_SHELL_DONE__:"
@@ -28,6 +40,8 @@ const (
 // ShellSession wraps a persistent bash process with a ring buffer for output.
 type ShellSession struct {
 	id    string
+	label string    // human-readable name, e.g. "Metro Server"
+	kind  ShellKind // "task" or "service"
 	cmd   *exec.Cmd
 	stdin io.WriteCloser
 
@@ -41,7 +55,7 @@ type ShellSession struct {
 	bus *Bus
 }
 
-func newShellSession(id string, bus *Bus) (*ShellSession, error) {
+func newShellSession(id, label string, kind ShellKind, bus *Bus) (*ShellSession, error) {
 	cmd := exec.Command("bash", "-s")
 
 	stdin, err := cmd.StdinPipe()
@@ -55,6 +69,8 @@ func newShellSession(id string, bus *Bus) (*ShellSession, error) {
 
 	s := &ShellSession{
 		id:    id,
+		label: label,
+		kind:  kind,
 		cmd:   cmd,
 		stdin: stdin,
 		buf:   make([]byte, ringBufSize),
@@ -116,6 +132,12 @@ func (s *ShellSession) write(data []byte) {
 
 // ID returns the session ID.
 func (s *ShellSession) ID() string { return s.id }
+
+// Label returns the human-readable name for this session.
+func (s *ShellSession) Label() string { return s.label }
+
+// Kind returns the shell kind (task or service).
+func (s *ShellSession) Kind() ShellKind { return s.kind }
 
 // Status returns the current shell status.
 func (s *ShellSession) Status() ShellStatus {
@@ -401,13 +423,18 @@ func NewShellManager(bus *Bus) *ShellManager {
 }
 
 // Open starts a new bash session and returns it.
-func (m *ShellManager) Open() (*ShellSession, error) {
+// label is a human-readable name (empty string is fine for tasks).
+// kind is ShellKindTask (default) or ShellKindService for long-running servers.
+func (m *ShellManager) Open(label string, kind ShellKind) (*ShellSession, error) {
+	if kind == "" {
+		kind = ShellKindTask
+	}
 	m.mu.Lock()
 	m.nextID++
 	id := fmt.Sprintf("sh%d", m.nextID)
 	m.mu.Unlock()
 
-	s, err := newShellSession(id, m.bus)
+	s, err := newShellSession(id, label, kind, m.bus)
 	if err != nil {
 		return nil, err
 	}
@@ -417,7 +444,7 @@ func (m *ShellManager) Open() (*ShellSession, error) {
 	m.mu.Unlock()
 
 	if m.bus != nil {
-		m.bus.Publish(Event{Kind: EvShellOpened, SubagentID: id})
+		m.bus.Publish(Event{Kind: EvShellOpened, SubagentID: id, Text: label, ShellKind: kind})
 	}
 	return s, nil
 }

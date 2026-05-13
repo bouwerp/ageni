@@ -60,6 +60,9 @@ type Event struct {
 	SubagentTask  string
 	SubagentModel string
 
+	// Shell metadata for EvShellOpened events
+	ShellKind ShellKind
+
 	Err error
 }
 
