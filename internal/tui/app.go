@@ -70,8 +70,11 @@ type App struct {
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
 	subObjectives  map[string]string // first line of each sub-agent's objective
-	sidebarMaxSubs int               // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
-	showMorePopup  string            // "shells" or "subs" when the older-items popup is open
+	sidebarMaxSubs  int    // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
+	showMorePopup   string // "shells" or "subs" when the older-items popover is open
+	popoverSel      int    // index of the selected item within the popover list
+	popoverPrevSub  string // viewSub to restore if user Esc-dismisses popover
+	popoverItems    []string // ordered IDs shown in the current popover
 
 	// Shell sessions opened by the master or sub-agents.
 	shellBufs     map[string]*strings.Builder
@@ -489,33 +492,53 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case msg.Type == tea.KeyCtrlC:
 			a.cancel()
 			return a, tea.Quit
-		case msg.Type == tea.KeyEsc && a.showMorePopup != "":
+
+		// ── popover navigation ───────────────────────────────────────────────
+		case a.showMorePopup != "" && msg.Type == tea.KeyEsc:
+			// Cancel: restore previous selection.
+			a.showMorePopup = ""
+			a.viewSub = a.popoverPrevSub
+			a.refreshChatForce()
+			return a, nil
+		case a.showMorePopup != "" && (msg.Type == tea.KeyEnter || msg.String() == " "):
+			// Confirm: keep current viewSub (already set during navigation).
 			a.showMorePopup = ""
 			a.refreshSide()
 			return a, nil
-		case (msg.Type == tea.KeyEnter || msg.String() == " ") && a.showMorePopup != "":
-			a.showMorePopup = ""
-			a.refreshSide()
+		case a.showMorePopup != "" && msg.Type == tea.KeyUp:
+			if a.popoverSel > 0 {
+				a.popoverSel--
+				a.viewSub = a.popoverItems[a.popoverSel]
+				a.refreshChatForce()
+			}
 			return a, nil
+		case a.showMorePopup != "" && msg.Type == tea.KeyDown:
+			if a.popoverSel < len(a.popoverItems)-1 {
+				a.popoverSel++
+				a.viewSub = a.popoverItems[a.popoverSel]
+				a.refreshChatForce()
+			}
+			return a, nil
+		case a.showMorePopup != "" && (msg.Type == tea.KeyTab || msg.Type == tea.KeyShiftTab):
+			// Tab away: confirm current selection and close.
+			a.showMorePopup = ""
+			dir := 1
+			if msg.Type == tea.KeyShiftTab {
+				dir = -1
+			}
+			a.cycleView(dir)
+			return a, nil
+
+		// ── open popover ─────────────────────────────────────────────────────
 		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
 			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs):
-			if a.viewSub == sentinelMoreShells {
-				a.showMorePopup = "shells"
-			} else {
-				a.showMorePopup = "subs"
-			}
-			a.refreshSide()
+			a.openMorePopover()
 			return a, nil
+
 		case msg.Type == tea.KeyTab:
-			if a.showMorePopup != "" {
-				a.showMorePopup = ""
-			}
 			a.cycleView(1)
 			return a, nil
 		case msg.Type == tea.KeyShiftTab:
-			if a.showMorePopup != "" {
-				a.showMorePopup = ""
-			}
 			a.cycleView(-1)
 			return a, nil
 		case msg.Type == tea.KeyEsc:
@@ -1768,6 +1791,13 @@ func (a *App) subInlineIndicator(id string) string {
 }
 
 func (a *App) refreshSide() {
+	// When the older-items popover is open, the sidebar shows the popover list
+	// instead of the normal sidebar content.
+	if a.showMorePopup != "" {
+		a.side.SetContent(a.renderPopoverSidebar())
+		return
+	}
+
 	var sb strings.Builder
 	frame := a.spinner()
 
@@ -2123,125 +2153,141 @@ func (a *App) View() string {
 		suggest := a.atComp.render(a.width)
 		return lipgloss.JoinVertical(lipgloss.Left, body, suggest, in, bottom)
 	}
-	base := lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
-	if a.showMorePopup != "" {
-		return a.overlayMorePopup(base)
-	}
-	return base
+	return lipgloss.JoinVertical(lipgloss.Left, body, in, bottom)
 }
 
-// overlayMorePopup renders the full-screen view with a centered popup overlaid.
-// We do this by drawing the popup box using lipgloss.Place(), which centers it
-// on a blank canvas the same size as the terminal. The caller's base view is
-// shown in the background through the terminal's own previous rendering.
-func (a *App) overlayMorePopup(base string) string {
-	popup := a.renderMorePopup()
-	// Place the popup centered on a canvas the size of the terminal.
-	// lipgloss.Place fills unused space with blanks, effectively dimming the bg.
-	return lipgloss.Place(a.width, a.height, lipgloss.Center, lipgloss.Center, popup)
-}
+// openMorePopover initialises and opens the older-items popover.
+// The popover replaces the sidebar content with a selectable list of hidden
+// shells or sub-agents. Navigating the list switches the main pane live.
+func (a *App) openMorePopover() {
+	a.popoverPrevSub = a.viewSub
+	a.popoverSel = 0
 
-// renderMorePopup builds the bordered popup box listing all older shells or subs.
-func (a *App) renderMorePopup() string {
-	popupW := min(a.width-8, 60)
-
-	var title string
-	var lines []string
-
-	switch a.showMorePopup {
-	case "shells":
-		title = "older shells"
+	switch a.viewSub {
+	case sentinelMoreShells:
+		a.showMorePopup = "shells"
 		shellEnd := len(a.shellOrder) - a.sidebarMaxSubs
 		if shellEnd < 0 {
 			shellEnd = 0
 		}
+		a.popoverItems = nil
+		// newest-first within the hidden section
 		for i := shellEnd - 1; i >= 0; i-- {
-			id := a.shellOrder[i]
+			a.popoverItems = append(a.popoverItems, a.shellOrder[i])
+		}
+	case sentinelMoreSubs:
+		a.showMorePopup = "subs"
+		subEnd := len(a.subOrder) - a.sidebarMaxSubs
+		if subEnd < 0 {
+			subEnd = 0
+		}
+		a.popoverItems = nil
+		for i := subEnd - 1; i >= 0; i-- {
+			a.popoverItems = append(a.popoverItems, a.subOrder[i])
+		}
+	}
+
+	if len(a.popoverItems) > 0 {
+		a.viewSub = a.popoverItems[0]
+		a.refreshChatForce()
+	} else {
+		a.refreshSide()
+	}
+}
+
+// renderPopoverSidebar renders the popover list into the sidebar viewport when
+// the older-items popover is active. It replaces the normal sidebar content.
+func (a *App) renderPopoverSidebar() string {
+	if len(a.popoverItems) == 0 {
+		return mutedStyle.Render("(nothing here)")
+	}
+
+	var sb strings.Builder
+
+	switch a.showMorePopup {
+	case "shells":
+		sb.WriteString(titleStyle.Render("older shells") + "\n\n")
+		for i, id := range a.popoverItems {
 			st := a.shellStatus[id]
 			kind := a.shellKinds[id]
 			shellLabel := a.shellLabels[id]
 			lastExit := a.shellLastExit[id]
 
 			marker := "·"
-			statusText := string(st)
+			statusText := "closed"
+			var stStyle lipgloss.Style = mutedStyle
 			switch st {
 			case agent.ShellStatusOpen:
 				if kind == agent.ShellKindService {
 					marker = "○"
 					statusText = "alive"
+					stStyle = subRunningStyle
 				} else {
 					marker = "○"
 					statusText = "ready"
+					stStyle = mutedStyle
 				}
 			case agent.ShellStatusExited:
 				if kind == agent.ShellKindService {
 					marker = "⊗"
 					statusText = "terminated"
+					stStyle = subErrStyle
 				} else if lastExit != nil && *lastExit != 0 {
 					marker = "✗"
 					statusText = fmt.Sprintf("exit %d", *lastExit)
+					stStyle = subErrStyle
 				} else {
 					marker = "✓"
 					statusText = "done"
+					stStyle = subDoneStyle
 				}
-			case agent.ShellStatusClosed:
-				marker = "·"
-				statusText = "closed"
 			}
 
 			display := id
 			if shellLabel != "" {
 				display = fmt.Sprintf("%s  %s", id, shellLabel)
 			}
-			lines = append(lines, fmt.Sprintf("%s %s  %s", marker, display, statusText))
+			line := fmt.Sprintf("%s %s  %s", marker, display, statusText)
+			if i == a.popoverSel {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+			} else {
+				sb.WriteString(stStyle.Render(line) + "\n")
+			}
 		}
 
 	case "subs":
-		title = "older sub-agents"
-		subEnd := len(a.subOrder) - a.sidebarMaxSubs
-		if subEnd < 0 {
-			subEnd = 0
-		}
-		for i := subEnd - 1; i >= 0; i-- {
-			id := a.subOrder[i]
+		sb.WriteString(titleStyle.Render("older sub-agents") + "\n\n")
+		for i, id := range a.popoverItems {
 			st := a.subStatus[id]
 			marker := "•"
 			label := string(st)
+			var stStyle lipgloss.Style = subRunningStyle
 			switch st {
 			case agent.StatusDone:
 				marker = "✓"
+				stStyle = subDoneStyle
 			case agent.StatusError, agent.StatusCancelled:
 				marker = "✗"
+				stStyle = subErrStyle
 			}
 			line := fmt.Sprintf("%s %s  %s", marker, id, label)
+			if i == a.popoverSel {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+			} else {
+				sb.WriteString(stStyle.Render(line) + "\n")
+			}
 			if obj := a.subObjectives[id]; obj != "" {
-				maxW := popupW - 8
+				maxW := 28
 				if len(obj) > maxW {
 					obj = obj[:maxW-1] + "…"
 				}
-				line += "\n  " + mutedStyle.Render(obj)
+				sb.WriteString(mutedStyle.Render("  "+obj) + "\n")
 			}
-			lines = append(lines, line)
 		}
 	}
 
-	if len(lines) == 0 {
-		lines = []string{"(none)"}
-	}
-
-	inner := strings.Join(lines, "\n")
-	footer := mutedStyle.Render("Esc · Space · Enter  to close")
-
-	content := titleStyle.Render(title) + "\n\n" + inner + "\n\n" + footer
-
-	box := lipgloss.NewStyle().
-		Border(lipgloss.RoundedBorder()).
-		BorderForeground(lipgloss.Color("99")).
-		Padding(1, 2).
-		Width(popupW).
-		Render(content)
-
-	return box
+	sb.WriteString("\n" + mutedStyle.Render("↑↓ navigate · Enter select · Esc cancel"))
+	return sb.String()
 }
 
 func (a *App) statusLine() string {
