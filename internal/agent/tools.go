@@ -187,8 +187,24 @@ return "", errors.New("soundboard requires a non-empty plan")
 }
 
 adapter, model := t.M.CriticAdapter()
+selfReview := false
 if adapter == nil {
-return "(soundboard: critic not configured — skipping review)", nil
+// Fall back to the master's own adapter for self-review. This means
+// soundboard always produces a real critique even without a dedicated
+// critic model configured.
+adapter, model = t.M.PrimaryAdapter()
+selfReview = true
+}
+if adapter == nil {
+return "(soundboard: no adapter available — skipping review)", nil
+}
+
+// Notify the bus so the TUI can show "critic reviewing…" in the sidebar.
+t.M.bus.Publish(Event{Kind: EvFlash, Text: "critic reviewing plan…"})
+
+label := "Critic review"
+if selfReview {
+label = "Self-review (no dedicated critic configured)"
 }
 
 req := llm.Request{
@@ -213,5 +229,10 @@ case llm.StreamEventError:
 return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
 }
 }
-return sb.String(), nil
+
+result := strings.TrimSpace(sb.String())
+if result == "" {
+result = "(critic returned no feedback)"
+}
+return fmt.Sprintf("[%s]\n\n%s", label, result), nil
 }

@@ -1836,6 +1836,10 @@ func (a *App) refreshSide() {
 		var masterSt lipgloss.Style
 		var masterLabel string
 		switch {
+		case a.masterToolIn == "soundboard":
+			masterMarker = "⚖"
+			masterSt = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // amber
+			masterLabel = "critic reviewing…"
 		case a.masterToolIn != "":
 			masterMarker = frame
 			masterSt = subRunningStyle

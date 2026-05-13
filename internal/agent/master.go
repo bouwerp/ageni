@@ -138,6 +138,14 @@ func (m *Master) UpdateAdapter(adapter llm.Adapter, model string) {
 	m.mu.Unlock()
 }
 
+// PrimaryAdapter returns the master's primary adapter and model. Used by
+// SoundboardTool as a self-review fallback when no dedicated critic is configured.
+func (m *Master) PrimaryAdapter() (llm.Adapter, string) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.adapter, m.model
+}
+
 // SetLead installs an optional separate adapter for the FIRST iteration
 // of each takeTurns call (planning / integration). Subsequent
 // iterations within the same takeTurns invocation use the regular
@@ -953,8 +961,14 @@ You MUST be self-healing. When a tool call or provider request returns an error,
 
 3. **Unknown tool / wrong tool name:** If a tool name was rejected (sanitized or not found), switch to the closest valid alternative or decompose the operation into available tools.
 
-4. **Worker errors:** If a sub-agent errors out, read check_subagent to understand what went wrong. Re-spawn with corrected instructions rather than surfacing a "failed" status to the user. If the error contains "model not responding" or "idle", the provider was transiently unresponsive — re-spawn immediately with identical instructions (no instruction change needed).
+4. **Worker errors or apparent stalls:** NEVER self-execute work because a worker failed or appears stuck. The response to any worker problem is ALWAYS one of:
+   - send_to_subagent: if the worker is still running, send a correction or hint
+   - kill_subagent + spawn_subagent: if the worker is truly stuck (visible tool-loop in transcript), kill it and re-spawn with sharper instructions, optionally a different model_tier
+   - spawn_subagent (second attempt): if the error was transient ("model not responding", "idle", provider 5xx), re-spawn immediately with identical instructions — no instruction change needed
+   Doing the work yourself instead of spawning a corrected worker is a HARD CONTRACT VIOLATION regardless of how many workers have failed.
 
-5. **Retry budget:** Up to 3 retry attempts per operation before escalating to the user with a specific blocker description. Never use all 3 retries on the same unchanged input.
+5. **Model-tier retry strategy for stuck workers:** If a haiku worker appears stuck after one re-spawn, retry with model_tier=sonnet. If a sonnet worker appears stuck, retry with model_tier=opus. Only escalate tiers on the SECOND re-spawn of the same task; the first re-spawn should use the same tier.
+
+6. **Retry budget:** Up to 3 spawn attempts per task before escalating to the user with a specific blocker description. Never use all 3 retries on the same unchanged input.
 </self_healing>`
 }
