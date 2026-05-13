@@ -549,7 +549,9 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 					a.masterBusy = true
 					a.sendToMaster(expanded)
 				}
-				a.refreshChat()
+				// Always scroll to the bottom on submit so the user can see their
+				// message and the "thinking…" indicator, even when scrolled up in history.
+				a.refreshChatForce()
 				a.refreshSide()
 				return a, nil
 			}
