@@ -352,6 +352,7 @@ func run() error {
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
+	master.SetTodo(todo)
 	if masterLeadAdapter != nil {
 		master.SetLead(masterLeadAdapter, cfg.MasterLead.Model)
 		fmt.Printf("Master lead model: %s/%s (worker: %s/%s)\n",

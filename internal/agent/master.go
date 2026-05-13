@@ -48,6 +48,10 @@ type Master struct {
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
 	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
 
+	// todo gives the master read access to the session todo list so it can
+	// include the current state in the active_context block on every turn.
+	todo *tools.TodoWrite
+
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
 
@@ -159,6 +163,13 @@ func (m *Master) SetCritic(adapter llm.Adapter, model string) {
 	m.criticModel = model
 	m.mu.Unlock()
 }
+
+// SetTodo gives the master read access to the session todo list so the
+// current task state can be included in the active_context block on every turn.
+func (m *Master) SetTodo(t *tools.TodoWrite) {
+	m.todo = t
+}
+
 
 // CriticAdapter returns the current critic adapter and model. Returns nil, ""
 // when soundboard is not configured.
@@ -292,7 +303,12 @@ func (m *Master) refreshActiveContext() {
 	isResumed := m.resumed
 	m.resumed = false // clear after first use
 
-	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 && !isResumed {
+	var todoItems []tools.TodoItem
+	if m.todo != nil {
+		todoItems = m.todo.Items()
+	}
+
+	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 && !isResumed && len(todoItems) == 0 {
 		return
 	}
 
@@ -316,6 +332,27 @@ func (m *Master) refreshActiveContext() {
 				line += " (" + c.Why + ")"
 			}
 			sb.WriteString(line + "\n")
+		}
+		sb.WriteString("\n")
+	}
+
+	if len(todoItems) > 0 {
+		sb.WriteString("Current todo list:\n")
+		for _, it := range todoItems {
+			var status string
+			switch it.Status {
+			case tools.TodoInProgress:
+				status = "▶ IN PROGRESS"
+			case tools.TodoCompleted:
+				status = "✓ done"
+			default:
+				status = "○ pending"
+			}
+			owner := ""
+			if it.ClaimedBy != "" {
+				owner = " [" + it.ClaimedBy + "]"
+			}
+			sb.WriteString(fmt.Sprintf("  #%d %s%s: %s\n", it.ID, status, owner, it.Content))
 		}
 		sb.WriteString("\n")
 	}
@@ -797,6 +834,12 @@ The ONLY text you produce before tool calls is a one-sentence acknowledgement wh
 0. **THE MASTER'S PERMITTED TOOLS ARE FINITE.** You may only call:
    spawn_subagent, find_in_codebase, check_subagent, send_to_subagent, kill_subagent, read_skill, soundboard, todo_write
    Calling ANY other tool (grep, glob, read_file, edit_file, shell_exec, open_shell, view_image, …) is a hard violation of the orchestration contract. If you notice yourself about to call one of those, STOP — package the need into a worker's context and spawn.
+
+0b. **MAINTAIN THE TODO LIST.** Use todo_write proactively on every non-trivial request:
+   - On receiving a multi-step request: call todo_write(action=replace, items=[...]) to set the task list before spawning any workers.
+   - Mark items in_progress when you spawn a worker for them; mark completed when verified.
+   - The todo list is shown in the user's sidebar in real time — it is your primary communication channel about progress.
+   - For single-step requests, a single todo item is sufficient; for complex tasks, one item per deliverable.
 
 1. **SOUNDBOARD EVERY PLAN — NO EXCEPTIONS, NO MINIMUM SIZE.** Before spawning ANY worker for ANY reason, call soundboard(plan=...) describing your intended decomposition. This applies to single-file edits, one-line lookups, and complex multi-step plans alike. The critic audits that you are actually delegating (not doing work yourself), surfaces risks, and catches flawed reasoning before it propagates into workers.
    - Give soundboard your full decomposition: which workers you intend to spawn, what each will do, and how you'll integrate the results.
