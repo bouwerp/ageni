@@ -31,6 +31,7 @@ type Manager struct {
 	maxConcurrent int
 	defaultBudget int
 	nextID        int
+	scrubber      func(string) string // propagated to newly-spawned sub-agents
 
 	// rootCtx is the long-lived context sub-agent goroutines inherit. Must
 	// outlive any individual master-turn ctx — otherwise a sub-agent gets

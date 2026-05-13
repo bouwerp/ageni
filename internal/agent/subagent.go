@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -76,6 +77,25 @@ type Subagent struct {
 	transcript []string
 	finalText  string
 	cancel     context.CancelFunc
+	scrubber   func(string) string // optional; redacts secrets from LLM text before storage
+}
+
+// SetScrubber installs a function applied to LLM-generated text before it is
+// stored in message history or published to the bus.
+func (s *Subagent) SetScrubber(f func(string) string) {
+	s.mu.Lock()
+	s.scrubber = f
+	s.mu.Unlock()
+}
+
+func (s *Subagent) scrub(text string) string {
+	s.mu.Lock()
+	f := s.scrubber
+	s.mu.Unlock()
+	if f == nil || text == "" {
+		return text
+	}
+	return f(text)
 }
 
 func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string) *Subagent {
@@ -219,11 +239,25 @@ func (s *Subagent) Run(parent context.Context) {
 			return
 		}
 
+		// Scrub any secrets that may have appeared in the LLM's text response
+		// before they are stored in message history or final output.
+		cleanText := s.scrub(assistantText)
+		cleanCalls := toolCalls
+		if s.scrubber != nil {
+			cleanCalls = make([]llm.ToolCall, len(toolCalls))
+			for i, tc := range toolCalls {
+				if cleaned := s.scrub(string(tc.Arguments)); cleaned != string(tc.Arguments) {
+					tc.Arguments = json.RawMessage(cleaned)
+				}
+				cleanCalls[i] = tc
+			}
+		}
+
 		// Build assistant message + tool result messages for next turn.
-		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: assistantText, ToolCalls: toolCalls, ReasoningContent: reasoningContent}
+		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: cleanText, ToolCalls: cleanCalls, ReasoningContent: reasoningContent}
 		messages = append(messages, assistantMsg)
 
-		if len(toolCalls) == 0 {
+		if len(cleanCalls) == 0 {
 			// Text-only response. If the master injected a follow-up while we
 			// were generating, keep going instead of finishing.
 			if pending := s.drainInbox(messages); len(pending) > len(messages) {
@@ -231,16 +265,16 @@ func (s *Subagent) Run(parent context.Context) {
 				continue
 			}
 			s.mu.Lock()
-			s.finalText = assistantText
+			s.finalText = cleanText
 			s.status = StatusDone
 			s.mu.Unlock()
 			s.appendTranscript("done")
-			s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: assistantText})
+			s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: cleanText})
 			return
 		}
 
 		// Execute each tool call, one tool-result Message per call.
-		for _, tc := range toolCalls {
+		for _, tc := range cleanCalls {
 			result := s.tools.Execute(ctx, tc)
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
 			s.bus.Publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})

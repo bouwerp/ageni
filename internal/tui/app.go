@@ -1254,12 +1254,12 @@ func (a *App) layout() {
 	if a.width < 60 || a.height < 12 {
 		return
 	}
-	sideW := 42
+	sideW := 63
 	if a.width < 120 {
-		sideW = 34
+		sideW = 51
 	}
 	if a.width < 100 {
-		sideW = 28
+		sideW = 42
 	}
 	chatW := a.width - sideW - 4
 	inputH := 4
@@ -1865,12 +1865,11 @@ func (a *App) refreshSide() {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > 0 {
-			// Show the last sidebarMaxSubs items; older ones behind the popover.
-			todoStart := 0
+			// Show the first sidebarMaxSubs items (oldest at top); newer ones behind the popover.
+			visible := items
 			if len(items) > a.sidebarMaxSubs {
-				todoStart = len(items) - a.sidebarMaxSubs
+				visible = items[:a.sidebarMaxSubs]
 			}
-			visible := items[todoStart:]
 			hiddenTodos := len(items) - len(visible)
 
 			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
@@ -1905,9 +1904,9 @@ func (a *App) refreshSide() {
 				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
 			}
 
-			// "… N older" sentinel row for todos.
+			// "… N newer" sentinel row for todos.
 			if hiddenTodos > 0 {
-				moreText := fmt.Sprintf("  … %d older  ↵", hiddenTodos)
+				moreText := fmt.Sprintf("  … %d newer  ↵", hiddenTodos)
 				if a.viewSub == sentinelMoreTodos {
 					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
 				} else {
@@ -2251,13 +2250,11 @@ func (a *App) openMorePopover() {
 		a.popoverItems = nil
 		if a.todo != nil {
 			items := a.todo.Items()
-			// Older = items before the visible cap, in insertion order.
-			todoEnd := len(items) - a.sidebarMaxSubs
-			if todoEnd < 0 {
-				todoEnd = 0
-			}
-			for i := 0; i < todoEnd; i++ {
-				a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
+			// Newer = items after the visible cap (shown oldest-first in sidebar).
+			if len(items) > a.sidebarMaxSubs {
+				for i := a.sidebarMaxSubs; i < len(items); i++ {
+					a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
+				}
 			}
 		}
 	}
@@ -2363,15 +2360,17 @@ func (a *App) renderPopoverSidebar() string {
 			}
 		}
 	case "todos":
-		sb.WriteString(titleStyle.Render("older todos") + "\n\n")
+		sb.WriteString(titleStyle.Render("newer todos") + "\n\n")
 		if a.todo != nil {
 			items := a.todo.Items()
-			todoEnd := len(items) - a.sidebarMaxSubs
-			if todoEnd < 0 {
-				todoEnd = 0
+			// Newer = items after the visible cap.
+			start := a.sidebarMaxSubs
+			if start > len(items) {
+				start = len(items)
 			}
-			for i := 0; i < todoEnd; i++ {
+			for i := start; i < len(items); i++ {
 				item := items[i]
+				idx := i - start // selection index within this popover
 				var line string
 				text := item.Content
 				if len(text) > 34 {
@@ -2380,21 +2379,21 @@ func (a *App) renderPopoverSidebar() string {
 				switch item.Status {
 				case tools.TodoCompleted:
 					line = fmt.Sprintf("✓ %s", text)
-					if i == a.popoverSel {
+					if idx == a.popoverSel {
 						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
 					} else {
 						sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Strikethrough(true).Render(line) + "\n")
 					}
 				case tools.TodoInProgress:
 					line = fmt.Sprintf("%s %s", a.spinner(), text)
-					if i == a.popoverSel {
+					if idx == a.popoverSel {
 						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
 					} else {
 						sb.WriteString(subRunningStyle.Render(line) + "\n")
 					}
 				default:
 					line = fmt.Sprintf("· %s", text)
-					if i == a.popoverSel {
+					if idx == a.popoverSel {
 						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
 					} else {
 						sb.WriteString(mutedStyle.Render(line) + "\n")

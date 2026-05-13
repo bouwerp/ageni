@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -51,6 +52,12 @@ type Master struct {
 	// todo gives the master read access to the session todo list so it can
 	// include the current state in the active_context block on every turn.
 	todo *tools.TodoWrite
+
+	// scrubber, if non-nil, is applied to all assistant text before it is
+	// stored in message history or published to the event bus. This prevents
+	// secret values that somehow ended up in LLM output from propagating back
+	// into the context window or the TUI display.
+	scrubber func(string) string
 
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
@@ -176,6 +183,26 @@ func (m *Master) SetCritic(adapter llm.Adapter, model string) {
 // current task state can be included in the active_context block on every turn.
 func (m *Master) SetTodo(t *tools.TodoWrite) {
 	m.todo = t
+}
+
+// SetScrubber installs a function that is applied to all LLM-generated text
+// before it is stored in message history or published to the event bus.
+// Use secretStore.Redactor().Scrub to redact known secret values.
+func (m *Master) SetScrubber(f func(string) string) {
+	m.mu.Lock()
+	m.scrubber = f
+	m.mu.Unlock()
+}
+
+// scrub applies the registered scrubber to s, or returns s unchanged.
+func (m *Master) scrub(s string) string {
+	m.mu.RLock()
+	f := m.scrubber
+	m.mu.RUnlock()
+	if f == nil || s == "" {
+		return s
+	}
+	return f(s)
 }
 
 
@@ -541,10 +568,26 @@ func (m *Master) takeTurns(parent context.Context) {
 		// An empty assistant message (e.g. thinking-only with no response)
 		// causes DeepSeek and other providers to reject the next request.
 		if assistantText.Len() > 0 || len(toolCalls) > 0 {
+			// Scrub any secret values from the assistant's text before it is
+			// stored in the message history (and thus re-sent to the LLM on
+			// subsequent turns). Tool call arguments are also scrubbed so that
+			// a model which hallucinated a credential in its function args
+			// doesn't propagate that credential forward.
+			cleanText := m.scrub(assistantText.String())
+			cleanCalls := toolCalls
+			if m.scrubber != nil {
+				cleanCalls = make([]llm.ToolCall, len(toolCalls))
+				for i, tc := range toolCalls {
+					if cleaned := m.scrub(string(tc.Arguments)); cleaned != string(tc.Arguments) {
+						tc.Arguments = json.RawMessage(cleaned)
+					}
+					cleanCalls[i] = tc
+				}
+			}
 			m.messages = append(m.messages, llm.Message{
 				Role:             llm.RoleAssistant,
-				Text:             assistantText.String(),
-				ToolCalls:        toolCalls,
+				Text:             cleanText,
+				ToolCalls:        cleanCalls,
 				ReasoningContent: reasoningContent,
 			})
 		}
