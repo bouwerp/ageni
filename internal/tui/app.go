@@ -1757,53 +1757,66 @@ func (a *App) refreshSide() {
 
 			isService := kind == agent.ShellKindService
 
+			// Slow pulse for service "alive" state: alternate ◉/○ every ~5 ticks (600ms).
+			servicePulse := func() string {
+				if (a.spinFrame/5)%2 == 0 {
+					return "◉"
+				}
+				return "○"
+			}
+
 			switch st {
 			case agent.ShellStatusOpen:
 				if busy {
-					// Actively running a command — show spinner.
+					// A command is executing — braille spinner for both kinds.
 					marker = a.spinner()
 					stStyle = subRunningStyle
-					statusText = "running…"
-				} else if isService {
-					marker = "⚙"
-					stStyle = subRunningStyle
-					if lastExit != nil && *lastExit != 0 {
-						statusText = fmt.Sprintf("err=%d", *lastExit)
+					if isService {
+						statusText = "executing…"
 					} else {
-						statusText = "running"
+						statusText = "running…"
 					}
-				} else {
-					marker = "●"
+				} else if isService {
+					// Service is alive and waiting — pulse ◉/○ to show heartbeat.
+					marker = servicePulse()
 					stStyle = subRunningStyle
-					if lastExit != nil {
-						if *lastExit == 0 {
-							stStyle = subDoneStyle
-							statusText = "✓ 0"
-						} else {
-							stStyle = subErrStyle
-							statusText = fmt.Sprintf("✗ %d", *lastExit)
-						}
+					statusText = "alive"
+				} else {
+					// Task shell — static icons based on last outcome.
+					if lastExit == nil {
+						marker = "○"
+						stStyle = mutedStyle
+						statusText = "ready"
+					} else if *lastExit == 0 {
+						marker = "✓"
+						stStyle = subDoneStyle
+						statusText = "ok"
 					} else {
-						statusText = "idle"
+						marker = "✗"
+						stStyle = subErrStyle
+						statusText = fmt.Sprintf("exit %d", *lastExit)
 					}
 				}
 			case agent.ShellStatusExited:
 				if isService {
-					marker = "⚙"
+					// Unexpected termination — ⊗ signals "dead server", needs attention.
+					marker = "⊗"
 					stStyle = subErrStyle
 					if lastExit != nil {
-						statusText = fmt.Sprintf("exited! (%d)", *lastExit)
+						statusText = fmt.Sprintf("terminated! (%d)", *lastExit)
 					} else {
-						statusText = "exited!"
+						statusText = "terminated!"
 					}
 				} else {
-					marker = "·"
+					// Task finished — show final exit result.
 					if lastExit != nil && *lastExit != 0 {
+						marker = "✗"
 						stStyle = subErrStyle
-						statusText = fmt.Sprintf("✗ %d", *lastExit)
+						statusText = fmt.Sprintf("exit %d", *lastExit)
 					} else {
-						stStyle = mutedStyle
-						statusText = "done ✓"
+						marker = "✓"
+						stStyle = subDoneStyle
+						statusText = "done"
 					}
 				}
 			case agent.ShellStatusClosed:
@@ -1891,8 +1904,9 @@ func (a *App) shouldShowInlineIndicator() bool {
 }
 
 // anyAnimationActive returns true when something on screen needs the spinner
-// to advance — master generating, master tool in flight, or any sub-agent
-// running. When everything is idle, ticks still fire (the loop never stops)
+// to advance — master generating, master tool in flight, any sub-agent
+// running, any busy shell, or any open service shell (pulse animation).
+// When everything is idle, ticks still fire (the loop never stops)
 // but the side pane doesn't need re-rendering.
 func (a *App) anyAnimationActive() bool {
 	if a.masterBusy || a.masterToolIn != "" {
@@ -1908,6 +1922,15 @@ func (a *App) anyAnimationActive() bool {
 			if it.Status == tools.TodoInProgress {
 				return true
 			}
+		}
+	}
+	// Open service shells pulse continuously; busy task shells spin.
+	for id, kind := range a.shellKinds {
+		if a.shellBusy[id] {
+			return true
+		}
+		if kind == agent.ShellKindService && a.shellStatus[id] == agent.ShellStatusOpen {
+			return true
 		}
 	}
 	return false
