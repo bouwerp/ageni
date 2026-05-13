@@ -70,7 +70,9 @@ type App struct {
 	subStatus      map[string]agent.SubagentStatus
 	subOrder       []string
 	subObjectives  map[string]string // first line of each sub-agent's objective
-	sidebarMaxSubs int               // max sub-agents shown in sidebar (AGENI_SIDEBAR_SUBAGENTS)
+	sidebarMaxSubs int               // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
+	subsExpanded   bool              // show all sub-agents (beyond sidebarMaxSubs)
+	shellsExpanded bool              // show all shells (beyond sidebarMaxSubs)
 
 	// Shell sessions opened by the master or sub-agents.
 	shellBufs     map[string]*strings.Builder
@@ -292,6 +294,13 @@ func intFromEnvOr(key string, def int) int {
 var spinnerFrames = []string{"⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"}
 
 const spinnerInterval = 120 * time.Millisecond
+
+// Sentinel IDs used in the Tab-cycle list for the "show more" / "collapse"
+// rows. They are never real sub-agent or shell IDs (which are sN / shN).
+const (
+	sentinelMoreSubs   = "__subs_more__"
+	sentinelMoreShells = "__shells_more__"
+)
 
 // ansiEscape strips terminal escape sequences so shell output is legible
 // when rendered in the non-terminal viewport.
@@ -1085,25 +1094,14 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-// cycleView steps through the sub-agent and shell panes.
-// dir=1 (Tab) goes master→newest shell→…→oldest shell→newest sub→…→oldest sub→master.
-// dir=-1 (ShiftTab) reverses. The order matches the sidebar's visual top-to-bottom layout.
+
+// cycleView steps through the master, shell, and sub-agent panes.
+// dir=1 (Tab) moves down the sidebar; dir=-1 (ShiftTab) moves up.
+// The order matches the sidebar's visual top-to-bottom layout exactly.
+// Sentinel IDs (sentinelMoreShells, sentinelMoreSubs) expand collapsed sections
+// and are consumed immediately — the cursor jumps to the next real item.
 func (a *App) cycleView(dir int) {
-	// Build display order: shells newest-first, then sub-agents newest-first.
-	// Only include sub-agents that are visible in the sidebar (the last sidebarMaxSubs).
-	// This must match refreshSide's rendering order so Tab/ShiftTab move
-	// between visually adjacent items.
-	var all []string
-	for i := len(a.shellOrder) - 1; i >= 0; i-- {
-		all = append(all, a.shellOrder[i])
-	}
-	subStart := 0
-	if len(a.subOrder) > a.sidebarMaxSubs {
-		subStart = len(a.subOrder) - a.sidebarMaxSubs
-	}
-	for i := len(a.subOrder) - 1; i >= subStart; i-- {
-		all = append(all, a.subOrder[i])
-	}
+	all := a.sidebarCycleList()
 	n := len(all)
 	if n == 0 {
 		return
@@ -1111,7 +1109,6 @@ func (a *App) cycleView(dir int) {
 
 	prevSub := a.viewSub
 	if a.viewSub == "" {
-		// Currently at master — move to first (dir>0) or last (dir<0) in list.
 		if dir > 0 {
 			a.viewSub = all[0]
 		} else {
@@ -1126,28 +1123,77 @@ func (a *App) cycleView(dir int) {
 			}
 		}
 		if idx < 0 {
-			// Current selection was removed — return to master.
 			a.viewSub = ""
 		} else if dir > 0 {
 			if idx == n-1 {
-				a.viewSub = "" // wrap around to master
+				a.viewSub = ""
 			} else {
 				a.viewSub = all[idx+1]
 			}
 		} else {
 			if idx == 0 {
-				a.viewSub = "" // wrap around to master
+				a.viewSub = ""
 			} else {
 				a.viewSub = all[idx-1]
 			}
 		}
 	}
+
+	// Sentinels are not real panes — consume them: expand the section and
+	// advance one more step in the same direction.
+	if a.viewSub == sentinelMoreShells {
+		a.shellsExpanded = true
+		a.viewSub = prevSub // rebuild with expanded list
+		a.cycleView(dir)
+		return
+	}
+	if a.viewSub == sentinelMoreSubs {
+		a.subsExpanded = true
+		a.viewSub = prevSub
+		a.cycleView(dir)
+		return
+	}
+
 	if a.viewSub != prevSub {
 		a.refreshChatForce()
 	} else {
 		a.refreshSide()
 	}
 }
+
+// sidebarCycleList returns the ordered list of IDs that Tab can cycle through,
+// matching the sidebar's visual top-to-bottom order. Sentinels are included so
+// they can trigger section expansion.
+func (a *App) sidebarCycleList() []string {
+	var all []string
+
+	// Shells section.
+	shellStart := 0
+	if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+		shellStart = len(a.shellOrder) - a.sidebarMaxSubs
+	}
+	for i := len(a.shellOrder) - 1; i >= shellStart; i-- {
+		all = append(all, a.shellOrder[i])
+	}
+	if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+		all = append(all, sentinelMoreShells)
+	}
+
+	// Sub-agents section.
+	subStart := 0
+	if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+		subStart = len(a.subOrder) - a.sidebarMaxSubs
+	}
+	for i := len(a.subOrder) - 1; i >= subStart; i-- {
+		all = append(all, a.subOrder[i])
+	}
+	if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+		all = append(all, sentinelMoreSubs)
+	}
+
+	return all
+}
+
 
 
 func (a *App) layout() {
@@ -1773,11 +1819,19 @@ func (a *App) refreshSide() {
 	}
 
 	// ── shells ───────────────────────────────────────────────────────────────
-	// Listed before sub-agents; newest first.
+	// Listed before sub-agents; newest first, capped to sidebarMaxSubs unless expanded.
 	if len(a.shellOrder) > 0 {
+		shellStart := 0
+		if !a.shellsExpanded && len(a.shellOrder) > a.sidebarMaxSubs {
+			shellStart = len(a.shellOrder) - a.sidebarMaxSubs
+		}
+		visibleShells := a.shellOrder[shellStart:]
+		hiddenShells := len(a.shellOrder) - len(visibleShells)
+
 		sb.WriteString("\n" + titleStyle.Render("shells") + "\n\n")
-		for i := len(a.shellOrder) - 1; i >= 0; i-- {
-			id := a.shellOrder[i]
+
+		for i := len(visibleShells) - 1; i >= 0; i-- {
+			id := visibleShells[i]
 			st := a.shellStatus[id]
 			kind := a.shellKinds[id]
 			shellLabel := a.shellLabels[id]
@@ -1788,8 +1842,6 @@ func (a *App) refreshSide() {
 			var stStyle lipgloss.Style
 
 			isService := kind == agent.ShellKindService
-
-			// Slow pulse for service "alive" state: alternate ◉/○ every ~5 ticks (600ms).
 			servicePulse := func() string {
 				if (a.spinFrame/5)%2 == 0 {
 					return "◉"
@@ -1863,27 +1915,32 @@ func (a *App) refreshSide() {
 				sb.WriteString(stStyle.Render(line) + "\n")
 			}
 		}
+
+		// "… N older" row — selectable, triggers expansion.
+		if hiddenShells > 0 {
+			moreText := fmt.Sprintf("  … %d older", hiddenShells)
+			if a.viewSub == sentinelMoreShells {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
+			} else {
+				sb.WriteString(mutedStyle.Render(moreText) + "\n")
+			}
+		}
 	}
 
 	// ── sub-agents ───────────────────────────────────────────────────────────
-	// Listed after shells; newest first, capped to sidebarMaxSubs.
+	// Listed after shells; newest first, capped to sidebarMaxSubs unless expanded.
 	if len(a.subOrder) > 0 {
-		// Determine visible slice: newest sidebarMaxSubs entries.
-		start := 0
-		if len(a.subOrder) > a.sidebarMaxSubs {
-			start = len(a.subOrder) - a.sidebarMaxSubs
+		subStart := 0
+		if !a.subsExpanded && len(a.subOrder) > a.sidebarMaxSubs {
+			subStart = len(a.subOrder) - a.sidebarMaxSubs
 		}
-		visible := a.subOrder[start:]
-		hidden := len(a.subOrder) - len(visible)
+		visibleSubs := a.subOrder[subStart:]
+		hiddenSubs := len(a.subOrder) - len(visibleSubs)
 
-		header := "sub-agents"
-		if hidden > 0 {
-			header = fmt.Sprintf("sub-agents (+%d older)", hidden)
-		}
-		sb.WriteString("\n" + titleStyle.Render(header) + "\n\n")
+		sb.WriteString("\n" + titleStyle.Render("sub-agents") + "\n\n")
 
-		for i := len(visible) - 1; i >= 0; i-- {
-			id := visible[i]
+		for i := len(visibleSubs) - 1; i >= 0; i-- {
+			id := visibleSubs[i]
 			st := a.subStatus[id]
 			marker := "•"
 			st2 := subRunningStyle
@@ -1907,13 +1964,23 @@ func (a *App) refreshSide() {
 			} else {
 				sb.WriteString(st2.Render(line) + "\n")
 			}
-			// Show a short, truncated objective beneath the status line.
+			// Short truncated objective beneath the status line.
 			if obj := a.subObjectives[id]; obj != "" {
 				maxW := 28
 				if len(obj) > maxW {
 					obj = obj[:maxW-1] + "…"
 				}
 				sb.WriteString(mutedStyle.Render("  "+obj) + "\n")
+			}
+		}
+
+		// "… N older" row — selectable, triggers expansion.
+		if hiddenSubs > 0 {
+			moreText := fmt.Sprintf("  … %d older", hiddenSubs)
+			if a.viewSub == sentinelMoreSubs {
+				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
+			} else {
+				sb.WriteString(mutedStyle.Render(moreText) + "\n")
 			}
 		}
 	}
