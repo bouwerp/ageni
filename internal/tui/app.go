@@ -302,6 +302,7 @@ const spinnerInterval = 120 * time.Millisecond
 const (
 	sentinelMoreSubs   = "__subs_more__"
 	sentinelMoreShells = "__shells_more__"
+	sentinelMoreTodos  = "__todos_more__"
 )
 
 // ansiEscape strips terminal escape sequences so shell output is legible
@@ -495,28 +496,41 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── popover navigation ───────────────────────────────────────────────
 		case a.showMorePopup != "" && msg.Type == tea.KeyEsc:
-			// Cancel: restore previous selection.
+			// Cancel: restore previous selection. For todos popover, viewSub was not changed.
 			a.showMorePopup = ""
-			a.viewSub = a.popoverPrevSub
-			a.refreshChatForce()
+			if a.popoverPrevSub != a.viewSub {
+				a.viewSub = a.popoverPrevSub
+				a.refreshChatForce()
+			} else {
+				a.refreshSide()
+			}
 			return a, nil
 		case a.showMorePopup != "" && (msg.Type == tea.KeyEnter || msg.String() == " "):
 			// Confirm: keep current viewSub (already set during navigation).
+			// For todos, viewSub was never changed, so just close the popover.
 			a.showMorePopup = ""
 			a.refreshSide()
 			return a, nil
 		case a.showMorePopup != "" && msg.Type == tea.KeyUp:
 			if a.popoverSel > 0 {
 				a.popoverSel--
-				a.viewSub = a.popoverItems[a.popoverSel]
-				a.refreshChatForce()
+				if a.showMorePopup != "todos" {
+					a.viewSub = a.popoverItems[a.popoverSel]
+					a.refreshChatForce()
+					return a, nil
+				}
+				a.refreshSide()
 			}
 			return a, nil
 		case a.showMorePopup != "" && msg.Type == tea.KeyDown:
 			if a.popoverSel < len(a.popoverItems)-1 {
 				a.popoverSel++
-				a.viewSub = a.popoverItems[a.popoverSel]
-				a.refreshChatForce()
+				if a.showMorePopup != "todos" {
+					a.viewSub = a.popoverItems[a.popoverSel]
+					a.refreshChatForce()
+					return a, nil
+				}
+				a.refreshSide()
 			}
 			return a, nil
 		case a.showMorePopup != "" && (msg.Type == tea.KeyTab || msg.Type == tea.KeyShiftTab):
@@ -531,7 +545,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 		// ── open popover ─────────────────────────────────────────────────────
 		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
-			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs):
+			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs || a.viewSub == sentinelMoreTodos):
 			a.openMorePopover()
 			return a, nil
 
@@ -1197,6 +1211,14 @@ func (a *App) cycleView(dir int) {
 func (a *App) sidebarCycleList() []string {
 	var all []string
 
+	// Todos sentinel — todos appear in sidebar after master, before shells.
+	if a.todo != nil {
+		items := a.todo.Items()
+		if len(items) > a.sidebarMaxSubs {
+			all = append(all, sentinelMoreTodos)
+		}
+	}
+
 	// Shells section: newest first, capped.
 	shellStart := 0
 	if len(a.shellOrder) > a.sidebarMaxSubs {
@@ -1230,9 +1252,12 @@ func (a *App) layout() {
 	if a.width < 60 || a.height < 12 {
 		return
 	}
-	sideW := 30
+	sideW := 42
+	if a.width < 120 {
+		sideW = 34
+	}
 	if a.width < 100 {
-		sideW = 24
+		sideW = 28
 	}
 	chatW := a.width - sideW - 4
 	inputH := 4
@@ -1834,23 +1859,54 @@ func (a *App) refreshSide() {
 	if a.todo != nil {
 		items := a.todo.Items()
 		if len(items) > 0 {
+			// Show the last sidebarMaxSubs items; older ones behind the popover.
+			todoStart := 0
+			if len(items) > a.sidebarMaxSubs {
+				todoStart = len(items) - a.sidebarMaxSubs
+			}
+			visible := items[todoStart:]
+			hiddenTodos := len(items) - len(visible)
+
 			sb.WriteString("\n" + titleStyle.Render("todos") + "\n\n")
-			for _, it := range items {
-				mark := "[ ]"
-				style := mutedStyle
+			for _, it := range visible {
+				var mark string
+				var lineStyle lipgloss.Style
 				switch it.Status {
 				case tools.TodoInProgress:
 					mark = "[" + frame + "]"
-					style = subRunningStyle
+					lineStyle = subRunningStyle
 				case tools.TodoCompleted:
 					mark = "[✓]"
-					style = subDoneStyle
+					lineStyle = lipgloss.NewStyle().
+						Foreground(lipgloss.Color("240")).
+						Strikethrough(true)
+				default:
+					mark = "[ ]"
+					lineStyle = mutedStyle
+				}
+				content := it.Content
+				maxW := a.side.Width - 6
+				if maxW < 10 {
+					maxW = 10
+				}
+				if len(content) > maxW {
+					content = content[:maxW-1] + "…"
 				}
 				owner := ""
 				if it.ClaimedBy != "" {
-					owner = mutedStyle.Render(" → " + it.ClaimedBy)
+					owner = mutedStyle.Render(" →" + it.ClaimedBy)
 				}
-				sb.WriteString(style.Render(fmt.Sprintf("%s %s", mark, it.Content)) + owner + "\n")
+				sb.WriteString(lineStyle.Render(fmt.Sprintf("%s %s", mark, content)) + owner + "\n")
+			}
+
+			// "… N older" sentinel row for todos.
+			if hiddenTodos > 0 {
+				moreText := fmt.Sprintf("  … %d older  ↵", hiddenTodos)
+				if a.viewSub == sentinelMoreTodos {
+					sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(moreText) + "\n")
+				} else {
+					sb.WriteString(mutedStyle.Render(moreText) + "\n")
+				}
 			}
 		}
 	}
@@ -2171,7 +2227,6 @@ func (a *App) openMorePopover() {
 			shellEnd = 0
 		}
 		a.popoverItems = nil
-		// newest-first within the hidden section
 		for i := shellEnd - 1; i >= 0; i-- {
 			a.popoverItems = append(a.popoverItems, a.shellOrder[i])
 		}
@@ -2185,14 +2240,31 @@ func (a *App) openMorePopover() {
 		for i := subEnd - 1; i >= 0; i-- {
 			a.popoverItems = append(a.popoverItems, a.subOrder[i])
 		}
+	case sentinelMoreTodos:
+		a.showMorePopup = "todos"
+		a.popoverItems = nil
+		if a.todo != nil {
+			items := a.todo.Items()
+			// Older = items before the visible cap, in insertion order.
+			todoEnd := len(items) - a.sidebarMaxSubs
+			if todoEnd < 0 {
+				todoEnd = 0
+			}
+			for i := 0; i < todoEnd; i++ {
+				a.popoverItems = append(a.popoverItems, fmt.Sprintf("%d", items[i].ID))
+			}
+		}
 	}
 
-	if len(a.popoverItems) > 0 {
-		a.viewSub = a.popoverItems[0]
-		a.refreshChatForce()
-	} else {
-		a.refreshSide()
+	switch a.showMorePopup {
+	case "shells", "subs":
+		if len(a.popoverItems) > 0 {
+			a.viewSub = a.popoverItems[0]
+			a.refreshChatForce()
+			return
+		}
 	}
+	a.refreshSide()
 }
 
 // renderPopoverSidebar renders the popover list into the sidebar viewport when
@@ -2284,9 +2356,53 @@ func (a *App) renderPopoverSidebar() string {
 				sb.WriteString(mutedStyle.Render("  "+obj) + "\n")
 			}
 		}
+	case "todos":
+		sb.WriteString(titleStyle.Render("older todos") + "\n\n")
+		if a.todo != nil {
+			items := a.todo.Items()
+			todoEnd := len(items) - a.sidebarMaxSubs
+			if todoEnd < 0 {
+				todoEnd = 0
+			}
+			for i := 0; i < todoEnd; i++ {
+				item := items[i]
+				var line string
+				text := item.Content
+				if len(text) > 34 {
+					text = text[:33] + "…"
+				}
+				switch item.Status {
+				case tools.TodoCompleted:
+					line = fmt.Sprintf("✓ %s", text)
+					if i == a.popoverSel {
+						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+					} else {
+						sb.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Strikethrough(true).Render(line) + "\n")
+					}
+				case tools.TodoInProgress:
+					line = fmt.Sprintf("%s %s", a.spinner(), text)
+					if i == a.popoverSel {
+						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+					} else {
+						sb.WriteString(subRunningStyle.Render(line) + "\n")
+					}
+				default:
+					line = fmt.Sprintf("· %s", text)
+					if i == a.popoverSel {
+						sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
+					} else {
+						sb.WriteString(mutedStyle.Render(line) + "\n")
+					}
+				}
+			}
+		}
 	}
 
-	sb.WriteString("\n" + mutedStyle.Render("↑↓ navigate · Enter select · Esc cancel"))
+	footer := "↑↓ navigate · Enter select · Esc cancel"
+	if a.showMorePopup == "todos" {
+		footer = "↑↓ scroll · Enter/Esc close"
+	}
+	sb.WriteString("\n" + mutedStyle.Render(footer))
 	return sb.String()
 }
 
