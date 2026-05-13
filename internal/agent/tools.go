@@ -152,6 +152,7 @@ const criticSystemPrompt = `You are a senior adversarial reviewer. Your job is t
 
 Structure your critique under these headings (be concise — 3-6 bullet points total):
 
+**Delegation Audit** — Is the master about to perform any work it should delegate to a sub-agent? Every concrete step (file read, grep, edit, shell command, analysis) must be assigned to a worker. Flag any step where the master appears to be acting as executor rather than planner.
 **Risks & Gaps** — What could go wrong? What assumptions are not validated?
 **Edge Cases Missed** — Unusual inputs, concurrent conditions, or error paths not addressed.
 **Better Alternatives** — Is there a simpler, safer, or more robust approach?
@@ -165,7 +166,7 @@ type SoundboardTool struct{ M *Master }
 
 func (SoundboardTool) Name() string { return "soundboard" }
 func (SoundboardTool) Description() string {
-return `Present a proposed plan to an independent critic LLM for adversarial review before executing it. Call this before any plan that touches 3+ files, makes architectural decisions, or performs irreversible actions. The critic uses a different model than the master and will surface risks, edge cases, and alternatives. Returns the critique; incorporate feedback before proceeding.`
+return `Submit your decomposed plan to an independent critic LLM for adversarial review BEFORE spawning any workers. This is mandatory for every plan — trivial lookups, single-file edits, and complex multi-step changes alike. The critic audits whether you are properly delegating (not doing work yourself), surfaces risks, flags missing edge cases, and suggests alternatives. Returns a structured critique; you MUST incorporate the feedback before proceeding. Do not call spawn_subagent or find_in_codebase without first calling soundboard.`
 }
 func (SoundboardTool) Schema() json.RawMessage {
 return json.RawMessage(`{
