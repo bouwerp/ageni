@@ -2,6 +2,8 @@ package llm
 
 import (
 	"fmt"
+	"io"
+	"strings"
 	"time"
 )
 
@@ -21,6 +23,37 @@ func IsStreamIdle(err error) bool {
 		return false
 	}
 	return err == ErrStreamIdle
+}
+
+// IsTransientStreamError reports whether err is a transient network/protocol
+// error that is safe to retry (e.g. "unexpected end of JSON input", EOF,
+// connection reset by peer, broken pipe). These are distinct from semantic API
+// errors (4xx) which should not be retried.
+func IsTransientStreamError(err error) bool {
+	if err == nil {
+		return false
+	}
+	if err == io.EOF || err == io.ErrUnexpectedEOF {
+		return true
+	}
+	s := err.Error()
+	for _, substr := range []string{
+		"unexpected end of JSON",
+		"EOF",
+		"connection reset by peer",
+		"broken pipe",
+		"connection refused",
+		"i/o timeout",
+		"read: connection",
+		"write: connection",
+		"transport connection broken",
+		"server closed idle connection",
+	} {
+		if strings.Contains(s, substr) {
+			return true
+		}
+	}
+	return false
 }
 
 // WatchdogStream wraps src with an idle timer. If no event arrives within

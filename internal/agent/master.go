@@ -367,6 +367,10 @@ func (m *Master) takeTurns(parent context.Context) {
 	const maxIdleRetries = 2
 	var idleRetries int
 
+	// transientRetries caps retries for transient network/protocol errors.
+	const maxTransientRetries = 3
+	var transientRetries int
+
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
@@ -464,6 +468,14 @@ func (m *Master) takeTurns(parent context.Context) {
 			if llm.IsStreamIdle(streamErr) && idleRetries < maxIdleRetries {
 				idleRetries++
 				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("model not responding — retrying (%d/%d)…", idleRetries, maxIdleRetries)})
+				assistantText.Reset()
+				toolCalls = nil
+				reasoningContent = ""
+				continue
+			}
+			if llm.IsTransientStreamError(streamErr) && transientRetries < maxTransientRetries {
+				transientRetries++
+				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("stream interrupted — retrying (%d/%d)…", transientRetries, maxTransientRetries)})
 				assistantText.Reset()
 				toolCalls = nil
 				reasoningContent = ""
