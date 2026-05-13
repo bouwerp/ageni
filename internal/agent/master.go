@@ -51,6 +51,11 @@ type Master struct {
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
 
+	// resumed is set by LoadHistory; cleared after the first refreshActiveContext
+	// injects a session-resume notice. Ensures the master is reminded of its
+	// orchestration role even when there are no active sub-agents on resume.
+	resumed bool
+
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
 	// CancelCurrent). nil when no call is in flight.
 	turnCancel context.CancelFunc
@@ -111,6 +116,7 @@ func (m *Master) SetCorrectionsPath(path string) {
 func (m *Master) LoadHistory(messages []llm.Message) {
 	m.mu.Lock()
 	m.messages = append([]llm.Message(nil), messages...)
+	m.resumed = true
 	m.mu.Unlock()
 }
 
@@ -279,13 +285,23 @@ func (m *Master) refreshActiveContext() {
 
 	subs := m.manager.List()
 	corrections := tools.LoadCorrections(m.correctionsPath, activeCorrectionsMax)
-	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 {
+	isResumed := m.resumed
+	m.resumed = false // clear after first use
+
+	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 && !isResumed {
 		return
 	}
 
 	var sb strings.Builder
 	sb.WriteString(activeContextMarker)
 	sb.WriteString("\n<active_context>\n")
+
+	if isResumed {
+		sb.WriteString("SESSION RESUMED. You are the master orchestrator. Your role is unchanged:\n")
+		sb.WriteString("- DELEGATE ALL work to sub-agents via spawn_subagent. Never do the work yourself.\n")
+		sb.WriteString("- PARALLELISE: fan out independent tasks in the same turn.\n")
+		sb.WriteString("- Do NOT call grep/glob/read_file/shell tools directly — spawn workers for those.\n\n")
+	}
 
 	if len(corrections) > 0 {
 		sb.WriteString("Corrections in effect (most recent first — honour these over older statements in this conversation):\n")
