@@ -580,22 +580,24 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.chat, cmd = a.chat.Update(msg)
 			}
 			return a, cmd
-		// Arrow keys scroll the currently visible viewport; history nav when at
-		// master with a single-line input.
+		// Arrow keys: history nav takes priority when the input is single-line
+		// (so Up/Down cycle through previous prompts regardless of which pane
+		// is selected). When the input has multiple lines, Up/Down scroll the
+		// currently visible viewport instead.
 		case msg.Type == tea.KeyUp:
-			if a.viewSub != "" {
-				a.side.LineUp(3)
-			} else if a.inputIsSingleLine() {
+			if a.inputIsSingleLine() {
 				a.historyPrev()
+			} else if a.viewSub != "" {
+				a.side.LineUp(3)
 			} else {
 				a.chat.LineUp(3)
 			}
 			return a, nil
 		case msg.Type == tea.KeyDown:
-			if a.viewSub != "" {
-				a.side.LineDown(3)
-			} else if a.inputIsSingleLine() {
+			if a.inputIsSingleLine() {
 				a.historyNext()
+			} else if a.viewSub != "" {
+				a.side.LineDown(3)
 			} else {
 				a.chat.LineDown(3)
 			}

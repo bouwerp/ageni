@@ -51,6 +51,10 @@ type Master struct {
 	messages   []llm.Message
 	pendingEvs []Event // sub-agent events accumulated since last master turn
 
+	// lastInputTokens tracks the most recent turn's input token count so we
+	// can trigger proactive context compaction before hitting the hard limit.
+	lastInputTokens int
+
 	// resumed is set by LoadHistory; cleared after the first refreshActiveContext
 	// injects a session-resume notice. Ensures the master is reminded of its
 	// orchestration role even when there are no active sub-agents on resume.
@@ -446,6 +450,8 @@ func (m *Master) takeTurns(parent context.Context) {
 				if ev.Usage != nil {
 					m.tracker.Add("master", model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
+					// Track input tokens for proactive compaction.
+					m.lastInputTokens = ev.Usage.InputTokens + ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens
 				}
 				// ReasoningContent on Done is the full accumulated string from
 				// providers that don't stream it incrementally. Only use it if
@@ -500,6 +506,11 @@ func (m *Master) takeTurns(parent context.Context) {
 
 		if len(toolCalls) == 0 {
 			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: assistantText.String()})
+			// Check whether proactive compaction should run before the next
+			// user-initiated turn. We do it here (after the last tool-free
+			// assistant reply) so the compaction itself doesn't stall a
+			// multi-step tool loop.
+			m.maybeCompactHistory(ctx)
 			return
 		}
 
@@ -549,7 +560,153 @@ func (m *Master) trimHistory() bool {
 	return false
 }
 
-// isContextTooLong returns true when the error indicates the request exceeded
+// compactionThreshold is the input-token count at which proactive context
+// compaction is triggered. When a turn consumes more than this many tokens
+// the assistant's full conversation history is summarised before the next
+// user turn, keeping only the most recent exchanges verbatim.
+// 40 000 tokens covers most models' "comfortable" range while leaving
+// headroom for the reply and tool calls.
+const compactionThreshold = 40_000
+
+// compactionKeepExchanges is the number of complete user/assistant exchanges
+// (not counting the active_context tail block) to retain verbatim after
+// compaction. Everything older than that is replaced by the summary.
+const compactionKeepExchanges = 3
+
+// maybeCompactHistory triggers proactive context compaction when the last
+// turn's input token count exceeded compactionThreshold. It is called after
+// each terminal (no-tool) assistant turn so the compaction happens "between
+// conversations" rather than mid-tool-loop.
+func (m *Master) maybeCompactHistory(ctx context.Context) {
+	if m.lastInputTokens < compactionThreshold {
+		return
+	}
+	// Only compact when there is enough history to make it worthwhile.
+	if len(m.messages) < (compactionKeepExchanges*2)+4 {
+		return
+	}
+	m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context growing (%d tokens) — compacting…", m.lastInputTokens)})
+	m.compactHistory(ctx)
+}
+
+// compactHistory summarises the older portion of m.messages using the LLM,
+// replacing it with a single summary block so that future turns start with a
+// much smaller context. The most recent compactionKeepExchanges user/assistant
+// exchanges are kept verbatim so the model has immediate conversational context.
+func (m *Master) compactHistory(ctx context.Context) {
+	msgs := m.messages
+
+	// Strip any active_context tail block — we'll let refreshActiveContext
+	// regenerate it before the next real turn.
+	for len(msgs) > 0 {
+		last := msgs[len(msgs)-1]
+		if last.Role == llm.RoleUser && strings.HasPrefix(last.Text, activeContextMarker) {
+			msgs = msgs[:len(msgs)-1]
+		} else {
+			break
+		}
+	}
+
+	// Identify the slice boundary: keep the last compactionKeepExchanges
+	// complete user/assistant pairs, compact everything before that.
+	keepFrom := 0
+	exchanges := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role == llm.RoleUser {
+			exchanges++
+			if exchanges > compactionKeepExchanges {
+				keepFrom = i + 1
+				break
+			}
+		}
+	}
+	if keepFrom == 0 {
+		// Not enough history to split; nothing to compact.
+		m.messages = msgs
+		return
+	}
+
+	toSummarise := msgs[:keepFrom]
+	toKeep := msgs[keepFrom:]
+
+	// Build a summarisation prompt from the messages to compress.
+	var histBuf strings.Builder
+	for _, msg := range toSummarise {
+		switch msg.Role {
+		case llm.RoleUser:
+			histBuf.WriteString("USER: " + msg.Text + "\n\n")
+		case llm.RoleAssistant:
+			histBuf.WriteString("ASSISTANT: " + msg.Text + "\n\n")
+		case llm.RoleTool:
+			for _, tr := range msg.ToolResults {
+				histBuf.WriteString(fmt.Sprintf("TOOL RESULT [%s]: %s\n\n", tr.ToolCallID, tr.Content))
+			}
+		}
+	}
+
+	summariseReq := llm.Request{
+		Model: m.model,
+		System: `You are a conversation summariser. Your only job is to produce a concise but complete summary of the conversation excerpt you receive. The summary must:
+- Preserve all key decisions, constraints, and conclusions reached.
+- List all tasks that were completed, pending, or cancelled.
+- Note any important file paths, IDs, tool results, or values that were referenced.
+- Be written in third-person past tense ("The user asked...", "The assistant planned...").
+- Be plain text, no markdown headers, no bullet-point lists — use short prose paragraphs.
+- Be as short as possible while retaining all decision-relevant details.`,
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Text: "Summarise the following conversation excerpt:\n\n" + histBuf.String()},
+		},
+	}
+
+	// Use the lead adapter for the summarisation if configured; otherwise
+	// fall back to the primary adapter. A context with a short deadline is
+	// used so a stuck summary call doesn't block the agent indefinitely.
+	adapter := m.adapter
+	model := m.model
+	if m.leadAdapter != nil {
+		adapter = m.leadAdapter
+		model = m.leadModel
+	}
+
+	summaryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	defer cancel()
+
+	stream, err := adapter.Stream(summaryCtx, summariseReq)
+	if err != nil {
+		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction failed — keeping history as-is"})
+		m.messages = msgs
+		return
+	}
+
+	var summaryBuf strings.Builder
+	for ev := range stream {
+		if ev.Type == llm.StreamEventText {
+			summaryBuf.WriteString(ev.TextDelta)
+		}
+		if ev.Type == llm.StreamEventDone && ev.Usage != nil {
+			m.tracker.Add("master/compact", model, *ev.Usage)
+		}
+	}
+
+	summary := strings.TrimSpace(summaryBuf.String())
+	if summary == "" {
+		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction produced empty summary — keeping history as-is"})
+		m.messages = msgs
+		return
+	}
+
+	summaryMsg := llm.Message{
+		Role: llm.RoleUser,
+		Text: fmt.Sprintf("[Context compacted — summary of earlier conversation]\n\n%s", summary),
+	}
+
+	m.messages = append([]llm.Message{summaryMsg}, toKeep...)
+	m.lastInputTokens = 0 // reset so we don't immediately compact again
+
+	m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context compacted: %d messages → summary + %d recent messages", len(toSummarise), len(toKeep))})
+}
+
+
 // the model's context window.
 func isContextTooLong(err error) bool {
 	if err == nil {
