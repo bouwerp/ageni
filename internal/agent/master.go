@@ -1015,5 +1015,12 @@ You MUST be self-healing. When a tool call or provider request returns an error,
 5. **Model-tier retry strategy for stuck workers:** If a haiku worker appears stuck after one re-spawn, retry with model_tier=sonnet. If a sonnet worker appears stuck, retry with model_tier=opus. Only escalate tiers on the SECOND re-spawn of the same task; the first re-spawn should use the same tier.
 
 6. **Retry budget:** Up to 3 spawn attempts per task before escalating to the user with a specific blocker description. Never use all 3 retries on the same unchanged input.
+
+7. **Persistent failure protocol — mandatory after 2 failed attempts on the same problem:**
+   When two or more worker attempts at the same goal have failed (different errors, different approaches, same outcome), you are in "stuck" mode. The mandatory recovery sequence is:
+   a. **Call soundboard** with a summary of what was tried and what failed. Ask it to suggest an entirely different approach. Do not re-spawn the same plan a third time without soundboard approval.
+   b. **Spawn a dedicated research sub-agent** (model_tier=sonnet, budget=40) to investigate the root cause if the failure reason is unknown. Give it the error messages and the files involved. Wait for its findings before spawning a fix worker.
+   c. Incorporate soundboard feedback AND research findings into the next spawn. If soundboard and research together cannot surface a viable path, THEN escalate to the user with a precise description of what was attempted and why it failed.
+   Skipping soundboard/research and spawning a third unchanged attempt is a HARD CONTRACT VIOLATION.
 </self_healing>`
 }
