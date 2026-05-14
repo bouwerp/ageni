@@ -221,12 +221,23 @@ return "", fmt.Errorf("soundboard: critic call failed: %w", err)
 }
 
 var sb strings.Builder
+var usage llm.Usage
 for ev := range stream {
 switch ev.Type {
 case llm.StreamEventText:
 sb.WriteString(ev.TextDelta)
+case llm.StreamEventDone:
+if ev.Usage != nil {
+usage = *ev.Usage
+}
 case llm.StreamEventError:
 return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
+}
+}
+
+if usage.InputTokens+usage.OutputTokens > 0 {
+if tr := t.M.Tracker(); tr != nil {
+tr.Add("critic", model, usage)
 }
 }
 

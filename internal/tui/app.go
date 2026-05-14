@@ -2678,9 +2678,11 @@ func (a *App) runningSubIDs() []string {
 // rates.
 func (a *App) renderUsageFromTracker() string {
 	master := a.tracker.StatsByRolePrefix("master")
+	lead := a.tracker.StatsByRolePrefix("master/lead")
 	subs := a.tracker.StatsByRolePrefix("subagent:")
+	critic := a.tracker.StatsByRolePrefix("critic")
 	actual, indicative, hasUnknown := a.tracker.SessionCostBreakdown()
-	return fmt.Sprintf("%s  M:%s/%s c=%s  S:%s/%s c=%s",
+	out := fmt.Sprintf("%s  M:%s/%s c=%s  S:%s/%s c=%s",
 		a.fmtCostBreakdown(actual, indicative, hasUnknown),
 		fmtTokens(master.InputTokens+master.CacheReadTokens),
 		fmtTokens(master.OutputTokens),
@@ -2689,6 +2691,19 @@ func (a *App) renderUsageFromTracker() string {
 		fmtTokens(subs.OutputTokens),
 		fmtRate(subs),
 	)
+	if lead.InputTokens+lead.CacheReadTokens+lead.OutputTokens > 0 {
+		out += fmt.Sprintf("  L:%s/%s",
+			fmtTokens(lead.InputTokens+lead.CacheReadTokens),
+			fmtTokens(lead.OutputTokens),
+		)
+	}
+	if critic.InputTokens+critic.CacheReadTokens+critic.OutputTokens > 0 {
+		out += fmt.Sprintf("  C:%s/%s",
+			fmtTokens(critic.InputTokens+critic.CacheReadTokens),
+			fmtTokens(critic.OutputTokens),
+		)
+	}
+	return out
 }
 
 // fmtCostBreakdown renders actual, optionally followed by the indicative

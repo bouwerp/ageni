@@ -206,6 +206,12 @@ func (m *Master) scrub(s string) string {
 }
 
 
+// Tracker returns the token usage tracker. Used by tools that make their own
+// LLM calls (e.g. SoundboardTool) to record usage under the correct role.
+func (m *Master) Tracker() *llm.Tracker {
+	return m.tracker
+}
+
 // CriticAdapter returns the current critic adapter and model. Returns nil, ""
 // when soundboard is not configured.
 func (m *Master) CriticAdapter() (llm.Adapter, string) {
@@ -491,6 +497,13 @@ func (m *Master) takeTurns(parent context.Context) {
 			return
 		}
 		adapter, model := m.adapterForIter(turn)
+		m.mu.RLock()
+		usingLead := turn == 0 && m.leadAdapter != nil
+		m.mu.RUnlock()
+		trackerRole := "master"
+		if usingLead {
+			trackerRole = "master/lead"
+		}
 		req := llm.Request{
 			Model:    model,
 			System:   m.systemPrompt(),
@@ -558,7 +571,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				break streamLoop
 			case llm.StreamEventDone:
 				if ev.Usage != nil {
-					m.tracker.Add("master", model, *ev.Usage)
+					m.tracker.Add(trackerRole, model, *ev.Usage)
 					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 					// Track input tokens for proactive compaction.
 					m.lastInputTokens = ev.Usage.InputTokens + ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens
