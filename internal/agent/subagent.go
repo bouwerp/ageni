@@ -553,6 +553,7 @@ When a tool returns an error, do not stop — diagnose and recover autonomously:
 - File not found: check if the path exists with list_dir or glob, then use the correct path.
 - Permission or transient error: retry up to 2 more times before including it as a blocker in your <result>.
 - Unknown tool: use the closest available alternative from <allowed_tools>.
+- Missing binary / "not found" error (e.g. "adb not found", "ffmpeg: command not found"): immediately call todo_write to create a task for installing the missing tool (title: "Install <tool>", include the recommended install command in the body), then include the missing dependency as a blocker in your <result> so the master knows to resolve it before retrying.
 Never ask the master or the user for help with recoverable errors — handle them yourself.
 </self_healing>`
 }

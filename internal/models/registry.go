@@ -242,6 +242,34 @@ func (r *Registry) UpdatedAt() time.Time {
 	return r.updatedAt
 }
 
+// ApplyCapabilities merges live-detected capabilities (e.g. from OpenRouter's
+// architecture.input_modalities) into the registry. caps maps
+// "provider:modelID" → []string capability names (e.g. ["vision"]).
+// Only adds capabilities; never removes seed-declared ones.
+func (r *Registry) ApplyCapabilities(caps map[string][]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, newCaps := range caps {
+		cid, ok := r.providerIndex[key]
+		if !ok {
+			idx := strings.Index(key, ":")
+			if idx >= 0 {
+				base := strings.TrimSuffix(key[idx+1:], ":free")
+				cid, ok = r.providerIndex[key[:idx]+":"+base]
+			}
+		}
+		if !ok {
+			continue
+		}
+		m := r.models[cid]
+		for _, cap := range newCaps {
+			if !m.HasCapability(cap) {
+				m.Capabilities = append(m.Capabilities, cap)
+			}
+		}
+	}
+}
+
 // ApplyAiderScores merges Aider polyglot pass_rate_2 scores from a map of
 // normalised model name → score (0-100). The name is matched against canonical
 // IDs, provider model IDs, and the aiderNames alias lists in the seed.

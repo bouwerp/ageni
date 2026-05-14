@@ -117,6 +117,7 @@ const (
 	colTier    = 9
 	colScore   = 7
 	colAider   = 8
+	colCaps    = 5  // "V R" vision+reasoning flags
 	colInCost  = 8  // "$1.25"
 	colOutCost = 8  // "$10.0"
 	colROI     = 7  // "123.4" or "—"
@@ -124,7 +125,7 @@ const (
 )
 
 func buildColHeader(width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - colROI - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCaps - colInCost - colOutCost - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -135,6 +136,7 @@ func buildColHeader(width int) string {
 			padRight("Tier", colTier) +
 			padRight("Score", colScore) +
 			padRight("Aider%", colAider) +
+			padRight("Caps", colCaps) +
 			padRight("In$/M", colInCost) +
 			padRight("Out$/M", colOutCost) +
 			padRight("ROI", colROI) +
@@ -151,7 +153,7 @@ var tierColor = map[string]lipgloss.Color{
 }
 
 func formatRow(rank int, m *models.CanonicalModel, width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colInCost - colOutCost - colROI - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCaps - colInCost - colOutCost - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -176,6 +178,9 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr = padRight(tierStr, colTier)
 	}
 
+	// Capabilities: compact symbol flags — V=vision, R=reasoning.
+	capsStr := formatCaps(m)
+
 	// Cost and ROI columns.
 	inCost := formatCost(m.InputCostPer1M)
 	outCost := formatCost(m.OutputCostPer1M)
@@ -190,10 +195,29 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr +
 		padRight(scoreStr, colScore) +
 		padRight(aiderScore, colAider) +
+		padRight(capsStr, colCaps) +
 		padRight(inCost, colInCost) +
 		padRight(outCost, colOutCost) +
 		padRight(roi, colROI) +
 		provStr
+}
+
+// formatCaps renders a compact capability string: "V" for vision, "R" for
+// reasoning, "VR" for both, "—" for neither. Width is colCaps (5).
+func formatCaps(m *models.CanonicalModel) string {
+	vision := m.HasCapability("vision")
+	reasoning := m.HasCapability("reasoning")
+	switch {
+	case vision && reasoning:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("V") +
+			lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("R")
+	case vision:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("V")
+	case reasoning:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("R")
+	default:
+		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("—")
+	}
 }
 
 // formatCost renders a per-million-token USD cost compactly:

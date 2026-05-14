@@ -59,12 +59,13 @@ func (u *Updater) refresh(ctx context.Context) {
 		aiderOK = true
 	}
 
-	avail, costs, err := FetchOpenRouterAvailability(ctx)
+	avail, costs, caps, err := FetchOpenRouterAvailability(ctx)
 	if err != nil {
 		log.Printf("[models] openrouter availability fetch: %v", err)
 	} else {
 		u.registry.ApplyAvailability(avail)
 		u.registry.ApplyPricing(costs)
+		u.registry.ApplyCapabilities(caps)
 	}
 
 	if aiderOK {

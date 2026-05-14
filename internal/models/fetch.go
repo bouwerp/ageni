@@ -75,10 +75,16 @@ type openRouterPricing struct {
 	Completion string `json:"completion"`
 }
 
+// openRouterArchitecture holds the model architecture metadata from OpenRouter.
+type openRouterArchitecture struct {
+	InputModalities []string `json:"input_modalities"`
+}
+
 // openRouterModel is the minimal subset of the OpenRouter /models JSON we care about.
 type openRouterModel struct {
-	ID      string             `json:"id"`
-	Pricing openRouterPricing  `json:"pricing"`
+	ID           string                 `json:"id"`
+	Pricing      openRouterPricing      `json:"pricing"`
+	Architecture openRouterArchitecture `json:"architecture"`
 }
 
 type openRouterResponse struct {
@@ -87,19 +93,21 @@ type openRouterResponse struct {
 
 // FetchOpenRouterAvailability queries OpenRouter for the full model list and
 // returns a set of "openrouter:modelID" keys representing currently available
-// models, and a map of "openrouter:modelID" → [inputPerM, outputPerM] costs.
+// models, a map of "openrouter:modelID" → [inputPerM, outputPerM] costs, and
+// a map of "openrouter:modelID" → []string capabilities (e.g. ["vision"]).
 // No API key is required for the public listing endpoint.
-func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, costs map[string][2]float64, err error) {
+func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, costs map[string][2]float64, caps map[string][]string, err error) {
 	body, err := get(ctx, openRouterURL)
 	if err != nil {
-		return nil, nil, fmt.Errorf("openrouter models: %w", err)
+		return nil, nil, nil, fmt.Errorf("openrouter models: %w", err)
 	}
 	var resp openRouterResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil, fmt.Errorf("openrouter models: json: %w", err)
+		return nil, nil, nil, fmt.Errorf("openrouter models: json: %w", err)
 	}
 	avail = make(map[string]bool, len(resp.Data))
 	costs = make(map[string][2]float64, len(resp.Data))
+	caps = make(map[string][]string, len(resp.Data))
 	for _, m := range resp.Data {
 		if m.ID == "" {
 			continue
@@ -111,8 +119,19 @@ func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, co
 		if e1 == nil && e2 == nil {
 			costs[key] = [2]float64{inp * 1e6, out * 1e6}
 		}
+		// Detect vision capability from input_modalities.
+		var modelCaps []string
+		for _, mod := range m.Architecture.InputModalities {
+			if mod == "image" {
+				modelCaps = append(modelCaps, "vision")
+				break
+			}
+		}
+		if len(modelCaps) > 0 {
+			caps[key] = modelCaps
+		}
 	}
-	return avail, costs, nil
+	return avail, costs, caps, nil
 }
 
 // get performs a GET request with the given context and returns the body.
