@@ -488,6 +488,7 @@ func (m *Master) takeTurns(parent context.Context) {
 
 		var assistantText strings.Builder
 		var toolCalls []llm.ToolCall
+		var cleanCalls []llm.ToolCall
 		var reasoningContent string
 		var streamErr error
 
@@ -574,7 +575,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			// a model which hallucinated a credential in its function args
 			// doesn't propagate that credential forward.
 			cleanText := m.scrub(assistantText.String())
-			cleanCalls := toolCalls
+			cleanCalls = toolCalls
 			if m.scrubber != nil {
 				cleanCalls = make([]llm.ToolCall, len(toolCalls))
 				for i, tc := range toolCalls {
@@ -588,7 +589,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				Role:             llm.RoleAssistant,
 				Text:             cleanText,
 				ToolCalls:        cleanCalls,
-				ReasoningContent: reasoningContent,
+				ReasoningContent: m.scrub(reasoningContent),
 			})
 		}
 
@@ -602,7 +603,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			return
 		}
 
-		for _, tc := range toolCalls {
+		for _, tc := range cleanCalls {
 			result := m.tools.Execute(ctx, tc)
 			m.bus.Publish(Event{Kind: EvMasterToolDone, ToolCall: &tc, ToolResult: &result})
 			m.messages = append(m.messages, llm.Message{

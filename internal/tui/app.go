@@ -166,6 +166,10 @@ type App struct {
 
 	ctx    context.Context
 	cancel context.CancelFunc
+
+	// scrubFn redacts known secret values before they are written to any
+	// display buffer. If nil, no redaction is performed.
+	scrubFn func(string) string
 }
 
 func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager) *App {
@@ -234,7 +238,21 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	return a
 }
 
-// LoadHistory renders prior conversation messages into the chat buffer
+// SetScrubber registers a redaction function that is applied to all text
+// written to display buffers. Call once at startup, before the first event.
+func (a *App) SetScrubber(f func(string) string) {
+	a.scrubFn = f
+}
+
+// scrub applies the registered scrubber, or returns s unchanged if none.
+func (a *App) scrub(s string) string {
+	if a.scrubFn == nil {
+		return s
+	}
+	return a.scrubFn(s)
+}
+
+
 // so a resumed session shows where the user left off. Master tool calls
 // + results are rendered the same way live events render them, so the
 // resumed view is visually indistinguishable from a continuing session.
@@ -1360,7 +1378,8 @@ func (a *App) handleEvent(ev agent.Event) {
 				a.flushReasoningBlock()
 			}
 			a.flushMasterText() // commit any in-progress text before the tool block
-			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
+			scrubbed := json.RawMessage(a.scrub(string(ev.ToolCall.Arguments)))
+			a.chatBuf.WriteString(renderToolCall(ev.ToolCall.Name, scrubbed) + "\n")
 			a.masterToolIn = ev.ToolCall.Name
 			a.pendingCalls[ev.ToolCall.ID] = *ev.ToolCall
 			// Track shell commands so we can display them in the shell pane.
@@ -1372,7 +1391,9 @@ func (a *App) handleEvent(ev agent.Event) {
 		if ev.ToolResult != nil {
 			call, hasPending := a.pendingCalls[ev.ToolResult.ToolCallID]
 			delete(a.pendingCalls, ev.ToolResult.ToolCallID)
-			rendered := renderToolResult(ev.ToolResult)
+			scrubbed := *ev.ToolResult
+			scrubbed.Content = a.scrub(ev.ToolResult.Content)
+			rendered := renderToolResult(&scrubbed)
 			if hasPending && !ev.ToolResult.IsError {
 				if diff := a.diffForCall(call); diff != "" {
 					rendered += "\n" + diff
@@ -1450,7 +1471,8 @@ func (a *App) handleEvent(ev agent.Event) {
 		// write the styled tool block.
 		a.flushSubText(ev.SubagentID)
 		if b, ok := a.subBufs[ev.SubagentID]; ok && ev.ToolCall != nil {
-			b.WriteString(renderToolCall(ev.ToolCall.Name, ev.ToolCall.Arguments) + "\n")
+			scrubbed := json.RawMessage(a.scrub(string(ev.ToolCall.Arguments)))
+			b.WriteString(renderToolCall(ev.ToolCall.Name, scrubbed) + "\n")
 			a.subActivity[ev.SubagentID] = "tool:" + ev.ToolCall.Name
 			a.pendingCalls[ev.ToolCall.ID] = *ev.ToolCall
 		}
@@ -1461,7 +1483,9 @@ func (a *App) handleEvent(ev agent.Event) {
 			call, hasPending := a.pendingCalls[ev.ToolResult.ToolCallID]
 			delete(a.pendingCalls, ev.ToolResult.ToolCallID)
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
-				rendered := renderToolResult(ev.ToolResult)
+				scrubbedResult := *ev.ToolResult
+				scrubbedResult.Content = a.scrub(ev.ToolResult.Content)
+				rendered := renderToolResult(&scrubbedResult)
 				if hasPending && !ev.ToolResult.IsError {
 					if diff := a.diffForCall(call); diff != "" {
 						rendered += "\n" + diff
@@ -1473,7 +1497,7 @@ func (a *App) handleEvent(ev agent.Event) {
 			// in the sub-agent pane otherwise.
 			if ev.ToolResult.IsError {
 				a.chatBuf.WriteString(toolErrStyle.Render(fmt.Sprintf("[%s tool error] ", ev.SubagentID)) +
-					toolErrStyle.Render(a.wrapChat(ev.ToolResult.Content)) + "\n")
+					toolErrStyle.Render(a.wrapChat(a.scrub(ev.ToolResult.Content))) + "\n")
 			}
 		}
 		// Tool finished — back to "thinking" until the next stream-start
@@ -1485,9 +1509,10 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvSubagentRetry:
 		// Surface transient errors + retries in chat so the user can see why
 		// a sub-agent is taking longer than expected.
-		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s", ev.SubagentID, a.wrapChat(ev.Text))) + "\n")
+		retryText := a.scrub(ev.Text)
+		a.chatBuf.WriteString(mutedStyle.Render(fmt.Sprintf("[%s retrying] %s", ev.SubagentID, a.wrapChat(retryText))) + "\n")
 		if b, ok := a.subBufs[ev.SubagentID]; ok {
-			b.WriteString("\n[retry] " + a.wrapChat(ev.Text) + "\n")
+			b.WriteString("\n[retry] " + a.wrapChat(retryText) + "\n")
 		}
 		a.refreshChat()
 	case agent.EvSubagentInbox:
@@ -1506,7 +1531,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		}
 		if ev.Text != "" {
 			if b, ok := a.subBufs[ev.SubagentID]; ok {
-				rendered := a.renderMarkdown(ev.Text)
+				rendered := a.renderMarkdown(a.scrub(ev.Text))
 				b.WriteString("\n" + titleStyle.Render("final ❯") + "\n" + rendered + "\n")
 			}
 		}
@@ -1561,7 +1586,7 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.shellOrder = append(a.shellOrder, id)
 		}
 		// Strip ANSI escape codes so output is legible in the viewport.
-		clean := ansiEscape.ReplaceAllString(ev.Text, "")
+		clean := a.scrub(ansiEscape.ReplaceAllString(ev.Text, ""))
 		a.shellBufs[id].WriteString(clean)
 		if a.viewSub == id {
 			a.refreshChatForce()
@@ -1612,7 +1637,7 @@ func (a *App) flushSubText(id string) {
 	if !ok || cur.Len() == 0 {
 		return
 	}
-	rendered := a.renderMarkdown(cur.String())
+	rendered := a.renderMarkdown(a.scrub(cur.String()))
 	if b, ok := a.subBufs[id]; ok {
 		b.WriteString(rendered + "\n\n")
 	}
@@ -1629,7 +1654,7 @@ func (a *App) flushMasterText() {
 	if ts.IsZero() {
 		ts = time.Now()
 	}
-	rendered := a.renderMarkdown(a.currentMaster.String())
+	rendered := a.renderMarkdown(a.scrub(a.currentMaster.String()))
 	a.chatBuf.WriteString(titleStyle.Render("master ❯") + "  " + mutedStyle.Render(ts.Format("15:04")) + "\n" + rendered + "\n\n")
 	a.currentMaster.Reset()
 	a.masterRenderedUpTo = 0
@@ -1642,7 +1667,7 @@ func (a *App) flushReasoningBlock() {
 	if a.currentReasoning.Len() == 0 {
 		return
 	}
-	text := a.currentReasoning.String()
+	text := a.scrub(a.currentReasoning.String())
 	a.currentReasoning.Reset()
 	// Wrap and dim the thinking content. Truncate very long blocks to keep
 	// the chat readable — the full reasoning is available in the session log.

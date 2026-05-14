@@ -514,6 +514,9 @@ func run() error {
 
 	// TUI
 	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
+	if secretStore != nil {
+		app.SetScrubber(secretStore.Redactor().Scrub)
+	}
 	if len(resumeHistory) > 0 {
 		app.LoadHistory(resumeHistory)
 	}

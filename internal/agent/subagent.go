@@ -254,7 +254,7 @@ func (s *Subagent) Run(parent context.Context) {
 		}
 
 		// Build assistant message + tool result messages for next turn.
-		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: cleanText, ToolCalls: cleanCalls, ReasoningContent: reasoningContent}
+		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: cleanText, ToolCalls: cleanCalls, ReasoningContent: s.scrub(reasoningContent)}
 		messages = append(messages, assistantMsg)
 
 		if len(cleanCalls) == 0 {
