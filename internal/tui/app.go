@@ -149,10 +149,11 @@ type App struct {
 	// subActivity[id] is one of "" / "thinking" / "tool:NAME" — what each
 	// running sub-agent is doing right now, used by the side-pane label.
 	// spinFrame advances on every tickMsg.
-	masterBusy   bool
-	spinFrame    int
-	masterToolIn string
-	subActivity  map[string]string
+	masterBusy     bool
+	spinFrame      int
+	masterToolIn   string
+	masterTurnTime time.Time // wall-clock time when the current master turn started
+	subActivity    map[string]string
 
 	// msgQueue holds user messages submitted while the master is busy.
 	// They are dequeued one at a time when the master becomes idle.
@@ -625,7 +626,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				// they don't want to see their screen flooded with the
 				// resulting <attached_file> blocks). The master gets the
 				// expanded form via masterIn.
-				a.chatBuf.WriteString(userStyle.Render("you ❯ ") + a.wrapChat(text) + "\n\n")
+				a.chatBuf.WriteString(userStyle.Render("you ❯") + "  " + mutedStyle.Render(time.Now().Format("15:04")) + "\n" + a.wrapChat(text) + "\n\n")
 				expanded, attached, skipped := expandFileMentions(text)
 				if len(attached) > 0 {
 					a.flashMessage = fmt.Sprintf("attached %d file(s): %s", len(attached), strings.Join(attached, ", "))
@@ -1325,6 +1326,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		// LLM call is in flight. Indicator lights up regardless of who
 		// triggered the turn (user submit, sub-agent completion, retry).
 		a.masterBusy = true
+		a.masterTurnTime = time.Now()
 		a.masterToolIn = ""
 		a.currentReasoning.Reset()
 		a.refreshSide()
@@ -1611,8 +1613,12 @@ func (a *App) flushMasterText() {
 	if a.currentMaster.Len() == 0 {
 		return
 	}
+	ts := a.masterTurnTime
+	if ts.IsZero() {
+		ts = time.Now()
+	}
 	rendered := a.renderMarkdown(a.currentMaster.String())
-	a.chatBuf.WriteString(titleStyle.Render("master ❯") + "\n" + rendered + "\n\n")
+	a.chatBuf.WriteString(titleStyle.Render("master ❯") + "  " + mutedStyle.Render(ts.Format("15:04")) + "\n" + rendered + "\n\n")
 	a.currentMaster.Reset()
 	a.masterRenderedUpTo = 0
 	a.masterRenderedCache = ""
@@ -1811,7 +1817,7 @@ func (a *App) buildChatContent() string {
 		if a.masterRenderedUpTo > 0 && a.masterRenderedUpTo <= len(text) {
 			partial = text[a.masterRenderedUpTo:]
 		}
-		body += titleStyle.Render("master ❯ ") + a.masterRenderedCache + partial
+		body += titleStyle.Render("master ❯") + "  " + mutedStyle.Render(a.masterTurnTime.Format("15:04")) + " " + a.masterRenderedCache + partial
 	} else if a.currentReasoning.Len() == 0 {
 		if line := a.masterInlineIndicator(); line != "" {
 			body += line
