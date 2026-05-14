@@ -82,7 +82,7 @@ func PricingFor(model string) Pricing {
 		return p
 	}
 	low := strings.ToLower(model)
-	if strings.HasSuffix(low, ":free") || isLocalSentinel(low) {
+	if strings.HasSuffix(low, ":free") {
 		return Pricing{Known: true}
 	}
 	if p, ok := prices[model]; ok {
@@ -97,6 +97,14 @@ func PricingFor(model string) Pricing {
 			p.Known = true
 			return p
 		}
+	}
+	// isLocalSentinel is checked last: cloud providers like Groq and Mistral
+	// use bare model names (no "/" prefix) that overlap with Ollama tags.
+	// Checking the hardcoded table first ensures we return the real pricing for
+	// known-paid models. Any bare name that isn't in the table is legitimately
+	// local/free.
+	if isLocalSentinel(low) {
+		return Pricing{Known: true}
 	}
 	return Pricing{}
 }

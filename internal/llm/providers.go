@@ -1,5 +1,7 @@
 package llm
 
+import "strings"
+
 // AdapterKind names the wire protocol used to talk to a provider.
 type AdapterKind string
 
@@ -372,4 +374,23 @@ func AllProviders() []ProviderSpec {
 	out := make([]ProviderSpec, len(providers))
 	copy(out, providers)
 	return out
+}
+
+// FreeBySpec returns true when the model ID is known to be free according to
+// the curated provider specs — either because it has the ":free" OpenRouter
+// suffix, or because it appears with Free=true in a provider's
+// RecommendedModels list. This is "straight from our source" data reflecting
+// current provider free-tier policies.
+func FreeBySpec(id string) bool {
+	if strings.HasSuffix(strings.ToLower(id), ":free") {
+		return true
+	}
+	for _, spec := range providers {
+		for _, m := range spec.RecommendedModels {
+			if m.ID == id && m.Free {
+				return true
+			}
+		}
+	}
+	return false
 }

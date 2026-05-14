@@ -511,7 +511,7 @@ func (s *settingsState) modelOptionsFor(providerName, currentValue string) []huh
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
 		if currentValue != "" {
-			return []huh.Option[string]{huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue)}
+			return []huh.Option[string]{huh.NewOption(decorateModel("(current) "+currentValue, currentValue, llm.FreeBySpec(currentValue)), currentValue)}
 		}
 		return nil
 	}
@@ -532,7 +532,7 @@ func (s *settingsState) modelOptionsFor(providerName, currentValue string) []huh
 	opts := make([]huh.Option[string], 0, len(models)+1)
 	seen := map[string]bool{}
 	if currentValue != "" {
-		opts = append(opts, huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue))
+		opts = append(opts, huh.NewOption(decorateModel("(current) "+currentValue, currentValue, llm.FreeBySpec(currentValue)), currentValue))
 		seen[currentValue] = true
 	}
 	for _, m := range models {
@@ -540,17 +540,18 @@ func (s *settingsState) modelOptionsFor(providerName, currentValue string) []huh
 			continue
 		}
 		seen[m.ID] = true
-		opts = append(opts, huh.NewOption(decorateModel(m.Label, m.ID), m.ID))
+		opts = append(opts, huh.NewOption(decorateModel(m.Label, m.ID, m.Free), m.ID))
 	}
 	return opts
 }
 
 // decorateModel suffixes a model option label with its blended
 // ranking score and per-1M price so users can pick a tier-appropriate
-// model at a glance. Returns the original label unchanged when no
-// ranking / pricing data exists, so the picker stays clean for less
-// well-known models.
-func decorateModel(label, id string) string {
+// model at a glance. isFree should be set from ModelSuggestion.Free for
+// curated models, or from llm.FreeBySpec for current-value lookups.
+// Returns the original label unchanged when no ranking / pricing data
+// exists, so the picker stays clean for less well-known models.
+func decorateModel(label, id string, isFree bool) string {
 	parts := []string{label}
 	if !strings.Contains(label, id) {
 		parts[0] = label + " — " + id
@@ -560,9 +561,11 @@ func decorateModel(label, id string) string {
 	}
 	pr := llm.PricingFor(id)
 	switch {
-	case strings.HasSuffix(strings.ToLower(id), ":free"):
+	case isFree || strings.HasSuffix(strings.ToLower(id), ":free"):
 		parts = append(parts, "free")
 	case pr.Known && pr.InputPer1M == 0 && pr.OutputPer1M == 0:
+		// Pricing is explicitly known-zero from the live API (e.g. OpenRouter
+		// returning "0"/"0") — display as free.
 		parts = append(parts, "free")
 	case pr.Known && pr.InputPer1M > 0:
 		parts = append(parts, fmt.Sprintf("$%.2f in / $%.2f out per 1M", pr.InputPer1M, pr.OutputPer1M))
