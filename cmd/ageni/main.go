@@ -196,6 +196,10 @@ func run() error {
 	if cfg.CriticActive {
 		criticAdapter = buildAdapter(cfg.Critic)
 	}
+	var compactAdapter llm.Adapter
+	if cfg.CompactActive {
+		compactAdapter = buildAdapter(cfg.Compact)
+	}
 
 	// Local fleet: build one adapter per endpoint and wrap in a round-robin pool.
 	fleet := buildFleet(cfg.LocalFleet)
@@ -370,6 +374,10 @@ func run() error {
 		master.SetCritic(criticAdapter, cfg.Critic.Model)
 		fmt.Printf("Soundboard critic: %s/%s\n", cfg.Critic.Provider.Name, cfg.Critic.Model)
 	}
+	if compactAdapter != nil {
+		master.SetCompact(compactAdapter, cfg.Compact.Model)
+		fmt.Printf("Compact model: %s/%s\n", cfg.Compact.Provider.Name, cfg.Compact.Model)
+	}
 	masterReg.Register(agent.SoundboardTool{M: master})
 	if len(cfg.MasterFallbacks) > 0 {
 		fmt.Printf("Master fallback chain: ")
@@ -501,6 +509,11 @@ func run() error {
 			master.SetCritic(buildAdapter(newCfg.Critic), newCfg.Critic.Model)
 		} else {
 			master.SetCritic(nil, "")
+		}
+		if newCfg.CompactActive {
+			master.SetCompact(buildAdapter(newCfg.Compact), newCfg.Compact.Model)
+		} else {
+			master.SetCompact(nil, "")
 		}
 		manager.UpdateFactory(newFactory)
 		manager.SetDefaultBudget(newCfg.SubagentBudget)

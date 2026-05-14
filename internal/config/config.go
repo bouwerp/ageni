@@ -44,6 +44,13 @@ type Config struct {
 	Critic       RoleConfig
 	CriticActive bool
 
+	// Compact is an optional cheap/fast model used exclusively for context
+	// compaction (history summarisation). When CompactActive is false,
+	// compaction falls back to the lead adapter (if set) then the primary.
+	// Set COMPACT_PROVIDER to enable; e.g. COMPACT_PROVIDER=google/gemini-flash.
+	Compact       RoleConfig
+	CompactActive bool
+
 	// MasterFallbacks / SubagentFallbacks are ordered chains tried in
 	// sequence when the primary fails with a retryable error
 	// (429 / 5xx / timeout / network). Entries are specified in the
@@ -164,6 +171,14 @@ func Load() (*Config, error) {
 		if critic, err := resolveRole("CRITIC", criticRaw); err == nil {
 			cfg.Critic = critic
 			cfg.CriticActive = true
+		}
+	}
+
+	// Compact is opt-in: only resolve if COMPACT_PROVIDER is set.
+	if compactRaw := os.Getenv("COMPACT_PROVIDER"); compactRaw != "" {
+		if compact, err := resolveRole("COMPACT", compactRaw); err == nil {
+			cfg.Compact = compact
+			cfg.CompactActive = true
 		}
 	}
 

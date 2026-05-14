@@ -44,6 +44,13 @@ type Master struct {
 	criticAdapter llm.Adapter
 	criticModel   string
 
+	// compactAdapter / compactModel are used for context compaction
+	// (summarisation). When unset, compaction falls back to the lead
+	// adapter (if set) then the primary adapter. A dedicated cheap/fast
+	// model is ideal here since the task is pure summarisation.
+	compactAdapter llm.Adapter
+	compactModel   string
+
 	skillCatalog    string // optional: appended to the cached system prompt
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
@@ -176,6 +183,17 @@ func (m *Master) SetCritic(adapter llm.Adapter, model string) {
 	m.mu.Lock()
 	m.criticAdapter = adapter
 	m.criticModel = model
+	m.mu.Unlock()
+}
+
+// SetCompact installs an optional dedicated adapter for context compaction
+// (history summarisation). When set, compaction uses this adapter instead
+// of falling back to the lead/primary. A cheap, fast model is ideal
+// (e.g. gemini-flash, haiku, gpt-4o-mini). Pass nil + "" to disable.
+func (m *Master) SetCompact(adapter llm.Adapter, model string) {
+	m.mu.Lock()
+	m.compactAdapter = adapter
+	m.compactModel = model
 	m.mu.Unlock()
 }
 
@@ -798,15 +816,19 @@ func (m *Master) compactHistory(ctx context.Context) {
 		},
 	}
 
-	// Use the lead adapter for the summarisation if configured; otherwise
-	// fall back to the primary adapter. A context with a short deadline is
-	// used so a stuck summary call doesn't block the agent indefinitely.
+	// Use the compact adapter if configured; then lead; then primary.
+	// A dedicated cheap/fast model is ideal for summarisation.
+	m.mu.RLock()
 	adapter := m.adapter
 	model := m.model
-	if m.leadAdapter != nil {
+	if m.compactAdapter != nil {
+		adapter = m.compactAdapter
+		model = m.compactModel
+	} else if m.leadAdapter != nil {
 		adapter = m.leadAdapter
 		model = m.leadModel
 	}
+	m.mu.RUnlock()
 
 	summaryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
 	defer cancel()
