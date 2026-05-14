@@ -283,6 +283,8 @@ func isModelUnsupported(err error) bool {
 
 // isFallbackable returns true when an error warrants trying the next
 // adapter in the chain. Retryable classes:
+//   - HTTP 401 Unauthorized / auth failures — key invalid/expired on this provider;
+//     trying the next provider may succeed.
 //   - HTTP 429 / rate-limit
 //   - HTTP 402 Payment Required (OpenRouter: insufficient credits)
 //   - HTTP 413 Request Entity Too Large (Groq / others: prompt too long)
@@ -291,11 +293,9 @@ func isModelUnsupported(err error) bool {
 //   - Network / connection failures
 //   - Deadline exceeded
 //
-// Permanent errors (auth 401/403, 404, schema
-// mismatches) bubble up unchanged. 400 Bad Request is included in
-// fallbacks because it can be caused by provider-specific strictness
-// or malformed JSON that another model might avoid or another
-// provider might accept.
+// 400 Bad Request is included because it can be caused by provider-specific
+// strictness or malformed JSON that another model/provider might avoid.
+// 403 Forbidden and hard schema errors bubble up unchanged.
 func isFallbackable(err error) bool {
 	if err == nil {
 		return false

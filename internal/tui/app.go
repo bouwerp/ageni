@@ -1123,6 +1123,18 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if form, ok := f.(*huh.Form); ok {
 		a.settingsForm = form
 	}
+	// Sync settingsGroupIdx when huh advances/retreats groups internally
+	// (e.g. Tab past the last field). When we call NextGroup/PrevGroup
+	// directly (Right/Left keys) the index is already updated there;
+	// this only fires for the async message that huh returns as a command.
+	switch fmt.Sprintf("%T", msg) {
+	case "huh.nextGroupMsg":
+		a.settingsGroupIdx++
+	case "huh.prevGroupMsg":
+		if a.settingsGroupIdx > 0 {
+			a.settingsGroupIdx--
+		}
+	}
 
 	if a.settingsForm.State == huh.StateCompleted {
 		if err := a.settingsState.save(); err != nil {
