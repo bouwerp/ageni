@@ -259,17 +259,6 @@ func run() error {
 		r.Register(tools.PkgInfo{})
 		r.Register(todo)
 		r.Register(tools.Simulator{})
-		// Vision: use master provider credentials; fall back to gpt-4o model name.
-		// Providers that don't support vision will return an error per-call.
-		visionModel := cfg.Master.Model
-		if vm := os.Getenv("VISION_MODEL"); vm != "" {
-			visionModel = vm
-		}
-		r.Register(tools.ViewImage{
-			APIKey:  cfg.Master.APIKey,
-			BaseURL: cfg.Master.BaseURL,
-			Model:   visionModel,
-		})
 		if skillReg != nil {
 			r.Register(skills.ReadSkill{Registry: skillReg})
 		}
@@ -310,6 +299,33 @@ func run() error {
 
 	registry := tools.NewRegistry()
 	registerBase(registry, todo, changes)
+
+	// view_image is subagent-only: the master must always delegate image
+	// analysis to a worker so vision calls don't block the orchestration loop.
+	// VISION_PROVIDER configures a dedicated vision endpoint; otherwise master
+	// credentials are used with VISION_MODEL as a model name override.
+	{
+		var visionTool tools.ViewImage
+		if cfg.VisionActive {
+			visionTool = tools.ViewImage{
+				APIKey:         cfg.Vision.APIKey,
+				BaseURL:        cfg.Vision.BaseURL,
+				Model:          cfg.Vision.Model,
+				SupportsVision: true,
+			}
+		} else {
+			visionModel := cfg.Master.Model
+			if vm := os.Getenv("VISION_MODEL"); vm != "" {
+				visionModel = vm
+			}
+			visionTool = tools.ViewImage{
+				APIKey:  cfg.Master.APIKey,
+				BaseURL: cfg.Master.BaseURL,
+				Model:   visionModel,
+			}
+		}
+		registry.Register(visionTool)
+	}
 
 	// Manager + master-only tools. Pass the app-wide ctx so sub-agents
 	// inherit a lifetime that outlives any individual master turn.

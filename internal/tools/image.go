@@ -21,6 +21,9 @@ import (
 // interpretation. Local files are base64-encoded; remote URLs are passed by
 // reference. The tool is self-contained: it opens its own OpenAI-compatible
 // client using the credentials supplied at registration time.
+//
+// view_image is registered only with the sub-agent registry — the master must
+// always delegate image analysis to a worker via spawn_subagent.
 type ViewImage struct {
 	// APIKey and BaseURL configure the OpenAI-compatible endpoint to use.
 	// Leave BaseURL empty for the real OpenAI API.
@@ -29,6 +32,10 @@ type ViewImage struct {
 	// Model is the vision model to use, e.g. "gpt-4o" or "gemini-2.0-flash".
 	// If empty, defaults to "gpt-4o".
 	Model string
+	// SupportsVision is true when the provider/model is known to accept image
+	// inputs (e.g. set via VISION_PROVIDER). When false and the provider
+	// rejects the image request, the error message includes a setup hint.
+	SupportsVision bool
 }
 
 func (ViewImage) Name() string { return "view_image" }
@@ -127,6 +134,13 @@ func (t ViewImage) Call(ctx context.Context, args json.RawMessage) (string, erro
 		},
 	})
 	if err != nil {
+		// Detect provider rejections for image content (e.g. DeepSeek returns
+		// 400 "unknown variant `image_url`") and surface a helpful hint.
+		errStr := err.Error()
+		if !t.SupportsVision && (strings.Contains(errStr, "image_url") ||
+			strings.Contains(errStr, "image") && strings.Contains(errStr, "400")) {
+			return "", fmt.Errorf("vision not supported by the current provider/model (%s) — set VISION_PROVIDER=openai/gpt-4o in .env to enable vision", t.Model)
+		}
 		return "", fmt.Errorf("vision model error: %w", err)
 	}
 	if len(resp.Choices) == 0 {

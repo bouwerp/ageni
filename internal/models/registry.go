@@ -65,8 +65,26 @@ type CanonicalModel struct {
 	// workloads. Higher is better (more capability per dollar). 0 = no pricing.
 	ROIScore float64
 
+	// Capabilities lists model capabilities beyond basic text generation.
+	// Known values: "vision" (accepts image inputs), "reasoning" (explicit
+	// chain-of-thought / extended thinking mode with thinking tokens).
+	// Populated from seed data; "vision" is also updated live from OpenRouter's
+	// architecture.input_modalities field.
+	Capabilities []string
+
 	// UpdatedAt records when BlendedScore was last recalculated.
 	UpdatedAt time.Time
+}
+
+// HasCapability reports whether the model has the named capability.
+// cap is one of "vision", "reasoning".
+func (m *CanonicalModel) HasCapability(cap string) bool {
+	for _, c := range m.Capabilities {
+		if c == cap {
+			return true
+		}
+	}
+	return false
 }
 
 // Registry is the thread-safe process-wide store of canonical models.
