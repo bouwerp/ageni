@@ -247,6 +247,19 @@ func (m *Master) CancelCurrent() {
 // integration turn instead of paying N×cached-prefix cost for N near-
 // simultaneous completions.
 func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
+	// On session resume: if the todo list has pending/unfinished items,
+	// immediately call takeTurns so the master picks up where it left off
+	// without waiting for the user to send a message.
+	if m.resumed && m.todo != nil {
+		items := m.todo.Items()
+		for _, it := range items {
+			if it.Status == tools.TodoPending || it.Status == tools.TodoInProgress {
+				m.takeTurns(ctx)
+				break
+			}
+		}
+	}
+
 	for {
 		select {
 		case <-ctx.Done():
