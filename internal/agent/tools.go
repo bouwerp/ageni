@@ -166,7 +166,7 @@ type SoundboardTool struct{ M *Master }
 
 func (SoundboardTool) Name() string { return "soundboard" }
 func (SoundboardTool) Description() string {
-return `Submit your decomposed plan to an independent critic LLM for adversarial review BEFORE spawning any workers. This is mandatory for every plan — trivial lookups, single-file edits, and complex multi-step changes alike. The critic audits whether you are properly delegating (not doing work yourself), surfaces risks, flags missing edge cases, and suggests alternatives. Returns a structured critique; you MUST incorporate the feedback before proceeding. Do not call spawn_subagent or find_in_codebase without first calling soundboard.`
+return `Submit your decomposed plan to an independent critic LLM for adversarial review before spawning workers. Use this for plans involving 3+ workers, cross-cutting changes, risky/irreversible operations, or when you are uncertain about your approach. Skip it for simple single-worker tasks or straightforward lookups. The critic audits delegation correctness, surfaces risks, flags missing edge cases, and suggests alternatives. Returns a concise critique; incorporate any significant concerns before proceeding.`
 }
 func (SoundboardTool) Schema() json.RawMessage {
 return json.RawMessage(`{
@@ -187,25 +187,12 @@ return "", errors.New("soundboard requires a non-empty plan")
 }
 
 adapter, model := t.M.CriticAdapter()
-selfReview := false
 if adapter == nil {
-// Fall back to the master's own adapter for self-review. This means
-// soundboard always produces a real critique even without a dedicated
-// critic model configured.
-adapter, model = t.M.PrimaryAdapter()
-selfReview = true
-}
-if adapter == nil {
-return "(soundboard: no adapter available — skipping review)", nil
+	return "(soundboard: no dedicated critic configured — skipping review)", nil
 }
 
 // Notify the bus so the TUI can show "critic reviewing…" in the sidebar.
 t.M.bus.Publish(Event{Kind: EvFlash, Text: "critic reviewing plan…"})
-
-label := "Critic review"
-if selfReview {
-label = "Self-review (no dedicated critic configured)"
-}
 
 req := llm.Request{
 Model:  model,
@@ -245,5 +232,11 @@ result := strings.TrimSpace(sb.String())
 if result == "" {
 result = "(critic returned no feedback)"
 }
-return fmt.Sprintf("[%s]\n\n%s", label, result), nil
+// Cap critique at 1200 chars to avoid ballooning the master context window.
+// The critic should be concise; anything longer is usually padding.
+const maxCritiqueLen = 1200
+if len(result) > maxCritiqueLen {
+result = result[:maxCritiqueLen] + "\n…[critique truncated]"
+}
+return fmt.Sprintf("[Critic review]\n\n%s", result), nil
 }
