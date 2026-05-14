@@ -254,6 +254,7 @@ func run() error {
 		r.Register(tools.GitHub{})
 		r.Register(tools.PkgInfo{})
 		r.Register(todo)
+		r.Register(tools.Simulator{})
 		// Vision: use master provider credentials; fall back to gpt-4o model name.
 		// Providers that don't support vision will return an error per-call.
 		visionModel := cfg.Master.Model
