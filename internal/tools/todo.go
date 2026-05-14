@@ -287,6 +287,28 @@ func (t *TodoWrite) AutoRelease(workerID string) {
 	}
 }
 
+// ReleaseAllInProgress resets every in_progress item back to pending and
+// clears all claims. Used on session resume when all prior workers are dead.
+func (t *TodoWrite) ReleaseAllInProgress() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.loaded {
+		t.load()
+		t.loaded = true
+	}
+	changed := false
+	for i := range t.items {
+		if t.items[i].Status == TodoInProgress {
+			t.items[i].ClaimedBy = ""
+			t.items[i].Status = TodoPending
+			changed = true
+		}
+	}
+	if changed {
+		_ = t.save()
+	}
+}
+
 // Items returns a snapshot of the current todo list. Lazy-loads from disk on
 // first call. Safe for concurrent use; callers receive a copy they can mutate.
 func (t *TodoWrite) Items() []TodoItem {

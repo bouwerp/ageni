@@ -352,10 +352,28 @@ func (m *Master) refreshActiveContext() {
 	sb.WriteString("\n<active_context>\n")
 
 	if isResumed {
+		// All workers from the prior process are terminated. Release any todos
+		// that were in_progress so the master can reassign them.
+		if m.todo != nil {
+			m.todo.ReleaseAllInProgress()
+			// Refresh so the todo list below reflects the released state.
+			todoItems = m.todo.Items()
+		}
 		sb.WriteString("SESSION RESUMED. You are the master orchestrator. Your role is unchanged:\n")
 		sb.WriteString("- DELEGATE ALL work to sub-agents via spawn_subagent. Never do the work yourself.\n")
 		sb.WriteString("- PARALLELISE: fan out independent tasks in the same turn.\n")
-		sb.WriteString("- Do NOT call grep/glob/read_file/shell tools directly — spawn workers for those.\n\n")
+		sb.WriteString("- Do NOT call grep/glob/read_file/shell tools directly — spawn workers for those.\n")
+		// Prompt master to pick up unfinished work.
+		pending := 0
+		for _, it := range todoItems {
+			if it.Status == tools.TodoPending {
+				pending++
+			}
+		}
+		if pending > 0 {
+			sb.WriteString(fmt.Sprintf("\n⚠️  The todo list has %d pending item(s) left over from the previous session. Review the list below and immediately continue the unfinished work — do NOT wait for the user to repeat the request.\n", pending))
+		}
+		sb.WriteString("\n")
 	}
 
 	if len(corrections) > 0 {
