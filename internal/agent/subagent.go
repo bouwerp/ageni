@@ -111,7 +111,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	}
 	budget := task.BudgetToolCalls
 	if budget <= 0 {
-		budget = 40
+		budget = 200
 	}
 	return &Subagent{
 		ID:           id,

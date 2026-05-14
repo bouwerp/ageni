@@ -162,7 +162,7 @@ func Load() (*Config, error) {
 		Master:         master,
 		Subagent:       sub,
 		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
-		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 40),
+		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 200),
 	}
 
 	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.

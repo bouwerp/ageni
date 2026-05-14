@@ -20,9 +20,9 @@ func (SpawnTool) Description() string {
 	return `Delegate a focused task to a sub-agent that runs in parallel. The sub-agent has its own conversation and tool access. Returns a sub-agent ID immediately; the sub-agent runs in the background. Use check_subagent to inspect progress, send_to_subagent to course-correct, kill_subagent to cancel.
 
 Routing rules:
-- Trivial lookup (file search, grep, listing): model_tier=haiku, budget_tool_calls=15
-- Standard task (multi-file edit, ordinary debug, code review): model_tier=sonnet, budget_tool_calls=40
-- Complex/ambiguous: decompose into multiple parallel sub-agents, budget_tool_calls=60; reserve opus for synthesis only
+- Trivial lookup (file search, grep, listing): model_tier=haiku, budget_tool_calls=50
+- Standard task (multi-file edit, ordinary debug, code review): model_tier=sonnet, budget_tool_calls=150
+- Complex/ambiguous: decompose into multiple parallel sub-agents, budget_tool_calls=200; reserve opus for synthesis only
 
 Every spawn must specify a clear objective AND output_format. Vague objectives cause duplicated work.`
 }
@@ -35,7 +35,7 @@ func (SpawnTool) Schema() json.RawMessage {
   "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Default sonnet."},
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
-  "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 40. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
+  "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 200. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
   "context":{"type":"string","description":"Free-form pre-computed context for one-off info that doesn't fit the structured fields below."},
   "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."},
   "repo_facts":{"type":"array","items":{"type":"string"},"description":"File-purpose lines you already know, e.g. 'internal/llm/anthropic.go: prompt-caching adapter'. Saves the worker a discovery round-trip."},
