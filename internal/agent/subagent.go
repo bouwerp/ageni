@@ -122,7 +122,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
 		maxRetries:      3,
-		maxTotalRuntime: 20 * time.Minute,
+		maxTotalRuntime: 5 * time.Minute,
 		status:          StatusRunning,
 		spawnedAt:       time.Now(),
 	}
