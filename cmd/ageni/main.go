@@ -377,6 +377,31 @@ func run() error {
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	master.SetTodo(todo)
+
+	// Wire runtime capability awareness: tell master what it can do natively vs via subagents.
+	{
+		masterCaps := models.Global.CapabilitiesForModel(cfg.Master.Model)
+		// Subagent capabilities: union of pool models + vision provider.
+		subCapsSet := map[string]struct{}{}
+		if cfg.VisionActive {
+			subCapsSet["vision"] = struct{}{}
+		}
+		for _, rc := range cfg.SubagentPool {
+			for _, c := range models.Global.CapabilitiesForModel(rc.Model) {
+				subCapsSet[c] = struct{}{}
+			}
+		}
+		if subCaps := models.Global.CapabilitiesForModel(cfg.Subagent.Model); len(cfg.SubagentPool) == 0 {
+			for _, c := range subCaps {
+				subCapsSet[c] = struct{}{}
+			}
+		}
+		subagentCaps := make([]string, 0, len(subCapsSet))
+		for c := range subCapsSet {
+			subagentCaps = append(subagentCaps, c)
+		}
+		master.SetCapabilities(masterCaps, subagentCaps)
+	}
 	if secretStore != nil {
 		master.SetScrubber(secretStore.Redactor().Scrub)
 	}

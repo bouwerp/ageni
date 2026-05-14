@@ -62,6 +62,11 @@ type Subagent struct {
 
 	skillCatalog string
 
+	// capabilities lists the model capabilities of this subagent's model
+	// (e.g. "vision", "reasoning"). Injected into the system prompt so the
+	// subagent knows which tools it can legitimately call.
+	capabilities []string
+
 	// inbox carries follow-up user messages from the master via
 	// send_to_subagent. The subagent loop drains this between turns and
 	// appends each as a user-role message before continuing.
@@ -99,7 +104,7 @@ func (s *Subagent) scrub(text string) string {
 	return f(text)
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string) *Subagent {
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, caps []string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
@@ -119,6 +124,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		maxToolCalls:    budget,
 		hardTurnCap:     budget * 2,
 		skillCatalog:    skillCatalog,
+		capabilities:    append([]string(nil), caps...),
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
 		maxRetries:      3,
@@ -531,12 +537,19 @@ func isTransientErr(err error) bool {
 }
 
 func (s *Subagent) systemPrompt() string {
+	s.mu.Lock()
+	caps := s.capabilities
+	s.mu.Unlock()
+
 	skillsBlock := ""
 	if s.skillCatalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + s.skillCatalog + "\n\nCall read_skill(name=\"...\") to load a skill's full instructions when one matches your task.\n</available_skills>"
 	}
+
+	capsBlock := buildSubagentCapsBlock(caps)
+
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + skillsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + skillsBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
@@ -602,4 +615,40 @@ func (s *Subagent) userPrompt() string {
 	}
 	sb.WriteString("</task>\n\nBegin.")
 	return sb.String()
+}
+
+
+// buildSubagentCapsBlock produces the <model_capabilities> XML block injected
+// into the subagent's system prompt so it knows what tools it can call based
+// on its model's native capabilities.
+func buildSubagentCapsBlock(caps []string) string {
+if len(caps) == 0 {
+return ""
+}
+hasIn := func(c string) bool {
+for _, cap := range caps {
+if cap == c {
+return true
+}
+}
+return false
+}
+var sb strings.Builder
+sb.WriteString("\n\n<model_capabilities>")
+sb.WriteString("\nYour model's capabilities in this session:")
+if hasIn("vision") {
+sb.WriteString("\n- vision: you CAN process images. When the task involves an image file, call view_image with the file path.")
+} else {
+sb.WriteString("\n- vision: NOT available on your model. Do not call view_image. Report to the master if image analysis is needed.")
+}
+if hasIn("reasoning") {
+sb.WriteString("\n- reasoning: your model supports extended chain-of-thought. Use it for complex multi-step problems.")
+}
+for _, c := range caps {
+if c != "vision" && c != "reasoning" {
+sb.WriteString("\n- " + c)
+}
+}
+sb.WriteString("\n</model_capabilities>")
+return sb.String()
 }

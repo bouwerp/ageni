@@ -145,6 +145,33 @@ func (r *Registry) Lookup(canonicalID string) *CanonicalModel {
 	return r.models[canonicalID]
 }
 
+// CapabilitiesForModel returns the capability list for any model whose
+// provider-specific ID or canonical ID matches modelID. Returns nil when the
+// model is not in the registry. The search is provider-agnostic: it scans the
+// provider index for any entry whose value equals modelID.
+func (r *Registry) CapabilitiesForModel(modelID string) []string {
+	if modelID == "" {
+		return nil
+	}
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+	// Exact canonical ID.
+	if m, ok := r.models[modelID]; ok {
+		return append([]string(nil), m.Capabilities...)
+	}
+	// Provider-specific ID (any provider).
+	for key, cid := range r.providerIndex {
+		_ = key
+		// key is "provider:providerModelID"
+		if strings.HasSuffix(key, ":"+modelID) || strings.HasSuffix(key, ":"+strings.TrimSuffix(modelID, ":free")) {
+			if m, ok := r.models[cid]; ok {
+				return append([]string(nil), m.Capabilities...)
+			}
+		}
+	}
+	return nil
+}
+
 // LookupByProviderID returns the canonical model given a provider name and
 // provider-specific model ID. Returns nil if not found.
 func (r *Registry) LookupByProviderID(provider, modelID string) *CanonicalModel {

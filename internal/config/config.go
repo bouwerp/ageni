@@ -51,6 +51,15 @@ type Config struct {
 	Compact       RoleConfig
 	CompactActive bool
 
+	// Vision is an optional dedicated provider for image/vision calls
+	// (view_image tool). When VisionActive is false, vision falls back to the
+	// master adapter — which may not support images. Set VISION_PROVIDER to
+	// use a dedicated vision-capable model, e.g. VISION_PROVIDER=openai/gpt-4o.
+	// VISION_MODEL can also be set to override just the model name while
+	// keeping the master provider's credentials.
+	Vision       RoleConfig
+	VisionActive bool
+
 	// MasterFallbacks / SubagentFallbacks are ordered chains tried in
 	// sequence when the primary fails with a retryable error
 	// (429 / 5xx / timeout / network). Entries are specified in the
@@ -179,6 +188,14 @@ func Load() (*Config, error) {
 		if compact, err := resolveRole("COMPACT", compactRaw); err == nil {
 			cfg.Compact = compact
 			cfg.CompactActive = true
+		}
+	}
+
+	// Vision is opt-in: only resolve if VISION_PROVIDER is set.
+	if visionRaw := os.Getenv("VISION_PROVIDER"); visionRaw != "" {
+		if vision, err := resolveRole("VISION", visionRaw); err == nil {
+			cfg.Vision = vision
+			cfg.VisionActive = true
 		}
 	}
 

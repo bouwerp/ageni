@@ -81,6 +81,16 @@ type Master struct {
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
 	// CancelCurrent). nil when no call is in flight.
 	turnCancel context.CancelFunc
+
+	// masterCaps lists capabilities of the master's own model (e.g. "vision",
+	// "reasoning"). Used to inject a runtime capabilities block into the system
+	// prompt so the master knows what it can and cannot do natively.
+	masterCaps []string
+
+	// subagentCaps lists capabilities available to subagents (union across the
+	// pool plus any dedicated providers like VISION_PROVIDER). Injected into the
+	// system prompt so the master knows when to delegate capability-gated tasks.
+	subagentCaps []string
 }
 
 func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, manager *Manager) *Master {
@@ -209,6 +219,21 @@ func (m *Master) SetTodo(t *tools.TodoWrite) {
 func (m *Master) SetScrubber(f func(string) string) {
 	m.mu.Lock()
 	m.scrubber = f
+	m.mu.Unlock()
+}
+
+// SetCapabilities records the runtime capabilities of the master's own model
+// and those available to subagents. Both are injected into the system prompt
+// so the master knows what it can/cannot do natively and when delegation is
+// required for capability-gated tasks (e.g. vision, reasoning).
+//
+// masterCaps: capability strings for the master model ("vision", "reasoning").
+// subagentCaps: union of capabilities available across the subagent pool plus
+// dedicated providers (e.g. VISION_PROVIDER adds "vision").
+func (m *Master) SetCapabilities(masterCaps, subagentCaps []string) {
+	m.mu.Lock()
+	m.masterCaps = append([]string(nil), masterCaps...)
+	m.subagentCaps = append([]string(nil), subagentCaps...)
 	m.mu.Unlock()
 }
 
@@ -972,6 +997,8 @@ func (m *Master) systemPrompt() string {
 	catalog := m.skillCatalog
 	repoMap := m.repoMap
 	agentsMD := m.agentsMD
+	masterCaps := m.masterCaps
+	subagentCaps := m.subagentCaps
 	m.mu.RUnlock()
 
 	skillsBlock := ""
@@ -987,8 +1014,10 @@ func (m *Master) systemPrompt() string {
 		agentsBlock = "\n\n<project_instructions source=\"AGENTS.md\">\n" + agentsMD + "\n\nThese are the project's authoritative agent instructions (cross-vendor convention shared with Codex, Cursor, Amp, Factory, Jules, Copilot). Honour them as if they were given by the user. When multiple <agents_md> scopes apply to a file, the deepest matching scope wins — root-level rules apply unless a nested scope overrides them.\n</project_instructions>"
 	}
 
+	capsBlock := buildMasterCapsBlock(masterCaps, subagentCaps)
+
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + repoMapBlock + agentsBlock + `
+	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + repoMapBlock + agentsBlock + capsBlock + `
 
 <orchestration_rules>
 You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.
@@ -1158,4 +1187,70 @@ You MUST be self-healing. When a tool call or provider request returns an error,
    c. Incorporate soundboard feedback AND research findings into the next spawn. If soundboard and research together cannot surface a viable path, THEN escalate to the user with a precise description of what was attempted and why it failed.
    Spawning a third unchanged attempt without a revised strategy is a HARD CONTRACT VIOLATION.
 </self_healing>`
+}
+
+// buildMasterCapsBlock produces the <model_capabilities> XML block injected
+// into the master's system prompt. It summarises what the master model itself
+// can do, and what is available via subagents, so the master knows when and
+// how to delegate capability-gated tasks (e.g. vision).
+func buildMasterCapsBlock(masterCaps, subagentCaps []string) string {
+	if len(masterCaps) == 0 && len(subagentCaps) == 0 {
+		return ""
+	}
+
+	hasIn := func(caps []string, cap string) bool {
+		for _, c := range caps {
+			if c == cap {
+				return true
+			}
+		}
+		return false
+	}
+
+	var sb strings.Builder
+	sb.WriteString("\n\n<model_capabilities>")
+	sb.WriteString("\nThis block describes what YOUR model can do natively vs what is available via subagents.")
+
+	sb.WriteString("\n\nMaster model capabilities:")
+	if len(masterCaps) == 0 {
+		sb.WriteString("\n- No special capabilities detected (text/tools only).")
+	} else {
+		for _, c := range masterCaps {
+			switch c {
+			case "vision":
+				sb.WriteString("\n- vision: your model supports image inputs. However, view_image is ALWAYS a subagent-only tool — you must still delegate image tasks.")
+			case "reasoning":
+				sb.WriteString("\n- reasoning: your model supports extended chain-of-thought reasoning tokens.")
+			default:
+				sb.WriteString("\n- " + c)
+			}
+		}
+	}
+
+	sb.WriteString("\n\nSubagent capabilities (what workers can do):")
+	if len(subagentCaps) == 0 {
+		sb.WriteString("\n- No special capabilities detected in the subagent pool.")
+	} else {
+		if hasIn(subagentCaps, "vision") {
+			sb.WriteString("\n- vision: subagents CAN process images. When a task requires reading or analysing an image, spawn a subagent and give it the image path — it will use view_image.")
+		}
+		if hasIn(subagentCaps, "reasoning") {
+			sb.WriteString("\n- reasoning: subagents CAN use extended reasoning. Prefer model_tier=opus for tasks that benefit from deep deliberation.")
+		}
+		for _, c := range subagentCaps {
+			if c != "vision" && c != "reasoning" {
+				sb.WriteString("\n- " + c)
+			}
+		}
+	}
+
+	if !hasIn(masterCaps, "vision") && hasIn(subagentCaps, "vision") {
+		sb.WriteString("\n\nIMPORTANT: You do not have native vision. To analyse images, always spawn a subagent with the image path and let it call view_image. Never attempt to process image files yourself.")
+	}
+	if !hasIn(masterCaps, "vision") && !hasIn(subagentCaps, "vision") {
+		sb.WriteString("\n\nNOTE: Neither your model nor the subagent pool have vision capability in this session. Image analysis tasks cannot be performed unless VISION_PROVIDER is configured.")
+	}
+
+	sb.WriteString("\n</model_capabilities>")
+	return sb.String()
 }

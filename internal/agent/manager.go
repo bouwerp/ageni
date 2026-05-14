@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -123,7 +124,8 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		m.mu.Unlock()
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog)
+	caps := models.Global.CapabilitiesForModel(model)
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, caps)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}
