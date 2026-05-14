@@ -830,7 +830,7 @@ func (m *Master) compactHistory(ctx context.Context) {
 	}
 	m.mu.RUnlock()
 
-	summaryCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+	summaryCtx, cancel := context.WithTimeout(ctx, 120*time.Second)
 	defer cancel()
 
 	stream, err := adapter.Stream(summaryCtx, summariseReq)
@@ -842,13 +842,49 @@ func (m *Master) compactHistory(ctx context.Context) {
 	}
 
 	var summaryBuf strings.Builder
-	for ev := range stream {
-		if ev.Type == llm.StreamEventText {
-			summaryBuf.WriteString(ev.TextDelta)
+	var compactUsage llm.Usage
+	var streamErr error
+streamLoop:
+	for {
+		select {
+		case ev, ok := <-stream:
+			if !ok {
+				break streamLoop
+			}
+			switch ev.Type {
+			case llm.StreamEventText:
+				summaryBuf.WriteString(ev.TextDelta)
+			case llm.StreamEventDone:
+				if ev.Usage != nil {
+					compactUsage = *ev.Usage
+				}
+				break streamLoop
+			case llm.StreamEventError:
+				streamErr = ev.Err
+				break streamLoop
+			}
+		case <-summaryCtx.Done():
+			streamErr = summaryCtx.Err()
+			// Drain the channel in the background so the adapter goroutine
+			// can exit cleanly without blocking on a send.
+			go func() {
+				for range stream { //nolint:revive
+				}
+			}()
+			break streamLoop
 		}
-		if ev.Type == llm.StreamEventDone && ev.Usage != nil {
-			m.tracker.Add("master/compact", model, *ev.Usage)
-		}
+	}
+
+	if compactUsage.InputTokens+compactUsage.OutputTokens > 0 {
+		m.tracker.Add("master/compact", model, compactUsage)
+	}
+
+	if streamErr != nil {
+		errText := fmt.Sprintf("⚠️ Context compaction error (%v) — keeping history as-is", streamErr)
+		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction error — keeping history as-is"})
+		m.bus.Publish(Event{Kind: EvCompaction, Done: true, Text: errText})
+		m.messages = msgs
+		return
 	}
 
 	summary := strings.TrimSpace(summaryBuf.String())
