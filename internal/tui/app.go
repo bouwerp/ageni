@@ -1568,6 +1568,10 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshSide()
 	case agent.EvFlash:
 		a.flashMessage = ev.Text
+	case agent.EvCompaction:
+		compactStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true)
+		a.chatBuf.WriteString("\n" + compactStyle.Render(ev.Text) + "\n")
+		a.refreshChat()
 	case agent.EvShellOpened:
 		id := ev.SubagentID
 		if a.shellBufs[id] == nil {

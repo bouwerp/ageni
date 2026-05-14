@@ -725,6 +725,7 @@ func (m *Master) maybeCompactHistory(ctx context.Context) {
 		return
 	}
 	m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context growing (%d tokens) — compacting…", m.lastInputTokens)})
+	m.bus.Publish(Event{Kind: EvCompaction, Text: fmt.Sprintf("🗜️ Context compacting… (%d tokens — summarising older messages)", m.lastInputTokens)})
 	m.compactHistory(ctx)
 }
 
@@ -813,6 +814,7 @@ func (m *Master) compactHistory(ctx context.Context) {
 	stream, err := adapter.Stream(summaryCtx, summariseReq)
 	if err != nil {
 		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction failed — keeping history as-is"})
+		m.bus.Publish(Event{Kind: EvCompaction, Done: true, Text: "⚠️ Context compaction failed — keeping history as-is"})
 		m.messages = msgs
 		return
 	}
@@ -830,6 +832,7 @@ func (m *Master) compactHistory(ctx context.Context) {
 	summary := strings.TrimSpace(summaryBuf.String())
 	if summary == "" {
 		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction produced empty summary — keeping history as-is"})
+		m.bus.Publish(Event{Kind: EvCompaction, Done: true, Text: "⚠️ Context compaction produced empty summary — keeping history as-is"})
 		m.messages = msgs
 		return
 	}
@@ -842,7 +845,11 @@ func (m *Master) compactHistory(ctx context.Context) {
 	m.messages = append([]llm.Message{summaryMsg}, toKeep...)
 	m.lastInputTokens = 0 // reset so we don't immediately compact again
 
-	m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context compacted: %d messages → summary + %d recent messages", len(toSummarise), len(toKeep))})
+	result := fmt.Sprintf("context compacted: %d messages → summary + %d recent messages", len(toSummarise), len(toKeep))
+	m.bus.Publish(Event{Kind: EvFlash, Text: result})
+	m.bus.Publish(Event{Kind: EvCompaction, Done: true,
+		Text: fmt.Sprintf("🗜️ Context compacted — summarised %d messages, kept %d recent (–%d messages)", len(toSummarise), len(toKeep), len(toSummarise)),
+	})
 }
 
 

@@ -31,6 +31,11 @@ const (
 	EvSubagentUsage     EventKind = "subagent_usage"
 	EvError             EventKind = "error"
 	EvFlash             EventKind = "flash"
+	// EvCompaction is published when proactive context compaction runs.
+	// Text carries a human-readable summary (start notice or result).
+	// The Done field indicates whether this is the completion event (true)
+	// or the start notice (false).
+	EvCompaction EventKind = "compaction"
 	// EvCancelAll is sent directly to the master inbox (not via the bus)
 	// when the user presses Esc. The master discards any accumulated
 	// pending sub-agent events and skips the next turn.
@@ -62,6 +67,10 @@ type Event struct {
 
 	// Shell metadata for EvShellOpened events
 	ShellKind ShellKind
+
+	// Done is set on EvCompaction to distinguish the completion event
+	// from the start notice.
+	Done bool
 
 	Err error
 }
