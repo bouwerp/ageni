@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 	"sync"
+	"syscall"
 	"time"
 )
 
@@ -57,6 +58,9 @@ type ShellSession struct {
 
 func newShellSession(id, label string, kind ShellKind, bus *Bus) (*ShellSession, error) {
 	cmd := exec.Command("bash", "-s")
+	// Put the shell in its own process group so that when we kill it we also
+	// kill any child processes it has spawned (servers, build tools, etc.).
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
 
 	stdin, err := cmd.StdinPipe()
 	if err != nil {
@@ -396,7 +400,14 @@ func (s *ShellSession) close() error {
 	s.cond.Broadcast()
 	s.stdin.Close()
 	if s.cmd.Process != nil {
-		s.cmd.Process.Kill()
+		// Kill the entire process group so child processes (servers, build
+		// tools, etc.) don't linger after the shell exits.
+		pgid, err := syscall.Getpgid(s.cmd.Process.Pid)
+		if err == nil && pgid > 0 {
+			_ = syscall.Kill(-pgid, syscall.SIGKILL)
+		} else {
+			s.cmd.Process.Kill()
+		}
 	}
 	return nil
 }
