@@ -67,9 +67,10 @@ type Subagent struct {
 	// appends each as a user-role message before continuing.
 	inbox chan string
 
-	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3.
-	turnTimeout time.Duration
-	maxRetries  int
+	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3, maxTotalRuntime 20min.
+	turnTimeout     time.Duration
+	maxRetries      int
+	maxTotalRuntime time.Duration
 
 	mu         sync.Mutex
 	status     SubagentStatus
@@ -115,14 +116,15 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		bus:          bus,
 		tools:        allowed,
 		tracker:      tracker,
-		maxToolCalls: budget,
-		hardTurnCap:  budget * 2,
-		skillCatalog: skillCatalog,
-		inbox:        make(chan string, 16),
-		turnTimeout:  5 * time.Minute,
-		maxRetries:   3,
-		status:       StatusRunning,
-		spawnedAt:    time.Now(),
+		maxToolCalls:    budget,
+		hardTurnCap:     budget * 2,
+		skillCatalog:    skillCatalog,
+		inbox:           make(chan string, 16),
+		turnTimeout:     5 * time.Minute,
+		maxRetries:      3,
+		maxTotalRuntime: 20 * time.Minute,
+		status:          StatusRunning,
+		spawnedAt:       time.Now(),
 	}
 }
 
@@ -197,7 +199,7 @@ func (s *Subagent) Cancel() {
 
 // Run executes the subagent loop. Should be called in a goroutine.
 func (s *Subagent) Run(parent context.Context) {
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithTimeout(parent, s.maxTotalRuntime)
 	s.mu.Lock()
 	s.cancel = cancel
 	s.mu.Unlock()

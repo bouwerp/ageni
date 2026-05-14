@@ -260,6 +260,33 @@ func (t *TodoWrite) Call(ctx context.Context, args json.RawMessage) (string, err
 	return t.render(), nil
 }
 
+// AutoRelease resets any in_progress items claimed by workerID back to
+// pending. Called automatically when a worker exits (done, error, cancelled)
+// so that todos don't stay "in_progress" forever if the master forgets to
+// update them.
+func (t *TodoWrite) AutoRelease(workerID string) {
+	if workerID == "" {
+		return
+	}
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.loaded {
+		t.load()
+		t.loaded = true
+	}
+	changed := false
+	for i := range t.items {
+		if t.items[i].ClaimedBy == workerID && t.items[i].Status == TodoInProgress {
+			t.items[i].ClaimedBy = ""
+			t.items[i].Status = TodoPending
+			changed = true
+		}
+	}
+	if changed {
+		_ = t.save()
+	}
+}
+
 // Items returns a snapshot of the current todo list. Lazy-loads from disk on
 // first call. Safe for concurrent use; callers receive a copy they can mutate.
 func (t *TodoWrite) Items() []TodoItem {

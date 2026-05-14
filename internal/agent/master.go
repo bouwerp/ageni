@@ -408,8 +408,14 @@ func (m *Master) refreshActiveContext() {
 				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
 			case EvSubagentDone:
 				sb.WriteString(fmt.Sprintf("- %s finished — call check_subagent(%q) for the final output\n", ev.SubagentID, ev.SubagentID))
+				if m.todo != nil {
+					m.todo.AutoRelease(ev.SubagentID)
+				}
 			case EvSubagentError:
 				sb.WriteString(fmt.Sprintf("- %s ERROR: %v\n", ev.SubagentID, ev.Err))
+				if m.todo != nil {
+					m.todo.AutoRelease(ev.SubagentID)
+				}
 			}
 		}
 		sb.WriteString("React: inspect via check_subagent, correct via send_to_subagent, kill, or proceed.\n")
@@ -988,7 +994,10 @@ You OWN every sub-agent you spawn. The user is not a backstop. The user does not
    - An irreversible action with material blast radius: force-push, drop table, delete shared infra, send to a real external channel
    - A genuine ambiguity where multiple divergent interpretations exist AND you've already narrowed it to ≤3 concrete options. Frame it as a choice, not an open question.
 
-6. **End your turn cleanly.** When you have nothing to do — no workers running, no follow-up step in flight, the goal demonstrably met or genuinely blocked — produce one final assistant turn: deliverable + brief integration summary, OR the specific blocker. Don't end a turn while a worker is still running; that strands the user with no signal.
+6. **End your turn cleanly — but always leave a signal.** When workers are still running:
+   - Produce a one-sentence status line before ending: "⏳ Waiting for N workers (sX: objective summary…)" so the user can see you're active and what you're waiting on.
+   - Do NOT pad with explanations. One sentence max.
+   When no workers are running and the goal is met or genuinely blocked, produce one final turn: deliverable + brief integration summary, OR the specific blocker.
 </ownership_rules>
 
 <output_discipline>
