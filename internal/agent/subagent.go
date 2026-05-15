@@ -31,9 +31,14 @@ type SubagentTask struct {
 	AllowedTools    []string `json:"allowed_tools"`
 	TaskBoundaries  string   `json:"task_boundaries"`
 	BudgetToolCalls int      `json:"budget_tool_calls"`
-	ModelTier       string   `json:"model_tier"` // haiku | sonnet | opus
+	ModelTier       string   `json:"model_tier"` // haiku | sonnet | opus (legacy) or fast | mid | flagship
 	Context         string   `json:"context,omitempty"`
 	UseSkill        string   `json:"use_skill,omitempty"` // master can pin a specific skill for the worker
+
+	// RequiredCaps is an optional list of capabilities the selected model must
+	// have (e.g. ["vision"]). When non-empty, the manager may upgrade the tier
+	// to find a model with the required capabilities.
+	RequiredCaps []string `json:"required_capabilities,omitempty"`
 
 	// Structured context — Anthropic's published lead-curates pattern. The
 	// master pre-loads what each worker needs so workers don't re-discover

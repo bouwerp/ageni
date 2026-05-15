@@ -16,9 +16,10 @@ type SubagentSpec struct {
 	Task SubagentTask
 }
 
-// AdapterFactory returns the adapter + model for a given tier. The master
-// owns this so it can swap providers at runtime.
-type AdapterFactory func(tier string) (adapter llm.Adapter, model string)
+// AdapterFactory returns the adapter + model for a given tier and optional
+// required capabilities. The master owns this so it can swap providers at
+// runtime. requiredCaps may be nil or empty (meaning any model for the tier).
+type AdapterFactory func(tier string, requiredCaps []string) (adapter llm.Adapter, model string)
 
 // Manager owns active sub-agents and provides spawn/check/send/kill.
 type Manager struct {
@@ -119,7 +120,7 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	m.nextID++
 	id := fmt.Sprintf("s%d", m.nextID)
-	adapter, model := m.factory(task.ModelTier)
+	adapter, model := m.factory(task.ModelTier, task.RequiredCaps)
 	if adapter == nil {
 		m.mu.Unlock()
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)

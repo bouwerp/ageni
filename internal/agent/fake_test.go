@@ -115,7 +115,7 @@ func TestSpawnRequiresContract(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
-	factory := func(tier string) (llm.Adapter, string) {
+	factory := func(tier string, _ []string) (llm.Adapter, string) {
 		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m"
 	}
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
@@ -151,7 +151,7 @@ func TestMasterCallsToolThenAnswers(t *testing.T) {
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
 	reg.Register(tools.ListDir{})
-	factory := func(tier string) (llm.Adapter, string) { return adapter, "m" }
+	factory := func(tier string, _ []string) (llm.Adapter, string) { return adapter, "m" }
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
 	master := NewMaster(adapter, "m", reg, bus, tracker, mgr)
 

@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/models"
 )
 
 // SpawnTool is the master-only tool for delegating work to a sub-agent. The
@@ -23,6 +24,9 @@ Routing rules:
 - Trivial lookup (file search, grep, listing): model_tier=haiku, budget_tool_calls=50
 - Standard task (multi-file edit, ordinary debug, code review): model_tier=sonnet, budget_tool_calls=150
 - Complex/ambiguous: decompose into multiple parallel sub-agents, budget_tool_calls=200; reserve opus for synthesis only
+- Tasks involving images/screenshots: set required_capabilities=["vision"]
+
+When model_tier is omitted, an automatic heuristic selects a tier from the objective. The tier may be upgraded automatically if required_capabilities cannot be satisfied at the requested tier.
 
 Every spawn must specify a clear objective AND output_format. Vague objectives cause duplicated work.`
 }
@@ -32,7 +36,8 @@ func (SpawnTool) Schema() json.RawMessage {
 "properties":{
   "objective":{"type":"string","description":"Single-sentence imperative goal. Be specific."},
   "output_format":{"type":"string","description":"Exactly what the sub-agent must return — schema, structure, or example."},
-  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Default sonnet."},
+  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Omit to auto-select based on task complexity."},
+  "required_capabilities":{"type":"array","items":{"type":"string","enum":["vision","reasoning","function_calling","structured_output"]},"description":"Capabilities the model must support. Use [\"vision\"] for image/screenshot tasks."},
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
   "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 200. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
@@ -56,6 +61,17 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if strings.TrimSpace(task.OutputFormat) == "" {
 		return "", errors.New("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
+
+	// Auto-detect required capabilities from objective keywords when not provided.
+	if len(task.RequiredCaps) == 0 {
+		task.RequiredCaps = models.ExtractRequiredCaps(task.Objective)
+	}
+
+	// Auto-select tier when omitted, using a heuristic complexity scorer.
+	if task.ModelTier == "" {
+		task.ModelTier, _ = models.EstimateComplexity(task.Objective)
+	}
+
 	id, err := t.M.Spawn(ctx, task)
 	if err != nil {
 		return "", err

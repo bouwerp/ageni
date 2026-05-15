@@ -681,29 +681,24 @@ func buildCloudSubPool(entries []config.RoleConfig) *cloudSubPool {
 	return pool
 }
 
-// pickForTier selects the best adapter+model for the given agent tier
-// ("haiku"→"fast", "sonnet"→"mid", "opus"→"flagship") using the global
-// model registry. Falls back to round-robin when the registry has no
-// data for the requested tier.
-func (p *cloudSubPool) pickForTier(tier string) (llm.Adapter, string) {
-	// Map spawn_subagent tier names → registry tier names.
-	registryTier := map[string]string{
-		"haiku":  "fast",
-		"sonnet": "mid",
-		"opus":   "flagship",
-	}[tier]
-	if registryTier == "" {
-		registryTier = "mid"
-	}
-
+// pickForTask selects the best adapter+model for the given tier and required
+// capabilities using the global model registry. Falls back to round-robin
+// when the registry has no matching data.
+func (p *cloudSubPool) pickForTask(tier string, requiredCaps []string) (llm.Adapter, string) {
 	// Collect provider names from the pool.
 	providerNames := make([]string, len(p.entries))
 	for i, e := range p.entries {
 		providerNames[i] = e.providerName
 	}
 
-	// Ask the registry for the best model+provider for this tier.
-	if _, providerID, modelID := models.Global.BestForTier(registryTier, providerNames); providerID != "" && modelID != "" {
+	req := models.TaskRequirements{
+		Tier:        tier,
+		RequireCaps: requiredCaps,
+		PreferCheap: true, // sub-agents default to ROI-optimised selection
+	}
+
+	// Ask the registry for the best model+provider for this task.
+	if _, providerID, modelID := models.Global.BestForTask(req, providerNames); providerID != "" && modelID != "" {
 		for _, e := range p.entries {
 			if e.providerName == providerID {
 				return e.adapter, modelID
@@ -733,24 +728,24 @@ func (p *cloudSubPool) pickForTier(tier string) (llm.Adapter, string) {
 // caching (Anthropic/OpenAI) makes repeated context reads ≈10× cheaper;
 // rotating the master to a different provider discards that discount.
 func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleetPool, subPool *cloudSubPool) agent.AdapterFactory {
-	return func(tier string) (llm.Adapter, string) {
+	return func(tier string, requiredCaps []string) (llm.Adapter, string) {
 		switch tier {
-		case "opus":
+		case "opus", "flagship":
 			return master, cfg.Master.Model
-		case "haiku":
+		case "haiku", "fast", "tiny":
 			if fleet != nil && (cfg.LocalFleetMode == "full" || cfg.LocalFleetMode == "subset") {
 				return fleet.next()
 			}
 			if subPool != nil {
-				return subPool.pickForTier(tier)
+				return subPool.pickForTask(tier, requiredCaps)
 			}
 			return sub, cfg.Subagent.Model
-		default: // sonnet and anything else
+		default: // sonnet, mid, and anything else
 			if fleet != nil && cfg.LocalFleetMode == "full" {
 				return fleet.next()
 			}
 			if subPool != nil {
-				return subPool.pickForTier(tier)
+				return subPool.pickForTask(tier, requiredCaps)
 			}
 			return sub, cfg.Subagent.Model
 		}
@@ -762,6 +757,12 @@ func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleet
 // returns the primary adapter unwrapped (no overhead). The onFallback
 // callback fires once per fall-through with from/to labels and reason.
 func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleConfig, onFallback func(from, to, reason string)) llm.Adapter {
+	ctxWindow := func(rc config.RoleConfig) int {
+		if m := models.Global.LookupByProviderID(rc.Provider.Name, rc.Model); m != nil {
+			return m.ContextWindow
+		}
+		return 0
+	}
 	if len(fallbacks) == 0 {
 		return buildAdapter(primary)
 	}
@@ -772,6 +773,7 @@ func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleC
 		Label:            llm.FormatLabel(primary.Provider.Name, primary.Model),
 		FallbackModels:   alternativeModels(primary),
 		LiveModelFetcher: liveModelFetcher(primary),
+		ContextWindow:    ctxWindow(primary),
 	})
 	for _, fb := range fallbacks {
 		entries = append(entries, llm.FallbackEntry{
@@ -780,6 +782,7 @@ func buildChain(name string, primary config.RoleConfig, fallbacks []config.RoleC
 			Label:            llm.FormatLabel(fb.Provider.Name, fb.Model),
 			FallbackModels:   alternativeModels(fb),
 			LiveModelFetcher: liveModelFetcher(fb),
+			ContextWindow:    ctxWindow(fb),
 		})
 	}
 	chain := llm.NewFallbackAdapter(name, entries...)

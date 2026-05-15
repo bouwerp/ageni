@@ -67,10 +67,33 @@ type CanonicalModel struct {
 
 	// Capabilities lists model capabilities beyond basic text generation.
 	// Known values: "vision" (accepts image inputs), "reasoning" (explicit
-	// chain-of-thought / extended thinking mode with thinking tokens).
-	// Populated from seed data; "vision" is also updated live from OpenRouter's
-	// architecture.input_modalities field.
+	// chain-of-thought / extended thinking mode), "function_calling" (tool/function
+	// calling), "structured_output" (guaranteed JSON schema adherence).
+	// Populated from seed data; also updated live from OpenRouter's
+	// architecture.input_modalities and supported_parameters fields.
 	Capabilities []string
+
+	// ContextWindow is the maximum number of input tokens the model accepts
+	// (0 = unknown). Used for pre-flight context window checks before sending.
+	ContextWindow int
+
+	// MaxOutputTokens is the maximum number of completion tokens the model can
+	// produce per request (0 = unknown).
+	MaxOutputTokens int
+
+	// ThinkingCostPer1M is the cost in USD per million thinking/reasoning tokens
+	// when they are billed separately from regular output tokens (0 = not
+	// applicable or billed at the standard output rate).
+	ThinkingCostPer1M float64
+
+	// SupportedParams is the list of supported API parameters as returned by
+	// OpenRouter's supported_parameters field (e.g. ["tools", "reasoning",
+	// "structured_outputs"]). Populated live; empty when unknown.
+	SupportedParams []string
+
+	// KnowledgeCutoff is the model's training data cutoff in "YYYY-MM" format
+	// (e.g. "2024-07"). Empty when not published.
+	KnowledgeCutoff string
 
 	// UpdatedAt records when BlendedScore was last recalculated.
 	UpdatedAt time.Time
@@ -402,6 +425,240 @@ func (r *Registry) ApplyPricing(costs map[string][2]float64) {
 	}
 }
 
+// ApplyWindowSizes stores live context window sizes fetched from OpenRouter.
+// sizes maps "openrouter:modelID" → [contextWindow, maxOutputTokens].
+// Only non-zero values overwrite existing data.
+func (r *Registry) ApplyWindowSizes(sizes map[string][2]int) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, pair := range sizes {
+		cid, ok := r.providerIndex[key]
+		if !ok {
+			idx := strings.Index(key, ":")
+			if idx >= 0 {
+				base := strings.TrimSuffix(key[idx+1:], ":free")
+				cid, ok = r.providerIndex[key[:idx]+":"+base]
+			}
+		}
+		if !ok {
+			continue
+		}
+		m := r.models[cid]
+		if pair[0] > 0 {
+			m.ContextWindow = pair[0]
+		}
+		if pair[1] > 0 {
+			m.MaxOutputTokens = pair[1]
+		}
+	}
+}
+
+// ApplyThinkingPricing stores live thinking/reasoning token costs from OpenRouter.
+// costs maps "openrouter:modelID" → thinking cost per million tokens.
+// Only non-zero values overwrite existing data.
+func (r *Registry) ApplyThinkingPricing(costs map[string]float64) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, cost := range costs {
+		cid, ok := r.providerIndex[key]
+		if !ok {
+			idx := strings.Index(key, ":")
+			if idx >= 0 {
+				base := strings.TrimSuffix(key[idx+1:], ":free")
+				cid, ok = r.providerIndex[key[:idx]+":"+base]
+			}
+		}
+		if !ok {
+			continue
+		}
+		if cost > 0 {
+			r.models[cid].ThinkingCostPer1M = cost
+		}
+	}
+	r.recomputeUnsafe()
+}
+
+// ApplySupportedParams stores OpenRouter's supported_parameters lists and
+// derives new capabilities from them. Only adds capabilities; never removes
+// seed-declared ones.
+//
+// Capability derivation rules:
+//
+//	"reasoning" or "include_reasoning" → "reasoning"
+//	"tools" or "tool_choice"           → "function_calling"
+//	"structured_outputs"               → "structured_output"
+func (r *Registry) ApplySupportedParams(params map[string][]string) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	for key, sp := range params {
+		cid, ok := r.providerIndex[key]
+		if !ok {
+			idx := strings.Index(key, ":")
+			if idx >= 0 {
+				base := strings.TrimSuffix(key[idx+1:], ":free")
+				cid, ok = r.providerIndex[key[:idx]+":"+base]
+			}
+		}
+		if !ok {
+			continue
+		}
+		m := r.models[cid]
+		m.SupportedParams = sp
+
+		// Derive capabilities from supported_parameters.
+		hasTools := false
+		for _, p := range sp {
+			switch p {
+			case "reasoning", "include_reasoning":
+				if !m.HasCapability("reasoning") {
+					m.Capabilities = append(m.Capabilities, "reasoning")
+				}
+			case "tools", "tool_choice":
+				hasTools = true
+			case "structured_outputs":
+				if !m.HasCapability("structured_output") {
+					m.Capabilities = append(m.Capabilities, "structured_output")
+				}
+			}
+		}
+		if hasTools && !m.HasCapability("function_calling") {
+			m.Capabilities = append(m.Capabilities, "function_calling")
+		}
+	}
+}
+
+// TierFromLegacy converts legacy tier names used in spawn_subagent tool schema
+// ("haiku", "sonnet", "opus") to canonical registry tier names
+// ("fast", "mid", "flagship"). Already-canonical names are returned unchanged.
+func TierFromLegacy(tier string) string {
+	switch tier {
+	case "haiku":
+		return "fast"
+	case "sonnet":
+		return "mid"
+	case "opus":
+		return "flagship"
+	default:
+		return tier // already canonical: "fast", "mid", "flagship", "tiny"
+	}
+}
+
+// TaskRequirements specifies constraints for automated model selection.
+type TaskRequirements struct {
+	// Tier is the preferred canonical tier ("flagship", "mid", "fast", "tiny")
+	// or legacy name ("opus", "sonnet", "haiku"). The selector may upgrade the
+	// tier to satisfy RequireCaps, but will never downgrade.
+	Tier string
+
+	// RequireCaps is a list of capabilities that the selected model must have.
+	// Known values: "vision", "reasoning", "function_calling", "structured_output".
+	// If no model at the requested tier has the required caps, the selector
+	// tries the next tier up.
+	RequireCaps []string
+
+	// MinContextTokens is the minimum context window required in tokens.
+	// Models with ContextWindow > 0 && ContextWindow < MinContextTokens are
+	// skipped. Models with ContextWindow == 0 (unknown) are not filtered out.
+	MinContextTokens int
+
+	// PreferCheap selects by ROIScore over BlendedScore when both metrics are
+	// available. Default false = prefer BlendedScore (raw capability).
+	PreferCheap bool
+}
+
+// BestForTask selects the best model matching the given TaskRequirements from
+// the configured providers. It hard-filters by RequireCaps (upgrading tier if
+// needed to satisfy them) and MinContextTokens, then ranks by ROIScore or
+// BlendedScore according to PreferCheap.
+//
+// Returns nil, "", "" when no match is found.
+func (r *Registry) BestForTask(req TaskRequirements, providers []string) (model *CanonicalModel, providerID, modelID string) {
+	if len(providers) == 0 {
+		return nil, "", ""
+	}
+	providerSet := make(map[string]struct{}, len(providers))
+	for _, p := range providers {
+		providerSet[p] = struct{}{}
+	}
+
+	// Normalise tier from legacy naming.
+	wantTier := TierFromLegacy(req.Tier)
+	if wantTier == "" {
+		wantTier = "mid"
+	}
+
+	tierOrder := []string{"tiny", "fast", "mid", "flagship"}
+	tierRank := map[string]int{"tiny": 0, "fast": 1, "mid": 2, "flagship": 3}
+	minRank, ok := tierRank[wantTier]
+	if !ok {
+		minRank = tierRank["mid"]
+	}
+
+	r.mu.RLock()
+	defer r.mu.RUnlock()
+
+	type candidate struct {
+		m          *CanonicalModel
+		provider   string
+		specificID string
+		score      float64
+	}
+
+	// Try tiers from wantTier upward until we find a matching candidate.
+	for _, tier := range tierOrder {
+		tr, ok2 := tierRank[tier]
+		if !ok2 || tr < minRank {
+			continue
+		}
+		var candidates []candidate
+		for _, m := range r.ranked {
+			if m.Tier != tier {
+				continue
+			}
+			// Context window filter (skip only if we know the window and it's too small).
+			if req.MinContextTokens > 0 && m.ContextWindow > 0 && m.ContextWindow < req.MinContextTokens {
+				continue
+			}
+			// Capability filter.
+			allCaps := true
+			for _, cap := range req.RequireCaps {
+				if !m.HasCapability(cap) {
+					allCaps = false
+					break
+				}
+			}
+			if !allCaps {
+				continue
+			}
+			// Find first available provider.
+			for _, ap := range m.AvailableProviders {
+				if _, ok3 := providerSet[ap]; ok3 {
+					if sid, ok4 := m.ProviderIDs[ap]; ok4 && sid != "" {
+						score := m.ROIScore
+						if !req.PreferCheap || score == 0 {
+							score = m.BlendedScore
+						}
+						candidates = append(candidates, candidate{m, ap, sid, score})
+						break
+					}
+				}
+			}
+		}
+		if len(candidates) == 0 {
+			continue // try next tier up
+		}
+		// Pick highest-score candidate.
+		best := candidates[0]
+		for _, c := range candidates[1:] {
+			if c.score > best.score {
+				best = c
+			}
+		}
+		return best.m, best.provider, best.specificID
+	}
+	return nil, "", ""
+}
+
 // resolveAiderNameUnsafe matches an Aider model name string against registry
 // entries. Must be called with r.mu held for write.
 func (r *Registry) resolveAiderNameUnsafe(name string) *CanonicalModel {
@@ -518,7 +775,12 @@ func (r *Registry) recomputeUnsafe() {
 		}
 		// ROI = score / effective_cost_per_1M_tokens.
 		// Effective cost weights input:output at 20:80 (typical agentic ratio).
+		// For models with separate thinking token pricing, add a 10% thinking
+		// token component (thinking tokens are a fraction of output for most tasks).
 		effective := 0.2*m.InputCostPer1M + 0.8*m.OutputCostPer1M
+		if m.ThinkingCostPer1M > 0 {
+			effective = 0.2*m.InputCostPer1M + 0.7*m.OutputCostPer1M + 0.1*m.ThinkingCostPer1M
+		}
 		if effective > 0 && m.BlendedScore > 0 {
 			m.ROIScore = m.BlendedScore / effective
 		} else {

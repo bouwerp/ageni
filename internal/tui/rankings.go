@@ -117,15 +117,17 @@ const (
 	colTier    = 9
 	colScore   = 7
 	colAider   = 8
-	colCaps    = 5  // "V R" vision+reasoning flags
+	colCtx     = 7  // "1000K", "10M" — context window in K/M tokens
+	colCaps    = 8  // "VRTS" vision+reasoning+function_calling+structured_output
 	colInCost  = 8  // "$1.25"
 	colOutCost = 8  // "$10.0"
+	colThink   = 7  // "$3.5" thinking token cost; "—" if N/A
 	colROI     = 7  // "123.4" or "—"
 	// remainder → providers
 )
 
 func buildColHeader(width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCaps - colInCost - colOutCost - colROI - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCtx - colCaps - colInCost - colOutCost - colThink - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -136,9 +138,11 @@ func buildColHeader(width int) string {
 			padRight("Tier", colTier) +
 			padRight("Score", colScore) +
 			padRight("Aider%", colAider) +
+			padRight("Ctx", colCtx) +
 			padRight("Caps", colCaps) +
 			padRight("In$/M", colInCost) +
 			padRight("Out$/M", colOutCost) +
+			padRight("Think$", colThink) +
 			padRight("ROI", colROI) +
 			padRight("Providers", provW),
 	)
@@ -153,7 +157,7 @@ var tierColor = map[string]lipgloss.Color{
 }
 
 func formatRow(rank int, m *models.CanonicalModel, width int) string {
-	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCaps - colInCost - colOutCost - colROI - 5
+	provW := width - colRank - colName - colFamily - colTier - colScore - colAider - colCtx - colCaps - colInCost - colOutCost - colThink - colROI - 5
 	if provW < 8 {
 		provW = 8
 	}
@@ -178,12 +182,16 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr = padRight(tierStr, colTier)
 	}
 
-	// Capabilities: compact symbol flags — V=vision, R=reasoning.
+	// Context window column.
+	ctxStr := formatCtx(m.ContextWindow)
+
+	// Capabilities: compact symbol flags — V=vision, R=reasoning, T=tool_calling, S=structured_output.
 	capsStr := formatCaps(m)
 
 	// Cost and ROI columns.
 	inCost := formatCost(m.InputCostPer1M)
 	outCost := formatCost(m.OutputCostPer1M)
+	thinkCost := formatCost(m.ThinkingCostPer1M)
 	roi := formatROI(m.ROIScore)
 
 	// Providers: colored dots + name.
@@ -195,29 +203,54 @@ func formatRow(rank int, m *models.CanonicalModel, width int) string {
 		tierStr +
 		padRight(scoreStr, colScore) +
 		padRight(aiderScore, colAider) +
+		padRight(ctxStr, colCtx) +
 		padRight(capsStr, colCaps) +
 		padRight(inCost, colInCost) +
 		padRight(outCost, colOutCost) +
+		padRight(thinkCost, colThink) +
 		padRight(roi, colROI) +
 		provStr
 }
 
-// formatCaps renders a compact capability string: "V" for vision, "R" for
-// reasoning, "VR" for both, "—" for neither. Width is colCaps (5).
+// formatCaps renders a compact capability string showing flags for:
+// V=vision, R=reasoning, T=function_calling (tools), S=structured_output.
+// Empty capabilities render as "—". Width is colCaps (8).
 func formatCaps(m *models.CanonicalModel) string {
 	vision := m.HasCapability("vision")
 	reasoning := m.HasCapability("reasoning")
-	switch {
-	case vision && reasoning:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("V") +
-			lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("R")
-	case vision:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("V")
-	case reasoning:
-		return lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("R")
-	default:
+	tools := m.HasCapability("function_calling")
+	structured := m.HasCapability("structured_output")
+	if !vision && !reasoning && !tools && !structured {
 		return lipgloss.NewStyle().Foreground(lipgloss.Color("240")).Render("—")
 	}
+	var parts []string
+	if vision {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("39")).Render("V"))
+	}
+	if reasoning {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("220")).Render("R"))
+	}
+	if tools {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("118")).Render("T"))
+	}
+	if structured {
+		parts = append(parts, lipgloss.NewStyle().Foreground(lipgloss.Color("171")).Render("S"))
+	}
+	return strings.Join(parts, "")
+}
+
+// formatCtx renders a context window size compactly:
+// 0 → "—", <1000 → "128K", ≥1000000 → "1M", ≥10000000 → "10M".
+func formatCtx(n int) string {
+	if n == 0 {
+		return "—"
+	}
+	if n >= 1_000_000 {
+		m := n / 1_000_000
+		return fmt.Sprintf("%dM", m)
+	}
+	k := n / 1_000
+	return fmt.Sprintf("%dK", k)
 }
 
 // formatCost renders a per-million-token USD cost compactly:

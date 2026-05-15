@@ -29,6 +29,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  15.0,
 		OutputCostPer1M: 75.0,
 		Notes:           "original Opus 4; heavy reasoning + best tool-use compliance",
+		ContextWindow:   200000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "claude-opus-4-7", Name: "Claude Opus 4.7", Family: "claude", Tier: "flagship",
@@ -42,6 +44,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  5.0,
 		OutputCostPer1M: 25.0,
 		Notes:           "Opus 4.7; cheaper and faster than Opus 4; strong all-round",
+		ContextWindow:   200000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "claude-sonnet-4", Name: "Claude Sonnet 4", Family: "claude", Tier: "flagship",
@@ -55,6 +59,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  3.0,
 		OutputCostPer1M: 15.0,
 		Notes:           "strong default; high tool-use compliance",
+		ContextWindow:   200000,
+		MaxOutputTokens: 64000,
 	},
 	{
 		ID: "claude-3-7-sonnet", Name: "Claude 3.7 Sonnet", Family: "claude", Tier: "flagship",
@@ -68,6 +74,9 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  3.0,
 		OutputCostPer1M: 15.0,
 		Notes:           "extended thinking model; strong on complex reasoning",
+		ContextWindow:   200000,
+		MaxOutputTokens: 64000,
+		ThinkingCostPer1M: 3.0,
 	},
 	{
 		ID: "claude-3-5-sonnet", Name: "Claude 3.5 Sonnet", Family: "claude", Tier: "mid",
@@ -81,6 +90,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  3.0,
 		OutputCostPer1M: 15.0,
 		Notes:           "previous-generation Sonnet; solid tool-use",
+		ContextWindow:   200000,
+		MaxOutputTokens: 8096,
 	},
 	{
 		ID: "claude-haiku-4", Name: "Claude Haiku 4.5", Family: "claude", Tier: "fast",
@@ -94,6 +105,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.0,
 		OutputCostPer1M: 5.0,
 		Notes:           "cheap + fast; excellent for sub-agent legwork",
+		ContextWindow:   200000,
+		MaxOutputTokens: 8096,
 	},
 
 	// ── OpenAI ───────────────────────────────────────────────────────────────
@@ -109,6 +122,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  30.0,
 		OutputCostPer1M: 180.0,
 		Notes:           "GPT-5.4 premium; high-effort reasoning",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "gpt-5.4", Name: "GPT-5.4", Family: "gpt", Tier: "flagship",
@@ -122,6 +137,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  2.5,
 		OutputCostPer1M: 15.0,
 		Notes:           "GPT-5.4 standard; strong coding + reasoning",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "gpt-5.4-mini", Name: "GPT-5.4 Mini", Family: "gpt", Tier: "mid",
@@ -135,6 +152,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.75,
 		OutputCostPer1M: 4.5,
 		Notes:           "GPT-5.4 Mini; efficient sub-agent tier",
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
 	},
 	{
 		ID: "gpt-5-pro", Name: "GPT-5 Pro", Family: "gpt", Tier: "flagship",
@@ -148,6 +167,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  15.0,
 		OutputCostPer1M: 120.0,
 		Notes:           "GPT-5 Pro; premium reasoning budget",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "gpt-5", Name: "GPT-5", Family: "gpt", Tier: "flagship",
@@ -161,6 +182,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.25,
 		OutputCostPer1M: 10.0,
 		Notes:           "OpenAI flagship; top Aider polyglot score",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "gpt-5-mini", Name: "GPT-5 Mini", Family: "gpt", Tier: "fast",
@@ -174,6 +197,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.25,
 		OutputCostPer1M: 2.0,
 		Notes:           "GPT-5 Mini; cheap + capable sub-agent",
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
 	},
 	{
 		ID: "o3-pro", Name: "o3-pro", Family: "gpt", Tier: "flagship",
@@ -187,6 +212,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  20.0,
 		OutputCostPer1M: 80.0,
 		Notes:           "deep reasoning at highest effort; expensive",
+		ContextWindow:   200000,
+		MaxOutputTokens: 100000,
 	},
 	{
 		ID: "o3", Name: "o3", Family: "gpt", Tier: "flagship",
@@ -200,6 +227,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  2.0,
 		OutputCostPer1M: 8.0,
 		Notes:           "strong reasoning; high effort mode recommended",
+		ContextWindow:   200000,
+		MaxOutputTokens: 100000,
 	},
 	{
 		ID: "o4-mini", Name: "o4-mini", Family: "gpt", Tier: "mid",
@@ -213,6 +242,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.1,
 		OutputCostPer1M: 4.4,
 		Notes:           "reasoning at sub-agent budget",
+		ContextWindow:   200000,
+		MaxOutputTokens: 100000,
 	},
 	{
 		ID: "o3-mini", Name: "o3-mini", Family: "gpt", Tier: "mid",
@@ -226,6 +257,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.1,
 		OutputCostPer1M: 4.4,
 		Notes:           "reasoning at sub-agent budget",
+		ContextWindow:   200000,
+		MaxOutputTokens: 65536,
 	},
 	{
 		ID: "gpt-4o", Name: "GPT-4o", Family: "gpt", Tier: "mid",
@@ -239,6 +272,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  2.5,
 		OutputCostPer1M: 10.0,
 		Notes:           "all-rounder; solid tool use",
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
 	},
 	{
 		ID: "gpt-4o-mini", Name: "GPT-4o mini", Family: "gpt", Tier: "fast",
@@ -252,6 +287,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.15,
 		OutputCostPer1M: 0.6,
 		Notes:           "cheap sub-agent default",
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
 	},
 
 	// ── Google Gemini ─────────────────────────────────────────────────────────
@@ -271,6 +308,9 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.25,
 		OutputCostPer1M: 10.0,
 		Notes:           "long context; competitive coding; generous free quota",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 65536,
+		ThinkingCostPer1M: 3.5,
 	},
 	{
 		ID: "gemini-2-5-flash", Name: "Gemini 2.5 Flash", Family: "gemini", Tier: "mid",
@@ -287,6 +327,9 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.3,
 		OutputCostPer1M: 2.5,
 		Notes:           "fast, free quota; thinking mode available",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 65536,
+		ThinkingCostPer1M: 3.5,
 	},
 	{
 		ID: "gemini-2-0-flash", Name: "Gemini 2.0 Flash", Family: "gemini", Tier: "fast",
@@ -299,6 +342,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.4,
 		Notes:           "gemini-2.0-flash SHUT DOWN June 2026; use gemini-2.5-flash or gemini-3-flash-preview",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "gemini-3-flash", Name: "Gemini 3 Flash Preview", Family: "gemini", Tier: "mid",
@@ -312,6 +357,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.3,
 		OutputCostPer1M: 2.5,
 		Notes:           "Gemini 3 Flash Preview; recommended replacement for 2.5 Flash",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 65536,
 	},
 	{
 		ID: "gemini-3-1-pro", Name: "Gemini 3.1 Pro Preview", Family: "gemini", Tier: "flagship",
@@ -325,6 +372,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.25,
 		OutputCostPer1M: 10.0,
 		Notes:           "Gemini 3.1 Pro Preview; recommended replacement for 2.5 Pro",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 65536,
 	},
 	{
 		ID: "gemini-2-5-flash-lite", Name: "Gemini 2.5 Flash-Lite", Family: "gemini", Tier: "fast",
@@ -338,6 +387,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.4,
 		Notes:           "Gemini 2.5 Flash-Lite; most cost-efficient Gemini; stable",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 65536,
 	},
 
 	// ── DeepSeek ─────────────────────────────────────────────────────────────
@@ -357,6 +408,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.15,
 		OutputCostPer1M: 0.75,
 		Notes:           "DeepSeek V3 Chat; very cheap; strong code",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "deepseek-r1", Name: "DeepSeek R1", Family: "deepseek", Tier: "flagship",
@@ -375,6 +428,9 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.7,
 		OutputCostPer1M: 2.5,
 		Notes:           "DeepSeek R1; reasoning + code-strong; very cheap",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
+		ThinkingCostPer1M: 2.19,
 	},
 	{
 		ID: "deepseek-v4-flash", Name: "DeepSeek V4 Flash", Family: "deepseek", Tier: "mid",
@@ -387,6 +443,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.15,
 		OutputCostPer1M: 0.6,
 		Notes:           "fast, supports thinking mode; replaces deepseek-chat",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "deepseek-v4-pro", Name: "DeepSeek V4 Pro", Family: "deepseek", Tier: "flagship",
@@ -400,6 +458,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.5,
 		OutputCostPer1M: 2.0,
 		Notes:           "premium reasoning; 75% off until May 2026",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 
 	// ── Meta Llama ────────────────────────────────────────────────────────────
@@ -414,6 +474,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.15,
 		OutputCostPer1M: 0.6,
 		Notes:           "Meta Llama 4 Maverick; strong multimodal mid-tier",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "llama-4-scout", Name: "Llama 4 Scout", Family: "llama", Tier: "fast",
@@ -427,6 +489,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.08,
 		OutputCostPer1M: 0.3,
 		Notes:           "Meta Llama 4 Scout; fast + cheap with long context",
+		ContextWindow:   10000000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "llama-3-3-70b", Name: "Llama 3.3 70B", Family: "llama", Tier: "mid",
@@ -446,6 +510,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.08,
 		OutputCostPer1M: 0.3,
 		Notes:           "fast open-source all-rounder; low TTFT on Groq/Cerebras",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "llama-3-1-8b", Name: "Llama 3.1 8B", Family: "llama", Tier: "tiny",
@@ -458,6 +524,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.05,
 		OutputCostPer1M: 0.08,
 		Notes:           "tiny + fast; trivial tasks only",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── Qwen ─────────────────────────────────────────────────────────────────
@@ -472,6 +540,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.46,
 		OutputCostPer1M: 1.82,
 		Notes:           "Qwen3 MoE flagship; strong coding",
+		ContextWindow:   262000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "qwen3-5-397b", Name: "Qwen3.5 397B A17B", Family: "qwen", Tier: "flagship",
@@ -484,6 +554,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.6,
 		OutputCostPer1M: 3.6,
 		Notes:           "Qwen3.5 MoE flagship; 262K context",
+		ContextWindow:   262000,
+		MaxOutputTokens: 64000,
 	},
 	{
 		ID: "qwen3-coder", Name: "Qwen3 Coder 480B", Family: "qwen", Tier: "mid",
@@ -497,6 +569,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.3,
 		OutputCostPer1M: 0.6,
 		Notes:           "code-specialized Qwen3",
+		ContextWindow:   128000,
+		MaxOutputTokens: 16384,
 	},
 	{
 		ID: "qwen-2-5-coder-32b", Name: "Qwen 2.5 Coder 32B", Family: "qwen", Tier: "mid",
@@ -512,6 +586,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.07,
 		OutputCostPer1M: 0.15,
 		Notes:           "code-specialized; punches above its weight",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── Mistral ───────────────────────────────────────────────────────────────
@@ -526,6 +602,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  2.0,
 		OutputCostPer1M: 6.0,
 		Notes:           "Mistral flagship; solid general purpose",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "codestral", Name: "Codestral", Family: "mistral", Tier: "mid",
@@ -538,6 +616,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.3,
 		OutputCostPer1M: 0.9,
 		Notes:           "code-specialized Mistral model",
+		ContextWindow:   256000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "mixtral-8x7b", Name: "Mixtral 8x7B", Family: "mistral", Tier: "fast",
@@ -550,6 +630,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.24,
 		OutputCostPer1M: 0.24,
 		Notes:           "Mixtral MoE 8x7B; ageing but cost-effective",
+		ContextWindow:   32000,
+		MaxOutputTokens: 4096,
 	},
 	{
 		ID: "magistral-medium", Name: "Magistral Medium", Family: "mistral", Tier: "flagship",
@@ -563,6 +645,9 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  2.0,
 		OutputCostPer1M: 5.0,
 		Notes:           "Mistral reasoning flagship; free tier available",
+		ContextWindow:   40000,
+		MaxOutputTokens: 16384,
+		ThinkingCostPer1M: 5.0,
 	},
 	{
 		ID: "devstral-small", Name: "Devstral Small", Family: "mistral", Tier: "mid",
@@ -575,6 +660,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.3,
 		Notes:           "Mistral agentic coding model; free tier",
+		ContextWindow:   32000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "mistral-small", Name: "Mistral Small 3.2", Family: "mistral", Tier: "fast",
@@ -587,6 +674,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.3,
 		Notes:           "Mistral Small 3.2; efficient general purpose, free tier",
+		ContextWindow:   32000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── xAI Grok ─────────────────────────────────────────────────────────────
@@ -601,6 +690,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  3.0,
 		OutputCostPer1M: 15.0,
 		Notes:           "xAI flagship; strong reasoning",
+		ContextWindow:   256000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "grok-3", Name: "Grok 3", Family: "grok", Tier: "flagship",
@@ -612,6 +703,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  3.0,
 		OutputCostPer1M: 15.0,
 		Notes:           "xAI Grok 3; strong general purpose",
+		ContextWindow:   131000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── Kimi / MoonshotAI ────────────────────────────────────────────────────
@@ -626,6 +719,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.75,
 		OutputCostPer1M: 3.5,
 		Notes:           "Moonshot K2.6; latest Kimi flagship",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "kimi-k2", Name: "Kimi K2", Family: "kimi", Tier: "flagship",
@@ -638,6 +733,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.57,
 		OutputCostPer1M: 2.3,
 		Notes:           "Moonshot K2; strong coding",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "kimi-k2.5", Name: "Kimi K2.5", Family: "kimi", Tier: "flagship",
@@ -650,6 +747,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.5,
 		OutputCostPer1M: 2.8,
 		Notes:           "Moonshot K2.5; strong coding + tool use",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── MiniMax ───────────────────────────────────────────────────────────────
@@ -663,6 +762,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.3,
 		OutputCostPer1M: 1.2,
 		Notes:           "MiniMax M2.7; latest MiniMax flagship",
+		ContextWindow:   1000000,
+		MaxOutputTokens: 32768,
 	},
 
 	// ── NVIDIA Nemotron ───────────────────────────────────────────────────────
@@ -676,6 +777,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.09,
 		OutputCostPer1M: 0.45,
 		Notes:           "NVIDIA 120B hybrid MoE (12B active); strong agentic workloads",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "llama-3.3-nemotron-super-49b", Name: "Llama 3.3 Nemotron Super 49B", Family: "nemotron", Tier: "mid",
@@ -687,6 +790,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.1,
 		OutputCostPer1M: 0.4,
 		Notes:           "NVIDIA fine-tune of Llama 3.3 70B; agentic + RAG",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "nemotron-3-nano-30b", Name: "Nemotron 3 Nano 30B", Family: "nemotron", Tier: "fast",
@@ -698,6 +803,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.05,
 		OutputCostPer1M: 0.2,
 		Notes:           "NVIDIA 30B MoE (3B active); efficient edge/agent model",
+		ContextWindow:   128000,
+		MaxOutputTokens: 4096,
 	},
 	{
 		ID: "nemotron-nano-9b", Name: "Nemotron Nano 9B", Family: "nemotron", Tier: "tiny",
@@ -709,6 +816,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.04,
 		OutputCostPer1M: 0.16,
 		Notes:           "NVIDIA 9B unified reasoning/chat; smallest Nemotron",
+		ContextWindow:   128000,
+		MaxOutputTokens: 4096,
 	},
 
 	// ── GPT-OSS ───────────────────────────────────────────────────────────────
@@ -726,6 +835,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.04,
 		OutputCostPer1M: 0.18,
 		Notes:           "OpenAI OSS 120B; strong free-tier option",
+		ContextWindow:   128000,
+		MaxOutputTokens: 32768,
 	},
 	{
 		ID: "gpt-oss-20b", Name: "GPT-OSS 20B", Family: "gpt", Tier: "fast",
@@ -740,6 +851,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.04,
 		OutputCostPer1M: 0.14,
 		Notes:           "OpenAI OSS 20B; fastest (~1000 t/s on Groq/Cerebras)",
+		ContextWindow:   32000,
+		MaxOutputTokens: 8192,
 	},
 
 	// ── GLM ───────────────────────────────────────────────────────────────────
@@ -754,6 +867,8 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  0.13,
 		OutputCostPer1M: 0.85,
 		Notes:           "Zhipu GLM 4.5 Air; free on OpenRouter",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 	{
 		ID: "glm-4-7", Name: "Z.ai GLM 4.7", Family: "glm", Tier: "flagship",
@@ -768,5 +883,7 @@ var seedData = []CanonicalModel{
 		InputCostPer1M:  1.4,
 		OutputCostPer1M: 4.4,
 		Notes:           "Z.ai GLM 4.7 (355B); strong coding + tool use; on Cerebras at preview",
+		ContextWindow:   128000,
+		MaxOutputTokens: 8192,
 	},
 }

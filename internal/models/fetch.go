@@ -71,8 +71,14 @@ func parseAiderYAML(data []byte) map[string]float64 {
 
 // openRouterPricing holds the raw per-token prices returned by OpenRouter.
 type openRouterPricing struct {
-	Prompt     string `json:"prompt"`
-	Completion string `json:"completion"`
+	Prompt            string `json:"prompt"`
+	Completion        string `json:"completion"`
+	InternalReasoning string `json:"internal_reasoning"`
+}
+
+// openRouterTopProvider holds per-provider constraints.
+type openRouterTopProvider struct {
+	MaxCompletionTokens int `json:"max_completion_tokens"`
 }
 
 // openRouterArchitecture holds the model architecture metadata from OpenRouter.
@@ -82,9 +88,12 @@ type openRouterArchitecture struct {
 
 // openRouterModel is the minimal subset of the OpenRouter /models JSON we care about.
 type openRouterModel struct {
-	ID           string                 `json:"id"`
-	Pricing      openRouterPricing      `json:"pricing"`
-	Architecture openRouterArchitecture `json:"architecture"`
+	ID                  string                `json:"id"`
+	ContextLength       int                   `json:"context_length"`
+	Pricing             openRouterPricing     `json:"pricing"`
+	Architecture        openRouterArchitecture `json:"architecture"`
+	TopProvider         openRouterTopProvider  `json:"top_provider"`
+	SupportedParameters []string              `json:"supported_parameters"`
 }
 
 type openRouterResponse struct {
@@ -92,33 +101,65 @@ type openRouterResponse struct {
 }
 
 // FetchOpenRouterAvailability queries OpenRouter for the full model list and
-// returns a set of "openrouter:modelID" keys representing currently available
-// models, a map of "openrouter:modelID" → [inputPerM, outputPerM] costs, and
-// a map of "openrouter:modelID" → []string capabilities (e.g. ["vision"]).
+// returns:
+//   - avail: set of "openrouter:modelID" keys for currently available models
+//   - costs: "openrouter:modelID" → [inputPerM, outputPerM] in USD
+//   - caps: "openrouter:modelID" → []string capability names (e.g. ["vision"])
+//   - windows: "openrouter:modelID" → [contextWindow, maxOutputTokens] in tokens
+//   - thinking: "openrouter:modelID" → thinking token cost per million USD
+//   - params: "openrouter:modelID" → []string supported_parameters
+//
 // No API key is required for the public listing endpoint.
-func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, costs map[string][2]float64, caps map[string][]string, err error) {
+func FetchOpenRouterAvailability(ctx context.Context) (
+	avail map[string]bool,
+	costs map[string][2]float64,
+	caps map[string][]string,
+	windows map[string][2]int,
+	thinking map[string]float64,
+	params map[string][]string,
+	err error,
+) {
 	body, err := get(ctx, openRouterURL)
 	if err != nil {
-		return nil, nil, nil, fmt.Errorf("openrouter models: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("openrouter models: %w", err)
 	}
 	var resp openRouterResponse
 	if err := json.Unmarshal(body, &resp); err != nil {
-		return nil, nil, nil, fmt.Errorf("openrouter models: json: %w", err)
+		return nil, nil, nil, nil, nil, nil, fmt.Errorf("openrouter models: json: %w", err)
 	}
-	avail = make(map[string]bool, len(resp.Data))
-	costs = make(map[string][2]float64, len(resp.Data))
-	caps = make(map[string][]string, len(resp.Data))
+	n := len(resp.Data)
+	avail = make(map[string]bool, n)
+	costs = make(map[string][2]float64, n)
+	caps = make(map[string][]string, n)
+	windows = make(map[string][2]int, n)
+	thinking = make(map[string]float64, n)
+	params = make(map[string][]string, n)
+
 	for _, m := range resp.Data {
 		if m.ID == "" {
 			continue
 		}
 		key := "openrouter:" + m.ID
 		avail[key] = true
+
+		// Pricing: input and output costs.
 		inp, e1 := strconv.ParseFloat(m.Pricing.Prompt, 64)
 		out, e2 := strconv.ParseFloat(m.Pricing.Completion, 64)
 		if e1 == nil && e2 == nil {
 			costs[key] = [2]float64{inp * 1e6, out * 1e6}
 		}
+
+		// Thinking token cost (separate billing).
+		if tc, e3 := strconv.ParseFloat(m.Pricing.InternalReasoning, 64); e3 == nil && tc > 0 {
+			thinking[key] = tc * 1e6
+		}
+
+		// Context window and max output tokens.
+		maxOut := m.TopProvider.MaxCompletionTokens
+		if m.ContextLength > 0 || maxOut > 0 {
+			windows[key] = [2]int{m.ContextLength, maxOut}
+		}
+
 		// Detect vision capability from input_modalities.
 		var modelCaps []string
 		for _, mod := range m.Architecture.InputModalities {
@@ -130,8 +171,13 @@ func FetchOpenRouterAvailability(ctx context.Context) (avail map[string]bool, co
 		if len(modelCaps) > 0 {
 			caps[key] = modelCaps
 		}
+
+		// Supported parameters for capability derivation.
+		if len(m.SupportedParameters) > 0 {
+			params[key] = m.SupportedParameters
+		}
 	}
-	return avail, costs, caps, nil
+	return avail, costs, caps, windows, thinking, params, nil
 }
 
 // get performs a GET request with the given context and returns the body.
