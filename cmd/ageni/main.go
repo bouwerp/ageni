@@ -331,6 +331,11 @@ func run() error {
 	// inherit a lifetime that outlives any individual master turn.
 	manager := agent.NewManager(ctx, bus, registry, tracker, factory, cfg.MaxSubagents)
 	manager.SetDefaultBudget(cfg.SubagentBudget)
+	if !cfg.AutoModelSelection {
+		if rec := buildRecommender(subPool); rec != nil {
+			manager.SetRecommender(rec)
+		}
+	}
 	if secretStore != nil {
 		manager.SetScrubber(secretStore.Redactor().Scrub)
 	}
@@ -558,6 +563,11 @@ func run() error {
 		}
 		manager.UpdateFactory(newFactory)
 		manager.SetDefaultBudget(newCfg.SubagentBudget)
+		if !newCfg.AutoModelSelection {
+			manager.SetRecommender(buildRecommender(newSubPool))
+		} else {
+			manager.SetRecommender(nil)
+		}
 		return nil
 	}
 
@@ -681,6 +691,14 @@ func buildCloudSubPool(entries []config.RoleConfig) *cloudSubPool {
 	return pool
 }
 
+// roundRobin returns the next adapter+model from the pool in rotation.
+// Used when AutoModelSelection is false to keep the configured model.
+func (p *cloudSubPool) roundRobin() (llm.Adapter, string) {
+	idx := atomic.AddUint64(&p.counter, 1) - 1
+	e := p.entries[idx%uint64(len(p.entries))]
+	return e.adapter, e.defaultModel
+}
+
 // pickForTask selects the best adapter+model for the given tier and required
 // capabilities using the global model registry. Falls back to round-robin
 // when the registry has no matching data.
@@ -737,7 +755,10 @@ func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleet
 				return fleet.next()
 			}
 			if subPool != nil {
-				return subPool.pickForTask(tier, requiredCaps)
+				if cfg.AutoModelSelection {
+					return subPool.pickForTask(tier, requiredCaps)
+				}
+				return subPool.roundRobin()
 			}
 			return sub, cfg.Subagent.Model
 		default: // sonnet, mid, and anything else
@@ -745,10 +766,54 @@ func buildFactory(cfg *config.Config, master, sub llm.Adapter, fleet *localFleet
 				return fleet.next()
 			}
 			if subPool != nil {
-				return subPool.pickForTask(tier, requiredCaps)
+				if cfg.AutoModelSelection {
+					return subPool.pickForTask(tier, requiredCaps)
+				}
+				return subPool.roundRobin()
 			}
 			return sub, cfg.Subagent.Model
 		}
+	}
+}
+
+// buildRecommender constructs a RecommenderFunc that uses the model registry to
+// suggest the optimal model for a given tier and capability requirements.
+// Always uses BestForTask regardless of AutoModelSelection — it is only called
+// when AutoModelSelection is false (to power the recommendation hint in the TUI).
+func buildRecommender(subPool *cloudSubPool) agent.RecommenderFunc {
+	if subPool == nil {
+		return nil
+	}
+	return func(tier string, requiredCaps []string) (model, reason string) {
+		providerNames := make([]string, len(subPool.entries))
+		for i, e := range subPool.entries {
+			providerNames[i] = e.providerName
+		}
+		req := models.TaskRequirements{
+			Tier:        models.TierFromLegacy(tier),
+			RequireCaps: requiredCaps,
+			PreferCheap: true,
+		}
+		selectedModel, providerID, modelID := models.Global.BestForTask(req, providerNames)
+		if providerID == "" || modelID == "" {
+			return "", ""
+		}
+
+		// Build a concise reason string.
+		var parts []string
+		if selectedModel != nil {
+			canonicalTier := models.TierFromLegacy(tier)
+			if selectedModel.Tier != canonicalTier && selectedModel.Tier != "" {
+				parts = append(parts, selectedModel.Tier+" tier")
+			}
+		}
+		for _, cap := range requiredCaps {
+			parts = append(parts, cap)
+		}
+		if len(parts) == 0 {
+			parts = append(parts, "higher ROI")
+		}
+		return modelID, strings.Join(parts, ", ")
 	}
 }
 

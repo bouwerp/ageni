@@ -61,6 +61,12 @@ type Event struct {
 	ToolResult *llm.ToolResult
 	Usage      *llm.Usage
 
+	// SubagentRecommendedModel is populated when AutoModelSelection is false
+	// and the registry recommends a different model than the one being used.
+	// Used by the TUI to show a recommendation hint in the subagent header.
+	SubagentRecommendedModel     string
+	SubagentRecommendationReason string
+
 	// Subagent metadata for spawn/done events
 	SubagentTask  string
 	SubagentModel string
