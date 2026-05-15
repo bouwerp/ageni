@@ -59,7 +59,7 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 		AllowedTools:    []string{"list_dir"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", nil)
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestSubagentRespectsBudget(t *testing.T) {
 		OutputFormat:    "<result/>",
 		BudgetToolCalls: 3,
 	}
-	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", nil)
+	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	sub.Run(ctx)

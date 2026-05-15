@@ -9,6 +9,7 @@ import (
 
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/models"
+	"github.com/bouwerp/ageni/internal/roles"
 )
 
 // SpawnTool is the master-only tool for delegating work to a sub-agent. The
@@ -36,7 +37,8 @@ func (SpawnTool) Schema() json.RawMessage {
 "properties":{
   "objective":{"type":"string","description":"Single-sentence imperative goal. Be specific."},
   "output_format":{"type":"string","description":"Exactly what the sub-agent must return — schema, structure, or example."},
-  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Omit to auto-select based on task complexity."},
+  "role":{"type":"string","description":"Optional predefined role to apply (e.g. 'architect', 'qa-engineer', 'reviewer', 'devops-engineer', 'product-owner', 'security-auditor', 'tech-writer'). Sets default model_tier, budget, skill, and persona instructions automatically. Explicit fields override role defaults."},
+  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Omit to use role default or auto-select based on task complexity."},
   "required_capabilities":{"type":"array","items":{"type":"string","enum":["vision","reasoning","function_calling","structured_output"]},"description":"Capabilities the model must support. Use [\"vision\"] for image/screenshot tasks."},
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
@@ -62,6 +64,33 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", errors.New("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
 
+	// Apply role defaults before auto-detection. Explicit spawn params take
+	// precedence — role fields are only applied when the spawn didn't set them.
+	if task.Role != "" {
+		if def, ok := roles.Global.Lookup(task.Role); ok {
+			if task.ModelTier == "" && def.ModelTier != "" {
+				task.ModelTier = def.ModelTier
+			}
+			if task.BudgetToolCalls <= 0 && def.BudgetToolCalls > 0 {
+				task.BudgetToolCalls = def.BudgetToolCalls
+			}
+			if task.UseSkill == "" && def.UseSkill != "" {
+				task.UseSkill = def.UseSkill
+			}
+			if len(task.RequiredCaps) == 0 && len(def.RequiredCapabilities) > 0 {
+				task.RequiredCaps = append([]string(nil), def.RequiredCapabilities...)
+			}
+			if task.TaskBoundaries == "" && def.TaskBoundaries != "" {
+				task.TaskBoundaries = def.TaskBoundaries
+			}
+			if def.SystemPromptAddition != "" {
+				task.RoleSystemAddendum = def.SystemPromptAddition
+			}
+		}
+		// Unknown role names are silently ignored — master may have typo'd;
+		// we still proceed with whatever the master explicitly set.
+	}
+
 	// Auto-detect required capabilities from objective keywords when not provided.
 	if len(task.RequiredCaps) == 0 {
 		task.RequiredCaps = models.ExtractRequiredCaps(task.Objective)
@@ -76,7 +105,11 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("spawned sub-agent %s (tier=%s, budget=%d)", id, task.ModelTier, task.BudgetToolCalls), nil
+	roleLabel := ""
+	if task.Role != "" {
+		roleLabel = fmt.Sprintf(", role=%s", task.Role)
+	}
+	return fmt.Sprintf("spawned sub-agent %s (tier=%s%s, budget=%d)", id, task.ModelTier, roleLabel, task.BudgetToolCalls), nil
 }
 
 // CheckTool returns the sub-agent's current status and recent transcript.

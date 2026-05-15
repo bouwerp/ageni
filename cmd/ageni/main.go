@@ -7,6 +7,7 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -28,6 +29,7 @@ import (
 	"github.com/bouwerp/ageni/internal/repomap"
 	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
+	"github.com/bouwerp/ageni/internal/roles"
 	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/bouwerp/ageni/internal/tui"
@@ -233,6 +235,19 @@ func run() error {
 	if sErr != nil {
 		fmt.Fprintf(os.Stderr, "ageni: skills: %v\n", sErr)
 		skillReg = nil
+	}
+
+	// Load roles from embedded built-ins and ~/.ageni/roles/.
+	rolesUserDir := ""
+	if home, err := os.UserHomeDir(); err == nil {
+		rolesUserDir = filepath.Join(home, ".ageni", "roles")
+	}
+	roleReg, rErr := roles.Load(rolesUserDir)
+	if rErr != nil {
+		fmt.Fprintf(os.Stderr, "ageni: roles: %v\n", rErr)
+		roleReg = roles.Global // fallback to empty registry
+	} else {
+		roles.Global = roleReg
 	}
 
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
@@ -445,6 +460,11 @@ func run() error {
 		catalog := skillReg.Catalog()
 		master.SetSkillCatalog(catalog)
 		manager.SetSkillCatalog(catalog)
+	}
+	if roleReg != nil {
+		roleCatalog := roleReg.Catalog()
+		master.SetRoleCatalog(roleCatalog)
+		manager.SetRoleCatalog(roleCatalog)
 	}
 
 	// Build the Aider-style repo map asynchronously so the TUI starts

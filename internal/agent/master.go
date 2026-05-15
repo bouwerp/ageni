@@ -52,6 +52,7 @@ type Master struct {
 	compactModel   string
 
 	skillCatalog    string // optional: appended to the cached system prompt
+	roleCatalog     string // optional: appended to the cached system prompt
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
 	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
@@ -110,6 +111,14 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 func (m *Master) SetSkillCatalog(catalog string) {
 	m.mu.Lock()
 	m.skillCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetRoleCatalog injects a "<available_roles>...</available_roles>" block
+// into the master's stable system prompt. Pass an empty string to clear.
+func (m *Master) SetRoleCatalog(catalog string) {
+	m.mu.Lock()
+	m.roleCatalog = catalog
 	m.mu.Unlock()
 }
 
@@ -995,6 +1004,7 @@ const CanonicalWorkerOutputFormat = `<result>
 func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
+	roleCat := m.roleCatalog
 	repoMap := m.repoMap
 	agentsMD := m.agentsMD
 	masterCaps := m.masterCaps
@@ -1004,6 +1014,10 @@ func (m *Master) systemPrompt() string {
 	skillsBlock := ""
 	if catalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + catalog + "\n\nWhen a user request matches a skill's trigger phrases or domain, call read_skill(name=\"...\") to load its full instructions before proceeding. Pass topic=\"...\" for sub-references when listed.\n</available_skills>"
+	}
+	rolesBlock := ""
+	if roleCat != "" {
+		rolesBlock = "\n\n<available_roles>\n" + roleCat + "\n\nWhen spawning a sub-agent, set role=\"<name>\" to apply a predefined persona. The role sets model_tier, budget, skill, persona instructions, and task_boundaries automatically. Explicit spawn params override role defaults.\n</available_roles>"
 	}
 	repoMapBlock := ""
 	if repoMap != "" {
@@ -1017,7 +1031,7 @@ func (m *Master) systemPrompt() string {
 	capsBlock := buildMasterCapsBlock(masterCaps, subagentCaps)
 
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + repoMapBlock + agentsBlock + capsBlock + `
+	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + rolesBlock + repoMapBlock + agentsBlock + capsBlock + `
 
 <orchestration_rules>
 You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.

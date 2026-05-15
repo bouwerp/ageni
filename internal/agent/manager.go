@@ -30,6 +30,7 @@ type Manager struct {
 	tracker       *llm.Tracker
 	factory       AdapterFactory
 	skillCatalog  string
+	roleCatalog   string
 	maxConcurrent int
 	defaultBudget int
 	nextID        int
@@ -61,6 +62,14 @@ func NewManager(rootCtx context.Context, bus *Bus, registry *tools.Registry, tra
 func (m *Manager) SetSkillCatalog(catalog string) {
 	m.mu.Lock()
 	m.skillCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetRoleCatalog updates the role catalog passed to newly-spawned sub-agents.
+// Existing sub-agents keep the catalog they were spawned with.
+func (m *Manager) SetRoleCatalog(catalog string) {
+	m.mu.Lock()
+	m.roleCatalog = catalog
 	m.mu.Unlock()
 }
 
@@ -126,7 +135,7 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
 	caps := models.Global.CapabilitiesForModel(model)
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, caps)
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, caps)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}

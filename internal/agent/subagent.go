@@ -46,6 +46,17 @@ type SubagentTask struct {
 	RepoFacts     []string `json:"repo_facts,omitempty"`     // "path:role" lines master already knows
 	PriorFindings []string `json:"prior_findings,omitempty"` // attributed past worker outputs worth remembering
 	DoNotRevisit  []string `json:"do_not_revisit,omitempty"` // paths/areas other workers are handling
+
+	// Role is an optional predefined role name (e.g. "architect", "qa-engineer").
+	// When set, role defaults (tier, budget, use_skill, required_caps,
+	// task_boundaries, RoleSystemAddendum) are applied before auto-detection.
+	// Explicit spawn params always override role defaults.
+	Role string `json:"role,omitempty"`
+
+	// RoleSystemAddendum is injected into the subagent system prompt after the
+	// base instructions. Set automatically when Role is resolved; not intended
+	// to be set directly by the master.
+	RoleSystemAddendum string `json:"-"`
 }
 
 // Subagent runs a single delegated task in its own goroutine.
@@ -66,6 +77,7 @@ type Subagent struct {
 	hardTurnCap int
 
 	skillCatalog string
+	roleCatalog  string
 
 	// capabilities lists the model capabilities of this subagent's model
 	// (e.g. "vision", "reasoning"). Injected into the system prompt so the
@@ -109,7 +121,7 @@ func (s *Subagent) scrub(text string) string {
 	return f(text)
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, caps []string) *Subagent {
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, caps []string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
@@ -129,6 +141,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		maxToolCalls:    budget,
 		hardTurnCap:     budget * 2,
 		skillCatalog:    skillCatalog,
+		roleCatalog:     roleCatalog,
 		capabilities:    append([]string(nil), caps...),
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
@@ -551,10 +564,20 @@ func (s *Subagent) systemPrompt() string {
 		skillsBlock = "\n\n<available_skills>\n" + s.skillCatalog + "\n\nCall read_skill(name=\"...\") to load a skill's full instructions when one matches your task.\n</available_skills>"
 	}
 
+	rolesBlock := ""
+	if s.roleCatalog != "" {
+		rolesBlock = "\n\n<available_roles>\n" + s.roleCatalog + "\n</available_roles>"
+	}
+
+	roleAddendum := ""
+	if s.Task.RoleSystemAddendum != "" {
+		roleAddendum = "\n\n<persona>\n" + strings.TrimSpace(s.Task.RoleSystemAddendum) + "\n</persona>"
+	}
+
 	capsBlock := buildSubagentCapsBlock(caps)
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + skillsBlock + capsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
