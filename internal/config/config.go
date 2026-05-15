@@ -89,15 +89,6 @@ type Config struct {
 	SubagentPool       []RoleConfig
 	SubagentPoolActive bool
 
-	// AutoModelSelection enables registry-guided automatic model selection for
-	// sub-agents. When false (the default), the configured subagent model is
-	// used and the registry acts as a recommendation engine only — the TUI
-	// shows "CURRENT_MODEL (recommended: BETTER_MODEL [reason])" in the
-	// subagent window so operators can see what the registry would pick without
-	// having it enforce the choice. Set AGENI_AUTO_MODEL_SELECTION=true to let
-	// the registry actually route to the optimal model.
-	AutoModelSelection bool
-
 	MaxSubagents int
 	// SubagentBudget is the default cap on tool calls per sub-agent when
 	// the master doesn't override it via spawn_subagent's
@@ -168,11 +159,10 @@ func Load() (*Config, error) {
 	}
 
 	cfg := &Config{
-		Master:             master,
-		Subagent:           sub,
-		MaxSubagents:       intOr("AGENI_MAX_SUBAGENTS", 8),
-		SubagentBudget:     intOr("AGENI_SUBAGENT_BUDGET", 200),
-		AutoModelSelection: boolOr("AGENI_AUTO_MODEL_SELECTION", false),
+		Master:         master,
+		Subagent:       sub,
+		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
+		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 200),
 	}
 
 	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.
@@ -389,17 +379,6 @@ func intOr(key string, def int) int {
 		if n, err := strconv.Atoi(v); err == nil {
 			return n
 		}
-	}
-	return def
-}
-
-func boolOr(key string, def bool) bool {
-	v := strings.TrimSpace(strings.ToLower(os.Getenv(key)))
-	switch v {
-	case "1", "true", "yes", "on":
-		return true
-	case "0", "false", "no", "off":
-		return false
 	}
 	return def
 }

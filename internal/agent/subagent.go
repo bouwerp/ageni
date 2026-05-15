@@ -55,12 +55,6 @@ type Subagent struct {
 	Model   string
 	Adapter llm.Adapter
 
-	// RecommendedModel is set when AutoModelSelection is disabled and the
-	// model registry recommends a different model for this task. Shown as a
-	// hint in the subagent window header.
-	RecommendedModel     string
-	RecommendationReason string
-
 	bus     *Bus
 	tools   *tools.Registry
 	tracker *llm.Tracker
@@ -228,12 +222,10 @@ func (s *Subagent) Run(parent context.Context) {
 	}
 
 	s.bus.Publish(Event{
-		Kind:                         EvSubagentSpawn,
-		SubagentID:                   s.ID,
-		SubagentTask:                 s.Task.Objective,
-		SubagentModel:                s.Model,
-		SubagentRecommendedModel:     s.RecommendedModel,
-		SubagentRecommendationReason: s.RecommendationReason,
+		Kind:          EvSubagentSpawn,
+		SubagentID:    s.ID,
+		SubagentTask:  s.Task.Objective,
+		SubagentModel: s.Model,
 	})
 
 	toolCallsUsed := 0

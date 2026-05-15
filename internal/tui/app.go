@@ -1436,16 +1436,7 @@ func (a *App) handleEvent(ev agent.Event) {
 			obj = obj[:i]
 		}
 		a.subObjectives[ev.SubagentID] = obj
-		// Build model label, appending recommendation hint when present.
-		modelLabel := ev.SubagentModel
-		if ev.SubagentRecommendedModel != "" {
-			rec := ev.SubagentRecommendedModel
-			if ev.SubagentRecommendationReason != "" {
-				rec += " · " + ev.SubagentRecommendationReason
-			}
-			modelLabel += " (recommended: " + rec + ")"
-		}
-		header := titleStyle.Render(ev.SubagentID+" — "+modelLabel) + "\n" +
+		header := titleStyle.Render(ev.SubagentID+" — "+ev.SubagentModel) + "\n" +
 			styledLines(toolArgsStyle, ev.SubagentTask) + "\n\n"
 		a.subBufs[ev.SubagentID].WriteString(header)
 		a.refreshSide()

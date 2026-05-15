@@ -21,12 +21,6 @@ type SubagentSpec struct {
 // runtime. requiredCaps may be nil or empty (meaning any model for the tier).
 type AdapterFactory func(tier string, requiredCaps []string) (adapter llm.Adapter, model string)
 
-// RecommenderFunc returns the model the registry would ideally select for the
-// given tier and capability requirements, along with a short human-readable
-// reason. Used when AutoModelSelection is false to surface recommendations
-// without enforcing them. Returns empty strings when no recommendation exists.
-type RecommenderFunc func(tier string, requiredCaps []string) (model, reason string)
-
 // Manager owns active sub-agents and provides spawn/check/send/kill.
 type Manager struct {
 	mu            sync.Mutex
@@ -35,7 +29,6 @@ type Manager struct {
 	tools         *tools.Registry
 	tracker       *llm.Tracker
 	factory       AdapterFactory
-	recommender   RecommenderFunc // nil when auto-selection is active
 	skillCatalog  string
 	maxConcurrent int
 	defaultBudget int
@@ -68,14 +61,6 @@ func NewManager(rootCtx context.Context, bus *Bus, registry *tools.Registry, tra
 func (m *Manager) SetSkillCatalog(catalog string) {
 	m.mu.Lock()
 	m.skillCatalog = catalog
-	m.mu.Unlock()
-}
-
-// SetRecommender installs the recommender function used to suggest a better
-// model when AutoModelSelection is disabled. Pass nil to clear it.
-func (m *Manager) SetRecommender(f RecommenderFunc) {
-	m.mu.Lock()
-	m.recommender = f
 	m.mu.Unlock()
 }
 
@@ -142,15 +127,6 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	caps := models.Global.CapabilitiesForModel(model)
 	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, caps)
-
-	// Compute recommendation when auto-selection is disabled.
-	if m.recommender != nil {
-		if recModel, recReason := m.recommender(task.ModelTier, task.RequiredCaps); recModel != "" && recModel != model {
-			sub.RecommendedModel = recModel
-			sub.RecommendationReason = recReason
-		}
-	}
-
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}
