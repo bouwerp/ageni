@@ -155,6 +155,13 @@ type App struct {
 	masterTurnTime time.Time // wall-clock time when the current master turn started
 	subActivity    map[string]string
 
+	// chatDirty / sideDirty are set when streaming events arrive so that the
+	// tick handler (120 ms) does the actual viewport refresh instead of
+	// refreshing on every token. This prevents O(n×tokens) copies of the chat
+	// buffer and keeps keystroke latency constant regardless of session length.
+	chatDirty bool
+	sideDirty bool
+
 	// msgQueue holds user messages submitted while the master is busy.
 	// They are dequeued one at a time when the master becomes idle.
 	// Esc (stopGeneration) clears the queue.
@@ -679,16 +686,17 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tickMsg:
 		a.spinFrame++
-		// Re-render the side pane each tick so the running-sub-agent marker
-		// animates. The chat pane also needs a redraw when the inline
-		// "thinking…" indicator is showing — otherwise the spinner there
-		// freezes. The status bar pulls from the same frame counter via the
-		// View() call that follows this Update.
-		if a.anyAnimationActive() {
+		// Flush any deferred dirty flags accumulated by streaming events.
+		// This is the only place refreshChat/refreshSide fire during active
+		// streaming, capping the rate at ~8 Hz (one per 120 ms tick) regardless
+		// of how many tokens arrived since the last tick.
+		if a.sideDirty || a.anyAnimationActive() {
 			a.refreshSide()
-			if a.shouldShowInlineIndicator() {
-				a.refreshChat()
-			}
+			a.sideDirty = false
+		}
+		if a.chatDirty || (a.anyAnimationActive() && a.shouldShowInlineIndicator()) {
+			a.refreshChat()
+			a.chatDirty = false
 		}
 		cmds = append(cmds, tickCmd())
 	}
@@ -1443,7 +1451,7 @@ func (a *App) handleEvent(ev agent.Event) {
 		a.refreshChat()
 	case agent.EvSubagentTurnStart:
 		a.subActivity[ev.SubagentID] = "thinking"
-		a.refreshSide()
+		a.sideDirty = true
 	case agent.EvSubagentText:
 		// Stream to per-sub-agent in-progress buffer with incremental glamour.
 		cur := a.currentSubText[ev.SubagentID]
@@ -1464,7 +1472,7 @@ func (a *App) handleEvent(ev agent.Event) {
 				a.subRenderedUpTo[id] = lastNL + 1
 			}
 		}
-		a.refreshChat()
+		a.chatDirty = true
 	case agent.EvSubagentToolCall:
 		// A tool call ends the current text segment — flush the streamed
 		// raw text into the persistent buffer with glamour rendering, then
@@ -1593,9 +1601,9 @@ func (a *App) handleEvent(ev agent.Event) {
 		clean := a.scrub(ansiEscape.ReplaceAllString(ev.Text, ""))
 		a.shellBufs[id].WriteString(clean)
 		if a.viewSub == id {
-			a.refreshChatForce()
+			a.chatDirty = true
 		}
-		a.refreshSide()
+		a.sideDirty = true
 	case agent.EvShellExited:
 		id := ev.SubagentID
 		a.shellStatus[id] = agent.ShellStatusExited
@@ -1621,7 +1629,7 @@ func (a *App) appendMasterRender() {
 			a.masterRenderedUpTo = lastNL + 1
 		}
 	}
-	a.refreshChat()
+	a.chatDirty = true
 }
 
 // wrapChat uses lipgloss to word-wrap a string to the current chat-pane width.
