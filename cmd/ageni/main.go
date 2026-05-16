@@ -251,11 +251,30 @@ func run() error {
 		roles.Global = roleReg
 	}
 
-	// Load memories from ~/.ageni/memories/ and ./.ageni/memories/.
-	memReg, mErr := memory.Load()
-	if mErr != nil {
-		fmt.Fprintf(os.Stderr, "ageni: memories: %v\n", mErr)
-		memReg = nil
+	// Load memories from ~/.ageni/memories/ and ./.ageni/memories/. Run with a
+	// timeout so that a slow filesystem or unreachable home directory cannot
+	// hang startup indefinitely.
+	var memReg *memory.Registry
+	{
+		type memResult struct {
+			reg *memory.Registry
+			err error
+		}
+		ch := make(chan memResult, 1)
+		go func() {
+			reg, err := memory.Load()
+			ch <- memResult{reg, err}
+		}()
+		select {
+		case res := <-ch:
+			if res.err != nil {
+				fmt.Fprintf(os.Stderr, "ageni: memories: %v\n", res.err)
+			} else {
+				memReg = res.reg
+			}
+		case <-time.After(3 * time.Second):
+			fmt.Fprintf(os.Stderr, "ageni: memories: load timed out, skipping\n")
+		}
 	}
 
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
