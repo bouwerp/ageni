@@ -4,6 +4,7 @@ import (
 	"archive/tar"
 	"archive/zip"
 	"compress/gzip"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
@@ -14,6 +15,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"time"
 )
 
 const githubReleasesAPI = "https://api.github.com/repos/bouwerp/ageni/releases/latest"
@@ -93,7 +95,9 @@ func runUpdate(currentVersion string) error {
 }
 
 func fetchLatestRelease() (*githubRelease, error) {
-	req, err := http.NewRequest(http.MethodGet, githubReleasesAPI, nil)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, githubReleasesAPI, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -133,7 +137,14 @@ func downloadAndExtract(url, shaURL, assetName, ext string) (string, error) {
 	}
 	defer os.Remove(tmp.Name())
 
-	resp, err := http.Get(url) //nolint:noctx
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		tmp.Close()
+		return "", err
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		tmp.Close()
 		return "", err
@@ -142,8 +153,6 @@ func downloadAndExtract(url, shaURL, assetName, ext string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		tmp.Close()
 		return "", fmt.Errorf("download returned %d", resp.StatusCode)
-	}
-	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		tmp.Close()
 		return "", err
 	}
@@ -174,7 +183,13 @@ func downloadAndExtract(url, shaURL, assetName, ext string) (string, error) {
 }
 
 func verifyChecksum(archivePath, shaURL string) error {
-	resp, err := http.Get(shaURL) //nolint:noctx
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, shaURL, nil)
+	if err != nil {
+		return fmt.Errorf("fetch checksum: %w", err)
+	}
+	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("fetch checksum: %w", err)
 	}

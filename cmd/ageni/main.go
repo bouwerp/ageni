@@ -23,14 +23,15 @@ import (
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/agentsmd"
 	"github.com/bouwerp/ageni/internal/config"
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/mcp"
+	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/repomap"
+	"github.com/bouwerp/ageni/internal/roles"
 	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
-	"github.com/bouwerp/ageni/internal/memory"
-	"github.com/bouwerp/ageni/internal/roles"
 	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/bouwerp/ageni/internal/tui"
@@ -240,7 +241,7 @@ func run() error {
 
 	// Load roles from embedded built-ins and ~/.ageni/roles/.
 	rolesUserDir := ""
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		rolesUserDir = filepath.Join(home, ".ageni", "roles")
 	}
 	roleReg, rErr := roles.Load(rolesUserDir)
@@ -772,13 +773,14 @@ func (p *cloudSubPool) pickForTask(tier string, requiredCaps []string) (llm.Adap
 // the local fleet and optional cloud sub-agent pool.
 //
 // Tier routing (evaluated in order):
-//   opus              → master adapter (flagship model for complex synthesis)
-//   haiku             → local fleet if active (full or subset mode)
-//                       otherwise cloud sub-pool (registry-guided best ROI)
-//                       otherwise single cloud sub-agent adapter
-//   sonnet / default  → local fleet if active and mode == "full"
-//                       otherwise cloud sub-pool (registry-guided best ROI)
-//                       otherwise single cloud sub-agent adapter
+//
+//	opus              → master adapter (flagship model for complex synthesis)
+//	haiku             → local fleet if active (full or subset mode)
+//	                    otherwise cloud sub-pool (registry-guided best ROI)
+//	                    otherwise single cloud sub-agent adapter
+//	sonnet / default  → local fleet if active and mode == "full"
+//	                    otherwise cloud sub-pool (registry-guided best ROI)
+//	                    otherwise single cloud sub-agent adapter
 //
 // The master adapter is intentionally excluded from rotation: prompt
 // caching (Anthropic/OpenAI) makes repeated context reads ≈10× cheaper;

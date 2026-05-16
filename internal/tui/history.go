@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // History is a persistent ring of user-entered messages. It survives across
@@ -24,7 +26,7 @@ type History struct {
 // is not an error.
 func LoadHistory() *History {
 	h := &History{}
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		h.path = filepath.Join(home, ".ageni", "history.txt")
 	}
 	h.load()

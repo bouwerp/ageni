@@ -21,6 +21,7 @@ import (
 
 	"github.com/99designs/keyring"
 	"github.com/awnumar/memguard"
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 const (
@@ -49,7 +50,7 @@ func Open(cfg keyring.Config) (*Store, error) {
 
 	// Backend preference: system keychain → file vault (headless fallback)
 	if len(cfg.AllowedBackends) == 0 {
-		home, _ := os.UserHomeDir()
+		home, _ := homedir.Dir()
 		cfg.AllowedBackends = []keyring.BackendType{
 			keyring.KeychainBackend,      // macOS
 			keyring.SecretServiceBackend, // Linux GNOME / libsecret
@@ -328,8 +329,8 @@ func (s *Store) persistToKeyring() error {
 	}
 
 	return s.ring.Set(keyring.Item{
-		Key:  keyringKey,
-		Data: data,
+		Key:   keyringKey,
+		Data:  data,
 		Label: "ageni secrets",
 	})
 }

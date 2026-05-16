@@ -25,6 +25,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // Memory is one stored fact/snippet.
@@ -55,7 +57,7 @@ func Load() (*Registry, error) {
 	r := &Registry{items: map[string]*Memory{}}
 
 	global := ""
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		global = filepath.Join(home, ".ageni", "memories")
 	}
 	local := filepath.Join(".ageni", "memories")

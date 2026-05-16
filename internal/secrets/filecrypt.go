@@ -12,6 +12,7 @@ import (
 	"filippo.io/age"
 	"filippo.io/age/armor"
 	"github.com/awnumar/memguard"
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // FileVault is an age-encrypted key-value store that lives at a single file
@@ -32,7 +33,7 @@ type FileVault struct {
 // DefaultFileVault returns a FileVault pointing at ~/.ageni/secrets.age
 // with the identity at ~/.ageni/identity.age.
 func DefaultFileVault() (*FileVault, error) {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return nil, err
 	}

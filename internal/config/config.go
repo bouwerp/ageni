@@ -9,6 +9,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/llm"
 )
 
@@ -304,7 +305,6 @@ func FormatLocalFleet(fleet []LocalEndpoint) string {
 	return strings.Join(parts, ",")
 }
 
-
 var ErrNotConfigured = fmt.Errorf("ageni is not configured; run `ageni init`")
 
 func resolveRole(prefix, providerName string) (RoleConfig, error) {
@@ -360,14 +360,14 @@ func resolveRole(prefix, providerName string) (RoleConfig, error) {
 //  3. ~/.ageni/.env (global default)
 func loadDotenvChain() {
 	_ = godotenv.Load(".env")
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		_ = godotenv.Load(filepath.Join(home, ".ageni", ".env"))
 	}
 }
 
 // GlobalEnvPath returns the standard location for the user-level config.
 func GlobalEnvPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return "", err
 	}

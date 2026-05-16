@@ -15,6 +15,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 //go:embed all:embedded
@@ -127,7 +129,7 @@ func parseEmbeddedSkillDir(dir string) (*Skill, error) {
 
 func searchPaths() []string {
 	var paths []string
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		paths = append(paths, filepath.Join(home, ".ageni", "skills"))
 	}
 	paths = append(paths, filepath.Join(".ageni", "skills"))

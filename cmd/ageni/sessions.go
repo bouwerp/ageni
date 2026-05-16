@@ -9,6 +9,7 @@ import (
 	"text/tabwriter"
 	"time"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/session"
 	"github.com/bouwerp/ageni/internal/tools"
 )
@@ -172,8 +173,10 @@ func sessionsList() error {
 		repo := s.RepoPath
 		if repo == "" {
 			repo = "—"
-		} else if rel, err := filepath.Rel(must(os.UserHomeDir()), repo); err == nil && len(rel) < len(repo) {
-			repo = "~/" + rel
+		} else if home, herr := homedir.Dir(); herr == nil {
+			if rel, err := filepath.Rel(home, repo); err == nil && len(rel) < len(repo) {
+				repo = "~/" + rel
+			}
 		}
 		master := joinSlash(s.MasterProvider, s.MasterModel)
 		sub := joinSlash(s.SubagentProvider, s.SubagentModel)

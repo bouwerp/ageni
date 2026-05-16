@@ -10,6 +10,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // Session is the per-instance state container. Every persistent artifact —
@@ -34,7 +36,7 @@ type Session struct {
 // SessionsRoot returns the directory all sessions live under
 // (~/.ageni/sessions). Created on first call.
 func SessionsRoot() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return "", err
 	}

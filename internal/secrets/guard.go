@@ -4,12 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -36,8 +35,8 @@ var sensitivePathPatterns = []string{
 }
 
 // ageniDirs are directory names under ~/.ageni that are always blocked.
-// Populated lazily on first use so that a slow os.UserHomeDir() lookup
-// (LDAP/NFS home directories) never blocks program startup.
+// Populated lazily on first use; uses homedir.Dir() which has a built-in
+// timeout so it never blocks the sensitive-path check for long.
 var (
 	ageniDirsOnce sync.Once
 	ageniDirs     []string
@@ -46,24 +45,15 @@ var (
 
 func resolveAgeniDirs() {
 	ageniDirsOnce.Do(func() {
-		ch := make(chan string, 1)
-		go func() {
-			home, _ := os.UserHomeDir()
-			ch <- home
-		}()
-		select {
-		case home := <-ch:
-			cachedHome = home
-			if home != "" {
-				ageniDirs = []string{
-					filepath.Join(home, ".ageni", ".env"),
-					filepath.Join(home, ".ageni", "keyring"),
-					filepath.Join(home, ".ageni", "identity.age"),
-					filepath.Join(home, ".ageni", "secrets.age"),
-				}
+		home, _ := homedir.Dir()
+		cachedHome = home
+		if home != "" {
+			ageniDirs = []string{
+				filepath.Join(home, ".ageni", ".env"),
+				filepath.Join(home, ".ageni", "keyring"),
+				filepath.Join(home, ".ageni", "identity.age"),
+				filepath.Join(home, ".ageni", "secrets.age"),
 			}
-		case <-time.After(2 * time.Second):
-			// Lookup timed out; ageniDirs stays empty (patterns still apply).
 		}
 	})
 }
@@ -112,8 +102,8 @@ func NewGuardedReadFile() GuardedReadFile {
 	return GuardedReadFile{}
 }
 
-func (GuardedReadFile) Name() string        { return "read_file" }
-func (g GuardedReadFile) Description() string { return g.inner.Description() }
+func (GuardedReadFile) Name() string              { return "read_file" }
+func (g GuardedReadFile) Description() string     { return g.inner.Description() }
 func (g GuardedReadFile) Schema() json.RawMessage { return g.inner.Schema() }
 
 func (g GuardedReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
@@ -143,9 +133,9 @@ type GuardedGrep struct {
 
 func NewGuardedGrep() GuardedGrep { return GuardedGrep{} }
 
-func (GuardedGrep) Name() string               { return "grep" }
-func (g GuardedGrep) Description() string      { return g.inner.Description() }
-func (g GuardedGrep) Schema() json.RawMessage  { return g.inner.Schema() }
+func (GuardedGrep) Name() string              { return "grep" }
+func (g GuardedGrep) Description() string     { return g.inner.Description() }
+func (g GuardedGrep) Schema() json.RawMessage { return g.inner.Schema() }
 
 func (g GuardedGrep) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {

@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bouwerp/ageni/internal/agent"
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // Logger appends every Bus event to a JSONL file in ~/.ageni/sessions/.
@@ -28,7 +29,7 @@ func NewLogger(s *Session) (*Logger, error) {
 	if s != nil {
 		path = s.Path("log.jsonl")
 	} else {
-		home, err := os.UserHomeDir()
+		home, err := homedir.Dir()
 		if err != nil {
 			return nil, err
 		}
