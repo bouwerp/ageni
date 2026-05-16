@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/bouwerp/ageni/internal/tools"
 )
@@ -34,26 +36,44 @@ var sensitivePathPatterns = []string{
 }
 
 // ageniDirs are directory names under ~/.ageni that are always blocked.
-var ageniDirs []string
+// Populated lazily on first use so that a slow os.UserHomeDir() lookup
+// (LDAP/NFS home directories) never blocks program startup.
+var (
+	ageniDirsOnce sync.Once
+	ageniDirs     []string
+	cachedHome    string
+)
 
-func init() {
-	home, _ := os.UserHomeDir()
-	if home != "" {
-		ageniDirs = []string{
-			filepath.Join(home, ".ageni", ".env"),
-			filepath.Join(home, ".ageni", "keyring"),
-			filepath.Join(home, ".ageni", "identity.age"),
-			filepath.Join(home, ".ageni", "secrets.age"),
+func resolveAgeniDirs() {
+	ageniDirsOnce.Do(func() {
+		ch := make(chan string, 1)
+		go func() {
+			home, _ := os.UserHomeDir()
+			ch <- home
+		}()
+		select {
+		case home := <-ch:
+			cachedHome = home
+			if home != "" {
+				ageniDirs = []string{
+					filepath.Join(home, ".ageni", ".env"),
+					filepath.Join(home, ".ageni", "keyring"),
+					filepath.Join(home, ".ageni", "identity.age"),
+					filepath.Join(home, ".ageni", "secrets.age"),
+				}
+			}
+		case <-time.After(2 * time.Second):
+			// Lookup timed out; ageniDirs stays empty (patterns still apply).
 		}
-	}
+	})
 }
 
 // isSensitivePath returns true if the path matches any known sensitive pattern.
 func isSensitivePath(path string) bool {
+	resolveAgeniDirs()
 	// Normalize: resolve ~ and make absolute if possible.
 	if strings.HasPrefix(path, "~/") {
-		home, _ := os.UserHomeDir()
-		path = filepath.Join(home, path[2:])
+		path = filepath.Join(cachedHome, path[2:])
 	}
 	abs, err := filepath.Abs(path)
 	if err == nil {
