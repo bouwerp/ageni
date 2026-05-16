@@ -202,29 +202,35 @@ func (t ShellWaitTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	return fmt.Sprintf("pattern found at offset %d", endOffset), nil
 }
 
-// ShellSendInputTool sends raw input to a shell session's stdin.
+// ShellSendInputTool sends raw input or named key sequences to a shell session's stdin.
 type ShellSendInputTool struct {
 	SM *ShellManager
 }
 
-func (t ShellSendInputTool) Name() string        { return "shell_send_input" }
+func (t ShellSendInputTool) Name() string { return "shell_send_input" }
 func (t ShellSendInputTool) Description() string {
-	return "Send raw input to a shell session's stdin. Useful for interactive prompts."
+	return "Send raw text or named key sequences to a shell session's stdin. Use 'input' for raw text, or 'keys' for named keys like ctrl+c, enter, arrow keys, etc. Useful for interacting with running processes (dev servers, prompts, TUI apps)."
 }
 func (t ShellSendInputTool) Schema() json.RawMessage {
 	return json.RawMessage(`{
 		"type": "object",
 		"properties": {
 			"id": {"type": "string", "description": "Shell session ID"},
-			"input": {"type": "string", "description": "Input to send"}
+			"input": {"type": "string", "description": "Raw text to write to stdin. JSON escape sequences (\\r, \\t, \\x03, etc.) are honoured."},
+			"keys": {
+				"type": "array",
+				"items": {"type": "string"},
+				"description": "Sequence of named keys to send. Each element is either a named key or a literal character. Named keys: 'enter', 'escape', 'tab', 'backspace', 'space', 'up', 'down', 'left', 'right', 'home', 'end', 'page_up', 'page_down', 'ctrl+a'…'ctrl+z', 'delete', 'f1'…'f12'. Literal example: ['r'] sends the character 'r'; ['r','enter'] sends 'r' then Enter. Keys are sent in order after 'input' (if any)."
+			}
 		},
-		"required": ["id", "input"]
+		"required": ["id"]
 	}`)
 }
 func (t ShellSendInputTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var a struct {
-		ID    string `json:"id"`
-		Input string `json:"input"`
+		ID    string   `json:"id"`
+		Input string   `json:"input"`
+		Keys  []string `json:"keys"`
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
@@ -233,10 +239,21 @@ func (t ShellSendInputTool) Call(ctx context.Context, args json.RawMessage) (str
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
 	}
-	if err := s.SendInput(a.Input); err != nil {
-		return "", err
+	if a.Input == "" && len(a.Keys) == 0 {
+		return "", fmt.Errorf("provide 'input' text or 'keys' array")
 	}
-	return "input sent", nil
+	// Send raw input first, then named keys.
+	if a.Input != "" {
+		if err := s.SendInput(a.Input); err != nil {
+			return "", err
+		}
+	}
+	if len(a.Keys) > 0 {
+		if err := s.SendKeys(a.Keys); err != nil {
+			return "", err
+		}
+	}
+	return fmt.Sprintf("sent to %s", a.ID), nil
 }
 
 // CloseShellTool closes a shell session.

@@ -234,6 +234,96 @@ func (s *ShellSession) SendInput(input string) error {
 	return err
 }
 
+// namedKeyBytes maps a named key string to the byte sequence it represents.
+// Names are case-insensitive. Supports ctrl+<letter>, common named keys, and
+// ANSI escape sequences for terminal navigation.
+func namedKeyBytes(key string) (string, bool) {
+	switch strings.ToLower(strings.TrimSpace(key)) {
+	// Control characters
+	case "ctrl+a": return "\x01", true
+	case "ctrl+b": return "\x02", true
+	case "ctrl+c": return "\x03", true
+	case "ctrl+d": return "\x04", true
+	case "ctrl+e": return "\x05", true
+	case "ctrl+f": return "\x06", true
+	case "ctrl+g": return "\x07", true
+	case "ctrl+h": return "\x08", true
+	case "ctrl+i": return "\x09", true
+	case "ctrl+j": return "\x0a", true
+	case "ctrl+k": return "\x0b", true
+	case "ctrl+l": return "\x0c", true
+	case "ctrl+m": return "\x0d", true
+	case "ctrl+n": return "\x0e", true
+	case "ctrl+o": return "\x0f", true
+	case "ctrl+p": return "\x10", true
+	case "ctrl+q": return "\x11", true
+	case "ctrl+r": return "\x12", true
+	case "ctrl+s": return "\x13", true
+	case "ctrl+t": return "\x14", true
+	case "ctrl+u": return "\x15", true
+	case "ctrl+v": return "\x16", true
+	case "ctrl+w": return "\x17", true
+	case "ctrl+x": return "\x18", true
+	case "ctrl+y": return "\x19", true
+	case "ctrl+z": return "\x1a", true
+	// Named keys
+	case "enter", "return": return "\r", true
+	case "newline":          return "\n", true
+	case "tab":              return "\t", true
+	case "escape", "esc":   return "\x1b", true
+	case "backspace":        return "\x7f", true
+	case "delete", "del":   return "\x1b[3~", true
+	case "space":            return " ", true
+	// Arrow keys (ANSI sequences)
+	case "up":               return "\x1b[A", true
+	case "down":             return "\x1b[B", true
+	case "right":            return "\x1b[C", true
+	case "left":             return "\x1b[D", true
+	// Navigation
+	case "home":             return "\x1b[H", true
+	case "end":              return "\x1b[F", true
+	case "page_up", "pgup":  return "\x1b[5~", true
+	case "page_down", "pgdn": return "\x1b[6~", true
+	// Function keys
+	case "f1":  return "\x1bOP", true
+	case "f2":  return "\x1bOQ", true
+	case "f3":  return "\x1bOR", true
+	case "f4":  return "\x1bOS", true
+	case "f5":  return "\x1b[15~", true
+	case "f6":  return "\x1b[17~", true
+	case "f7":  return "\x1b[18~", true
+	case "f8":  return "\x1b[19~", true
+	case "f9":  return "\x1b[20~", true
+	case "f10": return "\x1b[21~", true
+	case "f11": return "\x1b[23~", true
+	case "f12": return "\x1b[24~", true
+	}
+	return "", false
+}
+
+// SendKeys sends a sequence of named keys or literal characters to the shell's stdin.
+// Each element in keys is either a named key (e.g. "ctrl+c", "enter", "up") or a
+// single literal character (e.g. "r", "y"). Returns an error if the shell is not open.
+func (s *ShellSession) SendKeys(keys []string) error {
+	s.mu.Lock()
+	st := s.status
+	s.mu.Unlock()
+	if st != ShellStatusOpen {
+		return fmt.Errorf("shell %s is not open", s.id)
+	}
+	var buf strings.Builder
+	for _, k := range keys {
+		if seq, ok := namedKeyBytes(k); ok {
+			buf.WriteString(seq)
+		} else {
+			// Treat as literal text (could be a single char or a short string).
+			buf.WriteString(k)
+		}
+	}
+	_, err := fmt.Fprint(s.stdin, buf.String())
+	return err
+}
+
 // WaitForPattern blocks until pattern appears in buf at or after startOffset,
 // or until ctx/timeout expires. Returns the global offset just after the match.
 func (s *ShellSession) WaitForPattern(ctx context.Context, pattern string, startOffset int64, timeout time.Duration) (int64, error) {
