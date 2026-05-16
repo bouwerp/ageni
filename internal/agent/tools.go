@@ -43,6 +43,7 @@ func (SpawnTool) Schema() json.RawMessage {
   "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
   "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 200. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
+  "timeout_minutes":{"type":"number","description":"Total runtime budget for this worker in minutes. Default 10. Increase for long-running tasks (e.g. 20 for a full test suite run, 30 for a deep refactor)."},
   "context":{"type":"string","description":"Free-form pre-computed context for one-off info that doesn't fit the structured fields below."},
   "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."},
   "repo_facts":{"type":"array","items":{"type":"string"},"description":"File-purpose lines you already know, e.g. 'internal/llm/anthropic.go: prompt-caching adapter'. Saves the worker a discovery round-trip."},
@@ -109,7 +110,11 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if task.Role != "" {
 		roleLabel = fmt.Sprintf(", role=%s", task.Role)
 	}
-	return fmt.Sprintf("spawned sub-agent %s (tier=%s%s, budget=%d)", id, task.ModelTier, roleLabel, task.BudgetToolCalls), nil
+	timeoutLabel := ""
+	if task.TimeoutMinutes > 0 {
+		timeoutLabel = fmt.Sprintf(", timeout=%.0fm", task.TimeoutMinutes)
+	}
+	return fmt.Sprintf("spawned sub-agent %s (tier=%s%s%s, budget=%d)", id, task.ModelTier, roleLabel, timeoutLabel, task.BudgetToolCalls), nil
 }
 
 // CheckTool returns the sub-agent's current status and recent transcript.

@@ -57,6 +57,11 @@ type SubagentTask struct {
 	// base instructions. Set automatically when Role is resolved; not intended
 	// to be set directly by the master.
 	RoleSystemAddendum string `json:"-"`
+
+	// TimeoutMinutes overrides the default total-runtime budget for this worker.
+	// When 0 (omitted), the system default (10 minutes) is used.
+	// Useful for long-running tasks that are known upfront to exceed the default.
+	TimeoutMinutes float64 `json:"timeout_minutes,omitempty"`
 }
 
 // Subagent runs a single delegated task in its own goroutine.
@@ -89,7 +94,8 @@ type Subagent struct {
 	// appends each as a user-role message before continuing.
 	inbox chan string
 
-	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3, maxTotalRuntime 20min.
+	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3, maxTotalRuntime 10min.
+	// maxTotalRuntime is overridden by SubagentTask.TimeoutMinutes when set.
 	turnTimeout     time.Duration
 	maxRetries      int
 	maxTotalRuntime time.Duration
@@ -130,6 +136,10 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	if budget <= 0 {
 		budget = 200
 	}
+	totalRuntime := 10 * time.Minute
+	if task.TimeoutMinutes > 0 {
+		totalRuntime = time.Duration(task.TimeoutMinutes * float64(time.Minute))
+	}
 	return &Subagent{
 		ID:           id,
 		Task:         task,
@@ -146,7 +156,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
 		maxRetries:      3,
-		maxTotalRuntime: 5 * time.Minute,
+		maxTotalRuntime: totalRuntime,
 		status:          StatusRunning,
 		spawnedAt:       time.Now(),
 	}
