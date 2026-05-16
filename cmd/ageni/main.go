@@ -29,6 +29,7 @@ import (
 	"github.com/bouwerp/ageni/internal/repomap"
 	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
+	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/roles"
 	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
@@ -250,6 +251,13 @@ func run() error {
 		roles.Global = roleReg
 	}
 
+	// Load memories from ~/.ageni/memories/ and ./.ageni/memories/.
+	memReg, mErr := memory.Load()
+	if mErr != nil {
+		fmt.Fprintf(os.Stderr, "ageni: memories: %v\n", mErr)
+		memReg = nil
+	}
+
 	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
 		r.Register(secrets.NewGuardedReadFile())
 		r.Register(tools.WriteFile{Tracker: tr})
@@ -276,6 +284,11 @@ func run() error {
 		r.Register(tools.Simulator{})
 		if skillReg != nil {
 			r.Register(skills.ReadSkill{Registry: skillReg})
+		}
+		if memReg != nil {
+			r.Register(memory.RememberTool{Reg: memReg})
+			r.Register(memory.RecallTool{Reg: memReg})
+			r.Register(memory.ForgetTool{Reg: memReg})
 		}
 		for _, t := range mcpTools {
 			r.Register(t)
@@ -465,6 +478,10 @@ func run() error {
 		roleCatalog := roleReg.Catalog()
 		master.SetRoleCatalog(roleCatalog)
 		manager.SetRoleCatalog(roleCatalog)
+	}
+	if memReg != nil {
+		master.SetMemoryRegistry(memReg)
+		manager.SetMemoryRegistry(memReg)
 	}
 
 	// Build the Aider-style repo map asynchronously so the TUI starts

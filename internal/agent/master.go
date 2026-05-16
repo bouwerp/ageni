@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -51,8 +52,9 @@ type Master struct {
 	compactAdapter llm.Adapter
 	compactModel   string
 
-	skillCatalog    string // optional: appended to the cached system prompt
-	roleCatalog     string // optional: appended to the cached system prompt
+	skillCatalog    string           // optional: appended to the cached system prompt
+	roleCatalog     string           // optional: appended to the cached system prompt
+	memReg          *memory.Registry // optional: live memory registry injected each turn
 	repoMap         string // optional: rendered repository map appended to the cached prefix
 	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
 	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
@@ -119,6 +121,15 @@ func (m *Master) SetSkillCatalog(catalog string) {
 func (m *Master) SetRoleCatalog(catalog string) {
 	m.mu.Lock()
 	m.roleCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetMemoryRegistry wires a live memory registry into the master. The block
+// returned by memReg.InlineBlock() is injected into every system prompt turn
+// so memories are always current without requiring a tool call.
+func (m *Master) SetMemoryRegistry(reg *memory.Registry) {
+	m.mu.Lock()
+	m.memReg = reg
 	m.mu.Unlock()
 }
 
@@ -1005,6 +1016,7 @@ func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
 	roleCat := m.roleCatalog
+	memReg := m.memReg
 	repoMap := m.repoMap
 	agentsMD := m.agentsMD
 	masterCaps := m.masterCaps
@@ -1019,6 +1031,12 @@ func (m *Master) systemPrompt() string {
 	if roleCat != "" {
 		rolesBlock = "\n\n<available_roles>\n" + roleCat + "\n\nWhen spawning a sub-agent, set role=\"<name>\" to apply a predefined persona. The role sets model_tier, budget, skill, persona instructions, and task_boundaries automatically. Explicit spawn params override role defaults.\n</available_roles>"
 	}
+	memoriesBlock := ""
+	if memReg != nil {
+		if block := memReg.InlineBlock(); block != "" {
+			memoriesBlock = "\n\n" + block
+		}
+	}
 	repoMapBlock := ""
 	if repoMap != "" {
 		repoMapBlock = "\n\n<repo_map>\n" + repoMap + "\n\nUse this map BEFORE calling grep/glob/read_file. It tells you which files exist and what they contain — use it to plan which files to read, then read them with read_file. The map is intentionally compact; if a file you need isn't listed, fall back to glob/grep.\n</repo_map>"
@@ -1031,7 +1049,7 @@ func (m *Master) systemPrompt() string {
 	capsBlock := buildMasterCapsBlock(masterCaps, subagentCaps)
 
 	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + rolesBlock + repoMapBlock + agentsBlock + capsBlock + `
+	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + rolesBlock + memoriesBlock + repoMapBlock + agentsBlock + capsBlock + `
 
 <orchestration_rules>
 You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.
@@ -1042,7 +1060,7 @@ Thinking happens internally. The user does not need — and should not see — a
 The ONLY text you produce before tool calls is a one-sentence acknowledgement when the request is ambiguous enough to warrant it.
 
 0. **THE MASTER'S PERMITTED TOOLS ARE FINITE.** You may only call:
-   spawn_subagent, find_in_codebase, check_subagent, send_to_subagent, kill_subagent, read_skill, soundboard, todo_write
+   spawn_subagent, find_in_codebase, check_subagent, send_to_subagent, kill_subagent, read_skill, soundboard, todo_write, remember, recall, forget
    Calling ANY other tool (grep, glob, read_file, edit_file, shell_exec, open_shell, view_image, …) is a hard violation of the orchestration contract. If you notice yourself about to call one of those, STOP — package the need into a worker's context and spawn.
 
 0b. **MAINTAIN THE TODO LIST. THE LIST IS THE ONLY WORK QUEUE.**

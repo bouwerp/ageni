@@ -6,6 +6,7 @@ import (
 	"sync"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
@@ -31,6 +32,7 @@ type Manager struct {
 	factory       AdapterFactory
 	skillCatalog  string
 	roleCatalog   string
+	memReg        *memory.Registry
 	maxConcurrent int
 	defaultBudget int
 	nextID        int
@@ -70,6 +72,14 @@ func (m *Manager) SetSkillCatalog(catalog string) {
 func (m *Manager) SetRoleCatalog(catalog string) {
 	m.mu.Lock()
 	m.roleCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetMemoryRegistry wires a live memory registry into the manager so newly
+// spawned sub-agents receive the current memory block in their system prompt.
+func (m *Manager) SetMemoryRegistry(reg *memory.Registry) {
+	m.mu.Lock()
+	m.memReg = reg
 	m.mu.Unlock()
 }
 
@@ -135,7 +145,11 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
 	caps := models.Global.CapabilitiesForModel(model)
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, caps)
+	memBlock := ""
+	if m.memReg != nil {
+		memBlock = m.memReg.InlineBlock()
+	}
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}

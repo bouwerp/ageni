@@ -83,6 +83,7 @@ type Subagent struct {
 
 	skillCatalog string
 	roleCatalog  string
+	memBlock     string // snapshot of memories at spawn time, injected into system prompt
 
 	// capabilities lists the model capabilities of this subagent's model
 	// (e.g. "vision", "reasoning"). Injected into the system prompt so the
@@ -127,7 +128,7 @@ func (s *Subagent) scrub(text string) string {
 	return f(text)
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, caps []string) *Subagent {
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, caps []string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
@@ -152,6 +153,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		hardTurnCap:     budget * 2,
 		skillCatalog:    skillCatalog,
 		roleCatalog:     roleCatalog,
+		memBlock:        memBlock,
 		capabilities:    append([]string(nil), caps...),
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
@@ -579,6 +581,11 @@ func (s *Subagent) systemPrompt() string {
 		rolesBlock = "\n\n<available_roles>\n" + s.roleCatalog + "\n</available_roles>"
 	}
 
+	memoriesBlock := ""
+	if s.memBlock != "" {
+		memoriesBlock = "\n\n" + s.memBlock
+	}
+
 	roleAddendum := ""
 	if s.Task.RoleSystemAddendum != "" {
 		roleAddendum = "\n\n<persona>\n" + strings.TrimSpace(s.Task.RoleSystemAddendum) + "\n</persona>"
@@ -587,7 +594,7 @@ func (s *Subagent) systemPrompt() string {
 	capsBlock := buildSubagentCapsBlock(caps)
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + capsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
