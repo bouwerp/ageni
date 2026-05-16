@@ -473,6 +473,13 @@ func (m *ShellManager) List() []*ShellSession {
 	return out
 }
 
+// Count returns the number of open shell sessions.
+func (m *ShellManager) Count() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return len(m.shells)
+}
+
 // Close closes the session with the given ID.
 func (m *ShellManager) Close(id string) error {
 	m.mu.Lock()

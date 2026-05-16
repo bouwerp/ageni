@@ -115,6 +115,10 @@ type App struct {
 	settingsState    *settingsState
 	flashMessage  string
 
+	// killConfirm is true when the user pressed Ctrl+X and is being asked to
+	// confirm the kill-all action. Enter confirms; Esc cancels.
+	killConfirm bool
+
 	// mouseOn tracks whether Bubble Tea's mouse capture is enabled.
 	// Toggled with F2 so the user can drag-select text in the terminal.
 	mouseOn bool
@@ -522,6 +526,24 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.cancel()
 			return a, tea.Quit
 
+		// ── kill-switch confirm ──────────────────────────────────────────────
+		case msg.String() == "ctrl+x" && !a.killConfirm:
+			a.killConfirm = true
+			a.refreshSide()
+			return a, nil
+		case a.killConfirm && (msg.Type == tea.KeyEnter || msg.String() == " "):
+			a.killConfirm = false
+			a.performKill()
+			return a, nil
+		case a.killConfirm && msg.Type == tea.KeyEsc:
+			a.killConfirm = false
+			a.flashMessage = "kill cancelled"
+			a.refreshSide()
+			return a, nil
+		case a.killConfirm:
+			// Swallow all other keys while waiting for confirmation.
+			return a, nil
+
 		// ── popover navigation ───────────────────────────────────────────────
 		case a.showMorePopup != "" && msg.Type == tea.KeyEsc:
 			// Cancel: restore previous selection. For todos popover, viewSub was not changed.
@@ -924,6 +946,62 @@ func (a *App) stopGeneration() {
 		a.flashMessage = fmt.Sprintf("stopped generation (dropped %d queued message(s))", queued)
 	default:
 		a.flashMessage = "stopped generation"
+	}
+}
+
+// performKill executes the kill-switch: cancels all in-flight generation,
+// kills every running sub-agent and shell session, and clears all todos.
+// Conversation history and compacted context are preserved.
+func (a *App) performKill() {
+	// 1. Stop in-flight generation (master + all sub-agents).
+	a.msgQueue = nil
+	subs := 0
+	if a.cancelInFlight != nil {
+		subs = a.cancelInFlight()
+	}
+	a.masterBusy = false
+	a.masterToolIn = ""
+	select {
+	case a.masterIn <- agent.Event{Kind: agent.EvCancelAll}:
+	default:
+	}
+
+	// 2. Kill any sub-agents that survived the cancel (finished but not GC'd).
+	if a.manager != nil {
+		a.manager.CancelAll()
+	}
+
+	// 3. Kill all shell sessions.
+	shells := 0
+	if a.shellMgr != nil {
+		shells = a.shellMgr.Count()
+		a.shellMgr.CancelAll()
+	}
+
+	// 4. Clear all todos (preserve compacted context — chat history untouched).
+	todos := 0
+	if a.todo != nil {
+		todos = len(a.todo.Items())
+		a.todo.Clear()
+	}
+
+	a.refreshChat()
+	a.refreshSide()
+
+	parts := []string{}
+	if subs > 0 {
+		parts = append(parts, fmt.Sprintf("%d sub-agent(s)", subs))
+	}
+	if shells > 0 {
+		parts = append(parts, fmt.Sprintf("%d shell(s)", shells))
+	}
+	if todos > 0 {
+		parts = append(parts, fmt.Sprintf("%d todo(s)", todos))
+	}
+	if len(parts) > 0 {
+		a.flashMessage = "killed: " + strings.Join(parts, ", ")
+	} else {
+		a.flashMessage = "kill: nothing was running"
 	}
 }
 
@@ -2344,6 +2422,13 @@ func (a *App) View() string {
 	)
 	in := is.Render(a.input.View())
 	bottom := statusStyle.Render(a.statusLine())
+	if a.killConfirm {
+		killBanner := lipgloss.NewStyle().
+			Foreground(lipgloss.Color("214")).
+			Bold(true).
+			Render("⚠  Kill all sub-agents, shells & todos? [Enter] confirm  [Esc] cancel")
+		return lipgloss.JoinVertical(lipgloss.Left, body, killBanner, in, bottom)
+	}
 	if a.atComp != nil && a.atComp.active && len(a.atComp.matches) > 0 {
 		suggest := a.atComp.render(a.width)
 		return lipgloss.JoinVertical(lipgloss.Left, body, suggest, in, bottom)
@@ -2646,7 +2731,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+,=settings  Ctrl+R=rankings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+X=kill  Ctrl+,=settings  Ctrl+R=rankings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is

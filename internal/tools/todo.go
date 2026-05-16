@@ -323,6 +323,20 @@ func (t *TodoWrite) Items() []TodoItem {
 	return out
 }
 
+// Clear removes all todo items and persists the empty list. Used by the
+// kill switch to wipe the session task list without touching context.
+func (t *TodoWrite) Clear() {
+	t.mu.Lock()
+	defer t.mu.Unlock()
+	if !t.loaded {
+		t.load()
+		t.loaded = true
+	}
+	t.items = nil
+	t.nextID = 0
+	t.save()
+}
+
 func (t *TodoWrite) load() {
 	if t.path == "" {
 		return
