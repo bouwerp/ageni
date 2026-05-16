@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -88,6 +89,14 @@ func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResul
 	call.Name = name
 	out, err := t.Call(ctx, call.Arguments)
 	if err != nil {
+		// Context cancellation is intentional (user pressed Esc or the
+		// sub-agent was killed). Don't surface it as a tool error — the
+		// caller's loop will detect ctx.Err() on the next iteration and
+		// exit cleanly. Return a neutral [cancelled] result so message
+		// history stays well-formed without confusing the model.
+		if errors.Is(err, context.Canceled) {
+			return llm.ToolResult{ToolCallID: call.ID, Content: "[cancelled]"}
+		}
 		msg := "Error: " + sanitizeOutput(err.Error())
 		if r.scrubber != nil {
 			msg = r.scrubber(msg)

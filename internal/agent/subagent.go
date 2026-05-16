@@ -313,6 +313,9 @@ func (s *Subagent) Run(parent context.Context) {
 
 		// Execute each tool call, one tool-result Message per call.
 		for _, tc := range cleanCalls {
+			if ctx.Err() != nil {
+				break
+			}
 			result := s.tools.Execute(ctx, tc)
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
 			s.bus.Publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})

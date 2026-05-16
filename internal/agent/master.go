@@ -507,9 +507,20 @@ func (m *Master) refreshActiveContext() {
 			case EvSubagentSpawn:
 				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
 			case EvSubagentDone:
-				sb.WriteString(fmt.Sprintf("- %s finished — call check_subagent(%q) for the final output\n", ev.SubagentID, ev.SubagentID))
 				if m.todo != nil {
 					m.todo.AutoRelease(ev.SubagentID)
+				}
+				if ev.Text != "" {
+					// Inline a snippet of the final output so the master can
+					// act immediately without a check_subagent round-trip.
+					snippet := ev.Text
+					const maxSnippet = 800
+					if len(snippet) > maxSnippet {
+						snippet = snippet[:maxSnippet] + "\n… (truncated — call check_subagent for full output)"
+					}
+					sb.WriteString(fmt.Sprintf("- %s DONE. Final output:\n<subagent_output id=%q>\n%s\n</subagent_output>\n", ev.SubagentID, ev.SubagentID, snippet))
+				} else {
+					sb.WriteString(fmt.Sprintf("- %s finished (no output) — call check_subagent(%q) if needed\n", ev.SubagentID, ev.SubagentID))
 				}
 			case EvSubagentError:
 				sb.WriteString(fmt.Sprintf("- %s ERROR: %v\n", ev.SubagentID, ev.Err))
@@ -518,7 +529,7 @@ func (m *Master) refreshActiveContext() {
 				}
 			}
 		}
-		sb.WriteString("React: inspect via check_subagent, correct via send_to_subagent, kill, or proceed.\n")
+		sb.WriteString("React: process outputs above, correct via send_to_subagent, or proceed.\n")
 		m.pendingEvs = nil
 	}
 
@@ -717,6 +728,9 @@ func (m *Master) takeTurns(parent context.Context) {
 		}
 
 		for _, tc := range cleanCalls {
+			if ctx.Err() != nil {
+				break
+			}
 			result := m.tools.Execute(ctx, tc)
 			m.bus.Publish(Event{Kind: EvMasterToolDone, ToolCall: &tc, ToolResult: &result})
 			m.messages = append(m.messages, llm.Message{
