@@ -9,6 +9,7 @@ import (
 
 	"github.com/joho/godotenv"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/llm"
 )
 
@@ -36,6 +37,30 @@ type Config struct {
 	MasterLead       RoleConfig
 	MasterLeadActive bool
 
+	// Critic is the model used for soundboard reviews. When CriticActive is
+	// true, the master can call soundboard() to get an adversarial critique
+	// of its plan before executing significant changes. Should be a different
+	// (ideally from a different provider) model than the master to provide
+	// genuine independent second opinions. Set CRITIC_PROVIDER to enable.
+	Critic       RoleConfig
+	CriticActive bool
+
+	// Compact is an optional cheap/fast model used exclusively for context
+	// compaction (history summarisation). When CompactActive is false,
+	// compaction falls back to the lead adapter (if set) then the primary.
+	// Set COMPACT_PROVIDER to enable; e.g. COMPACT_PROVIDER=google/gemini-flash.
+	Compact       RoleConfig
+	CompactActive bool
+
+	// Vision is an optional dedicated provider for image/vision calls
+	// (view_image tool). When VisionActive is false, vision falls back to the
+	// master adapter — which may not support images. Set VISION_PROVIDER to
+	// use a dedicated vision-capable model, e.g. VISION_PROVIDER=openai/gpt-4o.
+	// VISION_MODEL can also be set to override just the model name while
+	// keeping the master provider's credentials.
+	Vision       RoleConfig
+	VisionActive bool
+
 	// MasterFallbacks / SubagentFallbacks are ordered chains tried in
 	// sequence when the primary fails with a retryable error
 	// (429 / 5xx / timeout / network). Entries are specified in the
@@ -47,11 +72,59 @@ type Config struct {
 	MasterFallbacks   []RoleConfig
 	SubagentFallbacks []RoleConfig
 
+	// SubagentPool is an optional set of cloud providers used for
+	// sub-agent spawning, enabling round-robin load balancing and
+	// registry-guided best-model selection per tier.  Configured via
+	// SUBAGENT_POOL (comma-separated "<provider>" or
+	// "<provider>/<model>" entries, same format as SUBAGENT_FALLBACKS).
+	//
+	// When set, the AdapterFactory uses the pool for haiku/sonnet tiers
+	// instead of the single SUBAGENT_PROVIDER, spreading load across
+	// providers and consulting the rankings registry to pick the
+	// highest-ROI model for each tier at spawn time.  Opus-tier tasks
+	// (complex synthesis) still use the master adapter.
+	//
+	// NOTE: the master adapter intentionally never rotates — prompt
+	// caching (Anthropic / OpenAI) makes repeated context reads ≈10×
+	// cheaper; rotating providers throws away that discount.
+	SubagentPool       []RoleConfig
+	SubagentPoolActive bool
+
 	MaxSubagents int
 	// SubagentBudget is the default cap on tool calls per sub-agent when
 	// the master doesn't override it via spawn_subagent's
 	// budget_tool_calls argument. Driven by AGENI_SUBAGENT_BUDGET.
 	SubagentBudget int
+
+	// LocalFleet is a list of locally-hosted llama.cpp (or any
+	// OpenAI-compatible) endpoints that can serve as sub-agent workers.
+	// Configure via LLAMACPP_FLEET as a comma-separated list of
+	// "baseURL|model" pairs, e.g.:
+	//   LLAMACPP_FLEET=http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral
+	// If model is omitted the entry is still valid; the adapter will use
+	// an empty model string (server picks its loaded model).
+	LocalFleet []LocalEndpoint
+
+	// LocalFleetMode controls how the local fleet interacts with the
+	// cloud sub-agent adapter. Driven by LLAMACPP_FLEET_MODE.
+	//
+	//   "full"   — all sub-agent spawns go to the local fleet (round-robin).
+	//              The cloud SUBAGENT_PROVIDER is kept for the master and
+	//              opus-tier tasks but all standard workers run locally.
+	//   "subset" — haiku-tier spawns go to the local fleet; sonnet/opus
+	//              spawns go to the cloud adapter. Useful when local hardware
+	//              handles bulk grep/search/edit work while cloud handles
+	//              complex reasoning turns.
+	//
+	// Empty string means the local fleet is inactive even if LocalFleet
+	// is populated (safe default).
+	LocalFleetMode string
+}
+
+// LocalEndpoint is one locally-hosted model server in the fleet.
+type LocalEndpoint struct {
+	BaseURL string // e.g. "http://localhost:8080/v1"
+	Model   string // model ID passed to the server; empty = use whatever is loaded
 }
 
 // Load resolves configuration from (in order, last wins):
@@ -90,7 +163,7 @@ func Load() (*Config, error) {
 		Master:         master,
 		Subagent:       sub,
 		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
-		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 40),
+		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 200),
 	}
 
 	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.
@@ -103,8 +176,44 @@ func Load() (*Config, error) {
 		}
 	}
 
+	// Critic is opt-in: only resolve if CRITIC_PROVIDER is set.
+	if criticRaw := os.Getenv("CRITIC_PROVIDER"); criticRaw != "" {
+		if critic, err := resolveRole("CRITIC", criticRaw); err == nil {
+			cfg.Critic = critic
+			cfg.CriticActive = true
+		}
+	}
+
+	// Compact is opt-in: only resolve if COMPACT_PROVIDER is set.
+	if compactRaw := os.Getenv("COMPACT_PROVIDER"); compactRaw != "" {
+		if compact, err := resolveRole("COMPACT", compactRaw); err == nil {
+			cfg.Compact = compact
+			cfg.CompactActive = true
+		}
+	}
+
+	// Vision is opt-in: only resolve if VISION_PROVIDER is set.
+	if visionRaw := os.Getenv("VISION_PROVIDER"); visionRaw != "" {
+		if vision, err := resolveRole("VISION", visionRaw); err == nil {
+			cfg.Vision = vision
+			cfg.VisionActive = true
+		}
+	}
+
 	cfg.MasterFallbacks = parseFallbacks(os.Getenv("MASTER_FALLBACKS"))
 	cfg.SubagentFallbacks = parseFallbacks(os.Getenv("SUBAGENT_FALLBACKS"))
+
+	// SubagentPool is opt-in; parse errors silently yield an empty pool.
+	if pool := parseFallbacks(os.Getenv("SUBAGENT_POOL")); len(pool) > 0 {
+		cfg.SubagentPool = pool
+		cfg.SubagentPoolActive = true
+	}
+
+	// Local fleet is opt-in — a parse error silently yields an empty fleet.
+	cfg.LocalFleet = parseLocalFleet(os.Getenv("LLAMACPP_FLEET"))
+	if mode := strings.TrimSpace(os.Getenv("LLAMACPP_FLEET_MODE")); mode == "full" || mode == "subset" {
+		cfg.LocalFleetMode = mode
+	}
 	return cfg, nil
 }
 
@@ -155,8 +264,47 @@ func parseFallbacks(spec string) []RoleConfig {
 	return out
 }
 
-// ErrNotConfigured indicates no provider has been chosen anywhere — caller
-// should run the wizard.
+// parseLocalFleet reads a comma-separated list of "baseURL|model" entries.
+// Each entry must have at least a baseURL; model is optional.
+// Malformed or empty entries are silently skipped.
+// Example: "http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral"
+func parseLocalFleet(spec string) []LocalEndpoint {
+	spec = strings.TrimSpace(spec)
+	if spec == "" {
+		return nil
+	}
+	var out []LocalEndpoint
+	for _, raw := range strings.Split(spec, ",") {
+		entry := strings.TrimSpace(raw)
+		if entry == "" {
+			continue
+		}
+		baseURL, model := entry, ""
+		if idx := strings.LastIndex(entry, "|"); idx > 0 {
+			baseURL = strings.TrimSpace(entry[:idx])
+			model = strings.TrimSpace(entry[idx+1:])
+		}
+		if baseURL == "" {
+			continue
+		}
+		out = append(out, LocalEndpoint{BaseURL: baseURL, Model: model})
+	}
+	return out
+}
+
+// FormatLocalFleet serialises a fleet slice back to the env var format.
+func FormatLocalFleet(fleet []LocalEndpoint) string {
+	parts := make([]string, 0, len(fleet))
+	for _, e := range fleet {
+		if e.Model != "" {
+			parts = append(parts, e.BaseURL+"|"+e.Model)
+		} else {
+			parts = append(parts, e.BaseURL)
+		}
+	}
+	return strings.Join(parts, ",")
+}
+
 var ErrNotConfigured = fmt.Errorf("ageni is not configured; run `ageni init`")
 
 func resolveRole(prefix, providerName string) (RoleConfig, error) {
@@ -212,14 +360,14 @@ func resolveRole(prefix, providerName string) (RoleConfig, error) {
 //  3. ~/.ageni/.env (global default)
 func loadDotenvChain() {
 	_ = godotenv.Load(".env")
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		_ = godotenv.Load(filepath.Join(home, ".ageni", ".env"))
 	}
 }
 
 // GlobalEnvPath returns the standard location for the user-level config.
 func GlobalEnvPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return "", err
 	}

@@ -3,10 +3,10 @@ package session
 import (
 	"errors"
 	"fmt"
-	"os"
 	"path/filepath"
 	"strings"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/charmbracelet/huh"
 )
@@ -89,7 +89,7 @@ func formatSessionLabel(s *Session) string {
 }
 
 func shortenHome(p string) string {
-	if home, err := os.UserHomeDir(); err == nil {
+	if home, err := homedir.Dir(); err == nil {
 		if rel, err := filepath.Rel(home, p); err == nil && !strings.HasPrefix(rel, "..") {
 			return "~/" + rel
 		}

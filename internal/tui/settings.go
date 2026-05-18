@@ -26,6 +26,11 @@ import (
 type settingsState struct {
 	envPath string
 
+	// liveModelCache stores the result of live model fetches keyed by
+	// provider name. Populated once by prefetchModels() before the form
+	// is built so OptionsFunc closures never block on network I/O.
+	liveModelCache map[string][]llm.ModelSuggestion
+
 	// enabled is the multi-select result — provider names the user has
 	// ticked. Drives the option lists for role selection + fallbacks.
 	enabled []string
@@ -44,8 +49,22 @@ type settingsState struct {
 	masterFallbacks []string // provider names; multi-select
 	subFallbacks    []string // provider names; multi-select
 
+	criticProvider string
+	criticModel    string
+
 	maxSubagents   string
 	subagentBudget string
+
+	// localFleet is the raw LLAMACPP_FLEET env-var value (user edits it
+	// as a text field). localFleetMode is "full", "subset", or "" (disabled).
+	localFleet     string
+	localFleetMode string
+
+	// subagentPool is the raw SUBAGENT_POOL env-var value — a
+	// comma-separated list of "provider" or "provider/model" entries.
+	// When set, sub-agents are spread across these providers with
+	// registry-guided best-model selection per tier.
+	subagentPool string
 
 	// verifyResults is populated by save() with one entry per enabled
 	// provider showing the outcome of a quick auth probe. Surfaced to
@@ -55,11 +74,10 @@ type settingsState struct {
 
 const leadDisabled = ""
 
-// newSettingsForm builds the settings form. Pass the terminal height (minus
-// any header lines the caller renders above the form) so the group viewport
-// is sized correctly from the start rather than waiting for the async
-// WindowSizeMsg round-trip that fires after the first render.
-func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
+// newSettingsState builds only the settingsState (no huh form). The caller
+// owns the provider list component and populates st.enabled / st.keyPtrs from
+// it before building the huh form with newSettingsFormFromState.
+func newSettingsState() (*settingsState, map[string]string, error) {
 	envPath, err := config.GlobalEnvPath()
 	if err != nil {
 		return nil, nil, err
@@ -77,13 +95,24 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 		leadModel:       existing["MASTER_LEAD_MODEL"],
 		masterFallbacks: parseFallbackProviders(existing["MASTER_FALLBACKS"]),
 		subFallbacks:    parseFallbackProviders(existing["SUBAGENT_FALLBACKS"]),
+		criticProvider:  existing["CRITIC_PROVIDER"],
+		criticModel:     existing["CRITIC_MODEL"],
 		maxSubagents:    orDefault(existing["AGENI_MAX_SUBAGENTS"], "8"),
 		subagentBudget:  orDefault(existing["AGENI_SUBAGENT_BUDGET"], "40"),
+		localFleet:      existing["LLAMACPP_FLEET"],
+		localFleetMode:  existing["LLAMACPP_FLEET_MODE"],
+		subagentPool:    existing["SUBAGENT_POOL"],
 	}
-
-	// Pre-populate keyPtrs and the enabled list. A provider counts as
-	// enabled if it has a key in the env (or if it's a local provider
-	// that doesn't need one).
+	// Initialise keyPtrs with existing values; the provider list will overwrite
+	// them when the user advances to the form phase.
+	// Providers that were explicitly disabled in a previous session are saved
+	// under AGENI_DISABLED_PROVIDERS so we can restore that state here.
+	disabledSet := map[string]bool{}
+	for _, name := range strings.Split(existing["AGENI_DISABLED_PROVIDERS"], ",") {
+		if name = strings.TrimSpace(name); name != "" {
+			disabledSet[name] = true
+		}
+	}
 	for _, p := range llm.AllProviders() {
 		key := ""
 		if p.APIKeyEnv != "" {
@@ -91,44 +120,36 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 		}
 		k := key
 		st.keyPtrs[p.Name] = &k
-		if !p.NeedsKey || key != "" {
+		if (!p.NeedsKey || key != "") && !disabledSet[p.Name] {
 			st.enabled = append(st.enabled, p.Name)
 		}
 	}
+	return st, existing, nil
+}
 
-	// Build the form. A single Group renders all fields at once; each
-	// field Title carries its section prefix so it's readable regardless
-	// of scroll position ("Master · Provider" rather than a separate Note
-	// that drifts off-screen when tabbing).
-	fields := []huh.Field{
-		huh.NewMultiSelect[string]().
-			Title("Providers · Enabled").
-			Description("Space to tick. Keys are pulled from each provider's standard env var on save and verified against /v1/models.").
-			Options(allProviderOptions()...).
-			Value(&st.enabled).
-			Filterable(true).
-			Height(5),
-	}
-
-	// Per-provider key inputs — one per provider that needs a key.
-	for _, p := range llm.AllProviders() {
-		if !p.NeedsKey {
-			continue
+// applyProviderList transfers the provider-list component's selections into
+// settingsState so save() picks them up.
+func (s *settingsState) applyProviderList(pl *providerListModel) {
+	s.enabled = pl.enabledNames()
+	for name, val := range pl.keyValues() {
+		if v, ok := s.keyPtrs[name]; ok {
+			*v = val
+		} else {
+			v := val
+			s.keyPtrs[name] = &v
 		}
-		title := "Providers · " + p.Label + " key"
-		if v := *st.keyPtrs[p.Name]; v != "" {
-			title += "  [set]"
-		}
-		fields = append(fields, huh.NewInput().
-			Title(title).
-			Description("blank = keep existing").
-			EchoMode(huh.EchoModePassword).
-			Value(st.keyPtrs[p.Name]),
-		)
 	}
+}
 
-	// Role selection — only shows enabled providers.
-	fields = append(fields,
+// newSettingsFormFromState builds the huh form for role selection / limits.
+// The provider section is managed separately by providerListModel.
+// Fields are split across focused groups so each "page" covers one topic.
+func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, error) {
+	// Pre-fetch live model lists once before building the form so that the
+	// OptionsFunc closures never block on network I/O during rendering.
+	st.prefetchModels()
+
+	groupMaster := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Master · Provider").
 			Description("The agent you talk to. Use the best model you can afford.").
@@ -137,16 +158,18 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 			}, &st.enabled).
 			Value(&st.masterProvider).
 			Filtering(true).
-			Height(4),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Master · Model").
 			OptionsFunc(func() []huh.Option[string] {
-				return modelOptionsFor(st.masterProvider, st.masterModel)
+				return st.modelOptionsFor(st.masterProvider, st.masterModel)
 			}, &st.masterProvider).
 			Value(&st.masterModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupSub := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Sub-agent · Provider").
 			Description("Workers spawned by the master. Cheaper / free-tier is fine.").
@@ -155,57 +178,83 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 			}, &st.enabled).
 			Value(&st.subProvider).
 			Filtering(true).
-			Height(8),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Sub-agent · Model").
 			OptionsFunc(func() []huh.Option[string] {
-				return modelOptionsFor(st.subProvider, st.subModel)
+				return st.modelOptionsFor(st.subProvider, st.subModel)
 			}, &st.subProvider).
 			Value(&st.subModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupLead := huh.NewGroup(
 		huh.NewSelect[string]().
 			Title("Lead · Provider  (optional)").
-			Description("Used only on the first master turn (planning). (disabled) = master model every turn.").
+			Description("Used only on the first master turn. (disabled) = master model every turn.").
 			OptionsFunc(func() []huh.Option[string] {
 				opts := enabledProviderOptions(st.enabled)
 				return append([]huh.Option[string]{huh.NewOption("(disabled — every turn uses master model)", leadDisabled)}, opts...)
 			}, &st.enabled).
 			Value(&st.leadProvider).
 			Filtering(true).
-			Height(8),
+			Height(6),
 		huh.NewSelect[string]().
 			Title("Lead · Model  (optional)").
 			OptionsFunc(func() []huh.Option[string] {
 				if st.leadProvider == leadDisabled {
 					return nil
 				}
-				return modelOptionsFor(st.leadProvider, st.leadModel)
+				return st.modelOptionsFor(st.leadProvider, st.leadModel)
 			}, &st.leadProvider).
 			Value(&st.leadModel).
 			Filtering(true).
-			Height(5),
+			Height(8),
+	)
 
+	groupCritic := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Critic · Provider  (optional)").
+			Description("Soundboard reviewer. Use a different provider from the master for genuine second opinions.").
+			OptionsFunc(func() []huh.Option[string] {
+				opts := enabledProviderOptions(st.enabled)
+				return append([]huh.Option[string]{huh.NewOption("(disabled — soundboard inactive)", leadDisabled)}, opts...)
+			}, &st.enabled).
+			Value(&st.criticProvider).
+			Filtering(true).
+			Height(6),
+		huh.NewSelect[string]().
+			Title("Critic · Model  (optional)").
+			OptionsFunc(func() []huh.Option[string] {
+				if st.criticProvider == leadDisabled {
+					return nil
+				}
+				return st.modelOptionsFor(st.criticProvider, st.criticModel)
+			}, &st.criticProvider).
+			Value(&st.criticModel).
+			Filtering(true).
+			Height(8),
+	)
+
+	groupFallbacks := huh.NewGroup(
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Master").
-			Description("On 429 / 5xx / timeout, ageni tries these providers in order. Each uses its default model.").
-			OptionsFunc(func() []huh.Option[string] {
-				return fallbackOptions(st.enabled, st.masterProvider)
-			}, &st.enabled).
+			Description("On 429 / 5xx / timeout, ageni tries these providers in order.").
+			Options(fallbackOptions(st.enabled, st.masterProvider)...).
 			Value(&st.masterFallbacks).
 			Filterable(true).
 			Height(8),
 		huh.NewMultiSelect[string]().
 			Title("Fallbacks · Sub-agent").
 			Description("Same fallback behaviour for sub-agent workers.").
-			OptionsFunc(func() []huh.Option[string] {
-				return fallbackOptions(st.enabled, st.subProvider)
-			}, &st.enabled).
+			Options(fallbackOptions(st.enabled, st.subProvider)...).
 			Value(&st.subFallbacks).
 			Filterable(true).
 			Height(8),
+	)
 
+	groupLimits := huh.NewGroup(
 		huh.NewInput().
 			Title("Limits · Max concurrent sub-agents").
 			Description("Lower on rate-limited free tiers.").
@@ -218,13 +267,33 @@ func newSettingsForm(termHeight int) (*huh.Form, *settingsState, error) {
 			Validate(positiveInt),
 	)
 
-	form := huh.NewForm(huh.NewGroup(fields...)).
+	groupFleet := huh.NewGroup(
+		huh.NewSelect[string]().
+			Title("Local Fleet · Mode").
+			Description("How locally-hosted llama.cpp workers integrate with cloud sub-agents.").
+			Options(
+				huh.NewOption("(disabled — use cloud sub-agents only)", ""),
+				huh.NewOption("Full fleet — all sub-agents run on local endpoints", "full"),
+				huh.NewOption("Subset — haiku-tier tasks → local, sonnet/opus → cloud", "subset"),
+			).
+			Value(&st.localFleetMode),
+		huh.NewInput().
+			Title("Local Fleet · Endpoints").
+			Description("Comma-separated list of baseURL|model pairs.\nExample: http://localhost:8080/v1|qwen2.5-coder,http://localhost:8081/v1|codestral\nLeave blank to disable.").
+			Value(&st.localFleet),
+		huh.NewInput().
+			Title("Sub-agent Pool · Providers  (optional)").
+			Description("Comma-separated cloud providers for sub-agent load balancing.\nThe registry picks the best ROI model per tier from this set.\nExample: anthropic,openai,groq  or  anthropic/claude-haiku-4-5,groq/llama-3.3-70b\nLeave blank to use the single Sub-agent Provider above.").
+			Value(&st.subagentPool),
+	)
+
+	form := huh.NewForm(groupMaster, groupSub, groupLead, groupCritic, groupFallbacks, groupLimits, groupFleet).
 		WithShowHelp(true).
 		WithShowErrors(true)
 	if termHeight > 0 {
 		form.WithHeight(termHeight)
 	}
-	return form, st, nil
+	return form, nil
 }
 
 // save writes the edited state back to ~/.ageni/.env, preserving
@@ -241,7 +310,24 @@ func (s *settingsState) save() error {
 		"AGENI_SUBAGENT_BUDGET": s.subagentBudget,
 		"MASTER_FALLBACKS":      strings.Join(s.masterFallbacks, ","),
 		"SUBAGENT_FALLBACKS":    strings.Join(s.subFallbacks, ","),
+		"LLAMACPP_FLEET":        strings.TrimSpace(s.localFleet),
+		"LLAMACPP_FLEET_MODE":   s.localFleetMode,
+		"SUBAGENT_POOL":         strings.TrimSpace(s.subagentPool),
 	})
+
+	// Persist which no-key providers the user explicitly disabled so the
+	// provider list opens with the correct state next session.
+	enabledSet := map[string]bool{}
+	for _, name := range s.enabled {
+		enabledSet[name] = true
+	}
+	var disabled []string
+	for _, p := range llm.AllProviders() {
+		if !p.NeedsKey && !enabledSet[p.Name] {
+			disabled = append(disabled, p.Name)
+		}
+	}
+	out["AGENI_DISABLED_PROVIDERS"] = strings.Join(disabled, ",")
 
 	// Models default to provider defaults when unset.
 	masterSpec, _ := llm.LookupProvider(s.masterProvider)
@@ -256,6 +342,15 @@ func (s *settingsState) save() error {
 		leadSpec, _ := llm.LookupProvider(s.leadProvider)
 		out["MASTER_LEAD_PROVIDER"] = s.leadProvider
 		out["MASTER_LEAD_MODEL"] = orDefault(s.leadModel, leadSpec.DefaultModel)
+	}
+
+	if s.criticProvider == leadDisabled {
+		out["CRITIC_PROVIDER"] = ""
+		out["CRITIC_MODEL"] = ""
+	} else {
+		criticSpec, _ := llm.LookupProvider(s.criticProvider)
+		out["CRITIC_PROVIDER"] = s.criticProvider
+		out["CRITIC_MODEL"] = orDefault(s.criticModel, criticSpec.DefaultModel)
 	}
 
 	// API keys: write whatever the user typed, blank-skip otherwise.
@@ -306,7 +401,7 @@ func (s *settingsState) save() error {
 
 // allProviderOptions builds the multi-select options for "enabled
 // providers". Each label includes the free/paid/local tag and a short
-// description.
+// description. Kept for potential future use.
 func allProviderOptions() []huh.Option[string] {
 	specs := llm.AllProviders()
 	opts := make([]huh.Option[string], 0, len(specs))
@@ -367,28 +462,63 @@ func fallbackOptions(enabled []string, primary string) []huh.Option[string] {
 	return out
 }
 
-// modelOptionsFor returns Select options for a provider's models, with
-// the currently-configured value pinned at the top so users with
-// custom IDs still see them. Each label is enriched with a 0-100
-// blended ranking score (when known) and price-per-1M-tokens (when
-// known), so the picker is informative at a glance.
-func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
+// prefetchModels populates liveModelCache by fetching live model lists for all
+// enabled providers that support it. This is called once before building the
+// huh form so that OptionsFunc closures can read from cache without blocking.
+func (s *settingsState) prefetchModels() {
+	if s.liveModelCache == nil {
+		s.liveModelCache = make(map[string][]llm.ModelSuggestion)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 8*time.Second)
+	defer cancel()
+
+	type result struct {
+		name   string
+		models []llm.ModelSuggestion
+	}
+	ch := make(chan result, len(s.enabled))
+	fetching := 0
+	for _, name := range s.enabled {
+		if _, cached := s.liveModelCache[name]; cached {
+			continue
+		}
+		spec, ok := llm.LookupProvider(name)
+		if !ok || !shouldFetchLive(spec.Name) {
+			continue
+		}
+		fetching++
+		go func(spec llm.ProviderSpec) {
+			apiKey := os.Getenv(spec.APIKeyEnv)
+			live, err := llm.FetchModels(ctx, spec, apiKey)
+			if err != nil || len(live) == 0 {
+				ch <- result{name: spec.Name}
+				return
+			}
+			ch <- result{name: spec.Name, models: live}
+		}(spec)
+	}
+	for i := 0; i < fetching; i++ {
+		r := <-ch
+		if len(r.models) > 0 {
+			s.liveModelCache[r.name] = r.models
+		}
+	}
+}
+
+// modelOptionsFor returns Select options for a provider's models using the
+// pre-fetched liveModelCache. Never blocks on network I/O.
+func (s *settingsState) modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	spec, ok := llm.LookupProvider(providerName)
 	if !ok {
 		if currentValue != "" {
-			return []huh.Option[string]{huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue)}
+			return []huh.Option[string]{huh.NewOption(decorateModel("(current) "+currentValue, currentValue, llm.FreeBySpec(currentValue)), currentValue)}
 		}
 		return nil
 	}
 
-	apiKey := os.Getenv(spec.APIKeyEnv)
 	models := append([]llm.ModelSuggestion(nil), spec.RecommendedModels...)
-	if shouldFetchLive(spec.Name) {
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		if live, err := llm.FetchModels(ctx, spec, apiKey); err == nil && len(live) > 0 {
-			models = llm.MergeModels(models, live)
-		}
-		cancel()
+	if live, cached := s.liveModelCache[spec.Name]; cached && len(live) > 0 {
+		models = llm.MergeModels(models, live)
 	}
 
 	// Sort by ranking desc (unranked at the bottom), so the strongest
@@ -402,7 +532,7 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 	opts := make([]huh.Option[string], 0, len(models)+1)
 	seen := map[string]bool{}
 	if currentValue != "" {
-		opts = append(opts, huh.NewOption(decorateModel("(current) "+currentValue, currentValue), currentValue))
+		opts = append(opts, huh.NewOption(decorateModel("(current) "+currentValue, currentValue, llm.FreeBySpec(currentValue)), currentValue))
 		seen[currentValue] = true
 	}
 	for _, m := range models {
@@ -410,17 +540,18 @@ func modelOptionsFor(providerName, currentValue string) []huh.Option[string] {
 			continue
 		}
 		seen[m.ID] = true
-		opts = append(opts, huh.NewOption(decorateModel(m.Label, m.ID), m.ID))
+		opts = append(opts, huh.NewOption(decorateModel(m.Label, m.ID, m.Free), m.ID))
 	}
 	return opts
 }
 
 // decorateModel suffixes a model option label with its blended
 // ranking score and per-1M price so users can pick a tier-appropriate
-// model at a glance. Returns the original label unchanged when no
-// ranking / pricing data exists, so the picker stays clean for less
-// well-known models.
-func decorateModel(label, id string) string {
+// model at a glance. isFree should be set from ModelSuggestion.Free for
+// curated models, or from llm.FreeBySpec for current-value lookups.
+// Returns the original label unchanged when no ranking / pricing data
+// exists, so the picker stays clean for less well-known models.
+func decorateModel(label, id string, isFree bool) string {
 	parts := []string{label}
 	if !strings.Contains(label, id) {
 		parts[0] = label + " — " + id
@@ -430,9 +561,11 @@ func decorateModel(label, id string) string {
 	}
 	pr := llm.PricingFor(id)
 	switch {
-	case strings.HasSuffix(strings.ToLower(id), ":free"):
+	case isFree || strings.HasSuffix(strings.ToLower(id), ":free"):
 		parts = append(parts, "free")
 	case pr.Known && pr.InputPer1M == 0 && pr.OutputPer1M == 0:
+		// Pricing is explicitly known-zero from the live API (e.g. OpenRouter
+		// returning "0"/"0") — display as free.
 		parts = append(parts, "free")
 	case pr.Known && pr.InputPer1M > 0:
 		parts = append(parts, fmt.Sprintf("$%.2f in / $%.2f out per 1M", pr.InputPer1M, pr.OutputPer1M))
@@ -466,6 +599,20 @@ func parseFallbackProviders(spec string) []string {
 		out = append(out, name)
 	}
 	return out
+}
+
+// stringSlicesEqual reports whether two string slices have the same elements
+// in the same order.
+func stringSlicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
 }
 
 func shouldFetchLive(name string) bool {

@@ -12,9 +12,11 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"time"
 
 	mcpsdk "github.com/modelcontextprotocol/go-sdk/mcp"
 
+	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -74,7 +76,9 @@ func LoadAndConnect(ctx context.Context) (*Manager, []tools.Tool, error) {
 		}
 		transport := &mcpsdk.CommandTransport{Command: cmd}
 		client := mcpsdk.NewClient(impl, nil)
-		session, err := client.Connect(ctx, transport, nil)
+		connCtx, connCancel := context.WithTimeout(ctx, 10*time.Second)
+		session, err := client.Connect(connCtx, transport, nil)
+		connCancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ageni: mcp server %q failed to start: %v\n", name, err)
 			continue
@@ -82,7 +86,9 @@ func LoadAndConnect(ctx context.Context) (*Manager, []tools.Tool, error) {
 		mgr.sessions[name] = session
 		mgr.closers = append(mgr.closers, func() { _ = session.Close() })
 
-		list, err := session.ListTools(ctx, nil)
+		listCtx, listCancel := context.WithTimeout(ctx, 10*time.Second)
+		list, err := session.ListTools(listCtx, nil)
+		listCancel()
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "ageni: mcp server %q list_tools failed: %v\n", name, err)
 			continue
@@ -164,7 +170,7 @@ func (t *mcpTool) Call(ctx context.Context, args json.RawMessage) (string, error
 }
 
 func configPath() (string, error) {
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return "", err
 	}

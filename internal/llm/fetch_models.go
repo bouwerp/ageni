@@ -94,22 +94,26 @@ func FetchModels(ctx context.Context, spec ProviderSpec, apiKey string) ([]Model
 			if m.Name != "" && m.Name != id {
 				label = m.Name + " — " + id
 			}
-			free := false
-			if strings.Contains(strings.ToLower(id), ":free") {
-				free = true
-			}
-			if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
-				free = true
-			}
-			// Register pricing into the cost estimator. OpenRouter's API
-			// returns rates as USD-per-token strings ("0.000003"), so we
-			// scale to per-1M to match our Pricing struct's units.
-			if pp, parseErr := parsePerToken(m.Pricing.Prompt); parseErr == nil {
-				cp, _ := parsePerToken(m.Pricing.Completion)
-				RegisterDynamicPricing(id, Pricing{
-					InputPer1M:  pp * 1_000_000,
-					OutputPer1M: cp * 1_000_000,
-				})
+			free := strings.Contains(strings.ToLower(id), ":free")
+			// Only trust pricing when the API explicitly returns it (non-empty
+			// strings). Providers like Groq and Mistral return their model list
+			// without pricing fields; treating missing == "$0" would incorrectly
+			// mark paid models as free and overwrite our hardcoded price table.
+			if m.Pricing.Prompt != "" || m.Pricing.Completion != "" {
+				if m.Pricing.Prompt == "0" && m.Pricing.Completion == "0" {
+					free = true
+				}
+				// Register pricing into the cost estimator. OpenRouter's API
+				// returns rates as USD-per-token strings ("0.000003"), so we
+				// scale to per-1M to match our Pricing struct's units.
+				pp, e1 := parsePerToken(m.Pricing.Prompt)
+				cp, e2 := parsePerToken(m.Pricing.Completion)
+				if e1 == nil && e2 == nil {
+					RegisterDynamicPricing(id, Pricing{
+						InputPer1M:  pp * 1_000_000,
+						OutputPer1M: cp * 1_000_000,
+					})
+				}
 			}
 			out = append(out, ModelSuggestion{ID: id, Label: label, Free: free})
 		}

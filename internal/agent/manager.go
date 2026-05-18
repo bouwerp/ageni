@@ -6,6 +6,8 @@ import (
 	"sync"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/memory"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -15,9 +17,10 @@ type SubagentSpec struct {
 	Task SubagentTask
 }
 
-// AdapterFactory returns the adapter + model for a given tier. The master
-// owns this so it can swap providers at runtime.
-type AdapterFactory func(tier string) (adapter llm.Adapter, model string)
+// AdapterFactory returns the adapter + model for a given tier and optional
+// required capabilities. The master owns this so it can swap providers at
+// runtime. requiredCaps may be nil or empty (meaning any model for the tier).
+type AdapterFactory func(tier string, requiredCaps []string) (adapter llm.Adapter, model string)
 
 // Manager owns active sub-agents and provides spawn/check/send/kill.
 type Manager struct {
@@ -28,9 +31,12 @@ type Manager struct {
 	tracker       *llm.Tracker
 	factory       AdapterFactory
 	skillCatalog  string
+	roleCatalog   string
+	memReg        *memory.Registry
 	maxConcurrent int
 	defaultBudget int
 	nextID        int
+	scrubber      func(string) string // propagated to newly-spawned sub-agents
 
 	// rootCtx is the long-lived context sub-agent goroutines inherit. Must
 	// outlive any individual master-turn ctx — otherwise a sub-agent gets
@@ -61,6 +67,30 @@ func (m *Manager) SetSkillCatalog(catalog string) {
 	m.mu.Unlock()
 }
 
+// SetRoleCatalog updates the role catalog passed to newly-spawned sub-agents.
+// Existing sub-agents keep the catalog they were spawned with.
+func (m *Manager) SetRoleCatalog(catalog string) {
+	m.mu.Lock()
+	m.roleCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetMemoryRegistry wires a live memory registry into the manager so newly
+// spawned sub-agents receive the current memory block in their system prompt.
+func (m *Manager) SetMemoryRegistry(reg *memory.Registry) {
+	m.mu.Lock()
+	m.memReg = reg
+	m.mu.Unlock()
+}
+
+// SetScrubber sets the scrubber function that will be applied to all
+// newly-spawned sub-agents. Existing sub-agents are unaffected.
+func (m *Manager) SetScrubber(f func(string) string) {
+	m.mu.Lock()
+	m.scrubber = f
+	m.mu.Unlock()
+}
+
 // SetDefaultBudget updates the default tool-call budget applied to every
 // spawn that doesn't override it. Existing sub-agents are unaffected.
 func (m *Manager) SetDefaultBudget(n int) {
@@ -84,10 +114,10 @@ func (m *Manager) SetNextSubagentID(n int) {
 // Spawn creates and starts a sub-agent. Returns its ID.
 func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) {
 	if task.Objective == "" {
-		return "", fmt.Errorf("objective is required")
+		return "", fmt.Errorf("spawn_subagent failed — no sub-agent was created: objective is required")
 	}
 	if task.OutputFormat == "" {
-		return "", fmt.Errorf("output_format is required")
+		return "", fmt.Errorf("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
 	if task.ModelTier == "" {
 		task.ModelTier = "sonnet"
@@ -109,12 +139,20 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	m.nextID++
 	id := fmt.Sprintf("s%d", m.nextID)
-	adapter, model := m.factory(task.ModelTier)
+	adapter, model := m.factory(task.ModelTier, task.RequiredCaps)
 	if adapter == nil {
 		m.mu.Unlock()
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog)
+	caps := models.Global.CapabilitiesForModel(model)
+	memBlock := ""
+	if m.memReg != nil {
+		memBlock = m.memReg.InlineBlock()
+	}
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps)
+	if m.scrubber != nil {
+		sub.SetScrubber(m.scrubber)
+	}
 	m.subs[id] = sub
 	rootCtx := m.rootCtx
 	m.mu.Unlock()

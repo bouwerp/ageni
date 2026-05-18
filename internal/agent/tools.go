@@ -6,6 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"strings"
+
+	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/models"
+	"github.com/bouwerp/ageni/internal/roles"
 )
 
 // SpawnTool is the master-only tool for delegating work to a sub-agent. The
@@ -18,9 +22,12 @@ func (SpawnTool) Description() string {
 	return `Delegate a focused task to a sub-agent that runs in parallel. The sub-agent has its own conversation and tool access. Returns a sub-agent ID immediately; the sub-agent runs in the background. Use check_subagent to inspect progress, send_to_subagent to course-correct, kill_subagent to cancel.
 
 Routing rules:
-- Trivial lookup (file search, grep, listing): model_tier=haiku, budget_tool_calls<=5
-- Standard task (multi-file edit, ordinary debug): model_tier=sonnet, budget_tool_calls<=15
-- Complex/ambiguous: decompose into multiple parallel sub-agents; reserve opus for synthesis only
+- Trivial lookup (file search, grep, listing): model_tier=haiku, budget_tool_calls=50
+- Standard task (multi-file edit, ordinary debug, code review): model_tier=sonnet, budget_tool_calls=150
+- Complex/ambiguous: decompose into multiple parallel sub-agents, budget_tool_calls=200; reserve opus for synthesis only
+- Tasks involving images/screenshots: set required_capabilities=["vision"]
+
+When model_tier is omitted, an automatic heuristic selects a tier from the objective. The tier may be upgraded automatically if required_capabilities cannot be satisfied at the requested tier.
 
 Every spawn must specify a clear objective AND output_format. Vague objectives cause duplicated work.`
 }
@@ -30,10 +37,13 @@ func (SpawnTool) Schema() json.RawMessage {
 "properties":{
   "objective":{"type":"string","description":"Single-sentence imperative goal. Be specific."},
   "output_format":{"type":"string","description":"Exactly what the sub-agent must return — schema, structure, or example."},
-  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Default sonnet."},
-  "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Whitelist of tool names. Omit for all-tools-allowed."},
+  "role":{"type":"string","description":"Optional predefined role to apply (e.g. 'architect', 'qa-engineer', 'reviewer', 'devops-engineer', 'product-owner', 'security-auditor', 'tech-writer'). Sets default model_tier, budget, skill, and persona instructions automatically. Explicit fields override role defaults."},
+  "model_tier":{"type":"string","enum":["haiku","sonnet","opus"],"description":"Cost tier. Omit to use role default or auto-select based on task complexity."},
+  "required_capabilities":{"type":"array","items":{"type":"string","enum":["vision","reasoning","function_calling","structured_output"]},"description":"Capabilities the model must support. Use [\"vision\"] for image/screenshot tasks."},
+  "allowed_tools":{"type":"array","items":{"type":"string"},"description":"Optional whitelist of tool names. Omit entirely for full tool access (recommended for editing tasks). Only set this when you need to deliberately restrict access (e.g. read-only research: ['read_file','grep','glob','list_dir']). Never provide a partial list that omits tools the worker will need — a missing tool causes an error that wastes the worker's budget."},
   "task_boundaries":{"type":"string","description":"What the sub-agent must NOT touch or decide."},
-  "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 25. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
+  "budget_tool_calls":{"type":"integer","description":"Soft cap on actual tool calls. Default 200. When reached, the worker gets one final wrap-up turn (no tools available) to produce its <result>/<reasoning>, instead of erroring out."},
+  "timeout_minutes":{"type":"number","description":"Total runtime budget for this worker in minutes. Default 10. Increase for long-running tasks (e.g. 20 for a full test suite run, 30 for a deep refactor)."},
   "context":{"type":"string","description":"Free-form pre-computed context for one-off info that doesn't fit the structured fields below."},
   "use_skill":{"type":"string","description":"Pin a specific skill the sub-agent should apply (e.g. 'code-review', 'test-driven-development'). The sub-agent loads its body via read_skill and follows its procedures."},
   "repo_facts":{"type":"array","items":{"type":"string"},"description":"File-purpose lines you already know, e.g. 'internal/llm/anthropic.go: prompt-caching adapter'. Saves the worker a discovery round-trip."},
@@ -49,16 +59,62 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", err
 	}
 	if strings.TrimSpace(task.Objective) == "" {
-		return "", errors.New("objective is required")
+		return "", errors.New("spawn_subagent failed — no sub-agent was created: objective is required")
 	}
 	if strings.TrimSpace(task.OutputFormat) == "" {
-		return "", errors.New("output_format is required")
+		return "", errors.New("spawn_subagent failed — no sub-agent was created: output_format is required")
 	}
+
+	// Apply role defaults before auto-detection. Explicit spawn params take
+	// precedence — role fields are only applied when the spawn didn't set them.
+	if task.Role != "" {
+		if def, ok := roles.Global.Lookup(task.Role); ok {
+			if task.ModelTier == "" && def.ModelTier != "" {
+				task.ModelTier = def.ModelTier
+			}
+			if task.BudgetToolCalls <= 0 && def.BudgetToolCalls > 0 {
+				task.BudgetToolCalls = def.BudgetToolCalls
+			}
+			if task.UseSkill == "" && def.UseSkill != "" {
+				task.UseSkill = def.UseSkill
+			}
+			if len(task.RequiredCaps) == 0 && len(def.RequiredCapabilities) > 0 {
+				task.RequiredCaps = append([]string(nil), def.RequiredCapabilities...)
+			}
+			if task.TaskBoundaries == "" && def.TaskBoundaries != "" {
+				task.TaskBoundaries = def.TaskBoundaries
+			}
+			if def.SystemPromptAddition != "" {
+				task.RoleSystemAddendum = def.SystemPromptAddition
+			}
+		}
+		// Unknown role names are silently ignored — master may have typo'd;
+		// we still proceed with whatever the master explicitly set.
+	}
+
+	// Auto-detect required capabilities from objective keywords when not provided.
+	if len(task.RequiredCaps) == 0 {
+		task.RequiredCaps = models.ExtractRequiredCaps(task.Objective)
+	}
+
+	// Auto-select tier when omitted, using a heuristic complexity scorer.
+	if task.ModelTier == "" {
+		task.ModelTier, _ = models.EstimateComplexity(task.Objective)
+	}
+
 	id, err := t.M.Spawn(ctx, task)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("spawned sub-agent %s (tier=%s, budget=%d)", id, task.ModelTier, task.BudgetToolCalls), nil
+	roleLabel := ""
+	if task.Role != "" {
+		roleLabel = fmt.Sprintf(", role=%s", task.Role)
+	}
+	timeoutLabel := ""
+	if task.TimeoutMinutes > 0 {
+		timeoutLabel = fmt.Sprintf(", timeout=%.0fm", task.TimeoutMinutes)
+	}
+	return fmt.Sprintf("spawned sub-agent %s (tier=%s%s%s, budget=%d)", id, task.ModelTier, roleLabel, timeoutLabel, task.BudgetToolCalls), nil
 }
 
 // CheckTool returns the sub-agent's current status and recent transcript.
@@ -142,4 +198,99 @@ func (t KillTool) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	return fmt.Sprintf("killed sub-agent %s", p.ID), nil
+}
+
+// criticSystemPrompt is the fixed system prompt for the soundboard critic.
+// The critic has NO tools — it only reasons about the plan and returns critique.
+const criticSystemPrompt = `You are a senior adversarial reviewer. Your job is to stress-test the plan you receive before it is executed.
+
+Structure your critique under these headings (be concise — 3-6 bullet points total):
+
+**Delegation Audit** — Is the master about to perform any work it should delegate to a sub-agent? Every concrete step (file read, grep, edit, shell command, analysis) must be assigned to a worker. Flag any step where the master appears to be acting as executor rather than planner.
+**Risks & Gaps** — What could go wrong? What assumptions are not validated?
+**Edge Cases Missed** — Unusual inputs, concurrent conditions, or error paths not addressed.
+**Better Alternatives** — Is there a simpler, safer, or more robust approach?
+**What's Correct** — Briefly acknowledge what the plan gets right.
+
+Be direct and specific. Cite file paths or line numbers when relevant. Do not repeat the plan back.`
+
+// SoundboardTool calls the critic adapter synchronously and returns its critique.
+// If no critic is configured it returns a notice rather than failing.
+type SoundboardTool struct{ M *Master }
+
+func (SoundboardTool) Name() string { return "soundboard" }
+func (SoundboardTool) Description() string {
+return `Submit your decomposed plan to an independent critic LLM for adversarial review before spawning workers. Use this for plans involving 3+ workers, cross-cutting changes, risky/irreversible operations, or when you are uncertain about your approach. Skip it for simple single-worker tasks or straightforward lookups. The critic audits delegation correctness, surfaces risks, flags missing edge cases, and suggests alternatives. Returns a concise critique; incorporate any significant concerns before proceeding.`
+}
+func (SoundboardTool) Schema() json.RawMessage {
+return json.RawMessage(`{
+"type":"object",
+"properties":{
+  "plan":{"type":"string","description":"1-5 sentences describing what you are about to do and why. Be specific about files, tools, and expected outcomes."}
+},
+"required":["plan"]
+}`)
+}
+func (t SoundboardTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
+var p struct{ Plan string }
+if err := json.Unmarshal(args, &p); err != nil {
+return "", err
+}
+if strings.TrimSpace(p.Plan) == "" {
+return "", errors.New("soundboard requires a non-empty plan")
+}
+
+adapter, model := t.M.CriticAdapter()
+if adapter == nil {
+	return "(soundboard: no dedicated critic configured — skipping review)", nil
+}
+
+// Notify the bus so the TUI can show "critic reviewing…" in the sidebar.
+t.M.bus.Publish(Event{Kind: EvFlash, Text: "critic reviewing plan…"})
+
+req := llm.Request{
+Model:  model,
+System: criticSystemPrompt,
+Messages: []llm.Message{
+{Role: llm.RoleUser, Text: "Plan to review:\n\n" + p.Plan},
+},
+}
+
+stream, err := adapter.Stream(ctx, req)
+if err != nil {
+return "", fmt.Errorf("soundboard: critic call failed: %w", err)
+}
+
+var sb strings.Builder
+var usage llm.Usage
+for ev := range stream {
+switch ev.Type {
+case llm.StreamEventText:
+sb.WriteString(ev.TextDelta)
+case llm.StreamEventDone:
+if ev.Usage != nil {
+usage = *ev.Usage
+}
+case llm.StreamEventError:
+return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
+}
+}
+
+if usage.InputTokens+usage.OutputTokens > 0 {
+if tr := t.M.Tracker(); tr != nil {
+tr.Add("critic", model, usage)
+}
+}
+
+result := strings.TrimSpace(sb.String())
+if result == "" {
+result = "(critic returned no feedback)"
+}
+// Cap critique at 1200 chars to avoid ballooning the master context window.
+// The critic should be concise; anything longer is usually padding.
+const maxCritiqueLen = 1200
+if len(result) > maxCritiqueLen {
+result = result[:maxCritiqueLen] + "\n…[critique truncated]"
+}
+return fmt.Sprintf("[Critic review]\n\n%s", result), nil
 }

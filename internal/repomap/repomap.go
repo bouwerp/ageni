@@ -27,6 +27,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/homedir"
 )
 
 // Symbol is a single definition extracted from a source file.
@@ -38,10 +40,10 @@ type Symbol struct {
 
 // FileEntry is one file in the map with its extracted symbols.
 type FileEntry struct {
-	Path    string // relative to repo root
-	Lang    string // "go", "ts", "py", ...
+	Path     string // relative to repo root
+	Lang     string // "go", "ts", "py", ...
 	Modified time.Time
-	Symbols []Symbol
+	Symbols  []Symbol
 }
 
 // RepoMap is the rendered, ranked set of file entries.
@@ -354,7 +356,7 @@ func LoadOrBuild(ctx context.Context, root string, opts Options) (*RepoMap, erro
 	if err != nil {
 		return nil, err
 	}
-	home, err := os.UserHomeDir()
+	home, err := homedir.Dir()
 	if err != nil {
 		return Build(ctx, root, opts)
 	}

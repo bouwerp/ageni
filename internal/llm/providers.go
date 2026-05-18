@@ -1,5 +1,7 @@
 package llm
 
+import "strings"
+
 // AdapterKind names the wire protocol used to talk to a provider.
 type AdapterKind string
 
@@ -75,15 +77,24 @@ var providers = []ProviderSpec{
 		APIKeyEnv:    "OPENAI_API_KEY",
 		NeedsKey:     true,
 		Free:         false,
-		DefaultModel: "gpt-4o",
+		DefaultModel: "gpt-5.4",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "gpt-4o", Label: "GPT-4o"},
-			{ID: "gpt-4o-mini", Label: "GPT-4o mini — cheap sub-agent default"},
-			{ID: "o3-mini", Label: "o3-mini — reasoning"},
+			{ID: "gpt-5.4", Label: "GPT-5.4 — current flagship"},
+			{ID: "gpt-5.4-mini", Label: "GPT-5.4 Mini — efficient sub-agent"},
+			{ID: "gpt-5.4-nano", Label: "GPT-5.4 Nano — fastest/cheapest"},
+			{ID: "gpt-5.2", Label: "GPT-5.2 — proven strong generation"},
+			{ID: "gpt-4.1", Label: "GPT-4.1 — stable April 2025"},
+			{ID: "gpt-4.1-mini", Label: "GPT-4.1 Mini"},
+			{ID: "gpt-4.1-nano", Label: "GPT-4.1 Nano — cheapest 4.1"},
+			{ID: "o3", Label: "o3 — flagship reasoning"},
+			{ID: "o4-mini", Label: "o4-mini — reasoning at sub-agent budget"},
+			{ID: "o3-mini", Label: "o3-mini — compact reasoning"},
+			{ID: "gpt-4o", Label: "GPT-4o — legacy stable"},
+			{ID: "gpt-4o-mini", Label: "GPT-4o mini — legacy cheap"},
 		},
 		SuggestedMaxSubagents: 8,
 		SupportsCaching:       true,
-		KnownLimits:           "Pay-as-you-go. Tier-based RPM.",
+		KnownLimits:           "Pay-as-you-go. Prompt caching on compatible models saves ~75% on repeated context. Tier-based RPM.",
 	},
 	{
 		Name:         "openrouter",
@@ -102,7 +113,9 @@ var providers = []ProviderSpec{
 			{ID: "openai/gpt-oss-120b:free", Label: "GPT-OSS 120B (free)", Free: true},
 			{ID: "anthropic/claude-sonnet-4.6", Label: "Claude Sonnet 4.6 (paid)"},
 			{ID: "anthropic/claude-opus-4.7", Label: "Claude Opus 4.7 (paid)"},
-			{ID: "openai/gpt-4o", Label: "GPT-4o (paid)"},
+			{ID: "openai/gpt-5.4", Label: "GPT-5.4 (paid)"},
+			{ID: "x-ai/grok-4", Label: "Grok 4 (paid)"},
+			{ID: "google/gemini-2.5-pro-preview", Label: "Gemini 2.5 Pro (paid)"},
 		},
 		SuggestedMaxSubagents: 4,
 		KnownLimits:           "Free models: low daily quota, varies by upstream. Set max-subagents conservatively.",
@@ -119,30 +132,33 @@ var providers = []ProviderSpec{
 		DefaultModel: "llama-3.3-70b-versatile",
 		RecommendedModels: []ModelSuggestion{
 			{ID: "llama-3.3-70b-versatile", Label: "Llama 3.3 70B (free)", Free: true},
-			{ID: "llama-3.1-8b-instant", Label: "Llama 3.1 8B Instant (free, fast)", Free: true},
-			{ID: "openai/gpt-oss-120b", Label: "GPT-OSS 120B (free)", Free: true},
-			{ID: "openai/gpt-oss-20b", Label: "GPT-OSS 20B (free)", Free: true},
+			{ID: "openai/gpt-oss-120b", Label: "GPT-OSS 120B — fast, strong coding (free)", Free: true},
+			{ID: "openai/gpt-oss-20b", Label: "GPT-OSS 20B — fastest at ~1000 t/s (free)", Free: true},
+			{ID: "llama-3.1-8b-instant", Label: "Llama 3.1 8B Instant (free, ~560 t/s)", Free: true},
+			{ID: "meta-llama/llama-4-scout-17b-16e-instruct", Label: "Llama 4 Scout 17B (preview, free)", Free: true},
+			{ID: "qwen/qwen3-32b", Label: "Qwen3 32B (preview, free)", Free: true},
+			{ID: "groq/compound", Label: "Groq Compound — agentic system (preview, free)", Free: true},
 		},
 		SuggestedMaxSubagents: 2,
-		KnownLimits:           "Free tier: ~30 requests/min. Set max-subagents=2 to avoid 429s.",
+		KnownLimits:           "Free tier: ~30 RPM (production), preview models may have lower limits. DeepSeek and old Qwen models are deprecated — use GPT-OSS or Llama instead.",
 	},
 	{
 		Name:         "huggingface",
 		Label:        "HuggingFace",
-		Description:  "Routes to Together / Fireworks / Replicate via HF. Small monthly free credit.",
+		Description:  "Routes to Together / Fireworks / Replicate via HF. Small monthly credit on paid plan.",
 		Kind:         KindOpenAICompat,
 		BaseURL:      "https://router.huggingface.co/v1",
 		APIKeyEnv:    "HF_TOKEN",
 		NeedsKey:     true,
-		Free:         true,
+		Free:         false,
 		DefaultModel: "meta-llama/Llama-3.3-70B-Instruct",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "meta-llama/Llama-3.3-70B-Instruct", Label: "Llama 3.3 70B", Free: true},
-			{ID: "Qwen/Qwen2.5-Coder-32B-Instruct", Label: "Qwen 2.5 Coder 32B", Free: true},
+			{ID: "meta-llama/Llama-3.3-70B-Instruct", Label: "Llama 3.3 70B"},
+			{ID: "Qwen/Qwen2.5-Coder-32B-Instruct", Label: "Qwen 2.5 Coder 32B"},
 			{ID: "deepseek-ai/DeepSeek-V3", Label: "DeepSeek V3"},
 		},
 		SuggestedMaxSubagents: 2,
-		KnownLimits:           "Free credit: small monthly $. Tool-use compliance varies by upstream model.",
+		KnownLimits:           "Requests billed against monthly HF Pro credit (~$9/mo). Tool-use compliance varies by upstream model.",
 	},
 	{
 		Name:         "cerebras",
@@ -153,13 +169,15 @@ var providers = []ProviderSpec{
 		APIKeyEnv:    "CEREBRAS_API_KEY",
 		NeedsKey:     true,
 		Free:         true,
-		DefaultModel: "llama-3.3-70b",
+		DefaultModel: "gpt-oss-120b",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "llama-3.3-70b", Label: "Llama 3.3 70B (free)", Free: true},
-			{ID: "llama3.1-8b", Label: "Llama 3.1 8B (free)", Free: true},
+			{ID: "gpt-oss-120b", Label: "GPT-OSS 120B — main production model (~3000 t/s)", Free: true},
+			{ID: "llama3.1-8b", Label: "Llama 3.1 8B (~2200 t/s, deprecating May 2026)", Free: true},
+			{ID: "qwen-3-235b-a22b-instruct-2507", Label: "Qwen3 235B (preview, free)", Free: true},
+			{ID: "zai-glm-4.7", Label: "Z.ai GLM 4.7 355B (preview, free)", Free: true},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Free tier: ~30 RPM, 1M tokens/day. Very fast TTFT. Verify model availability at inference-docs.cerebras.ai/llms.txt.",
+		KnownLimits:           "Free tier: ~30 RPM, 1M tokens/day. World's fastest inference. Note: llama-3.3-70b is no longer available — use gpt-oss-120b instead.",
 	},
 	{
 		Name:         "mistral",
@@ -170,31 +188,35 @@ var providers = []ProviderSpec{
 		APIKeyEnv:    "MISTRAL_API_KEY",
 		NeedsKey:     true,
 		Free:         true,
-		DefaultModel: "mistral-large-latest",
+		DefaultModel: "devstral-small-2507",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "mistral-large-latest", Label: "Mistral Large", Free: true},
-			{ID: "codestral-latest", Label: "Codestral — code-specialized", Free: true},
-			{ID: "open-mistral-nemo", Label: "Mistral Nemo", Free: true},
+			{ID: "devstral-small-2507", Label: "Devstral Small 1.1 — coding agent, free", Free: true},
+			{ID: "magistral-medium-latest", Label: "Magistral Medium — reasoning flagship, free", Free: true},
+			{ID: "mistral-small-latest", Label: "Mistral Small 3.2 — general purpose, free", Free: true},
+			{ID: "mistral-large-latest", Label: "Mistral Large (may be deprecated — check docs)"},
+			{ID: "codestral-latest", Label: "Codestral — code-specialized (check availability)"},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Free tier: 1 RPS, 500k tokens/min. Opt in via dashboard.",
+		KnownLimits:           "Free tier: 1 RPS, 500k tokens/min. Note: open-mistral-nemo shutdown June 2025, mistral-large-2411 possibly shutdown May 2026. Use Magistral or Devstral for current best performance.",
 	},
 	{
 		Name:         "deepseek",
 		Label:        "DeepSeek",
-		Description:  "DeepSeek V3 / R1 from the source. Trial credits + cheap pay-as-you-go.",
+		Description:  "DeepSeek V4 Flash / V4 Pro from the source. Trial credits + cheap pay-as-you-go.",
 		Kind:         KindOpenAICompat,
 		BaseURL:      "https://api.deepseek.com/v1",
 		APIKeyEnv:    "DEEPSEEK_API_KEY",
 		NeedsKey:     true,
 		Free:         false,
-		DefaultModel: "deepseek-chat",
+		DefaultModel: "deepseek-v4-flash",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "deepseek-chat", Label: "DeepSeek V3"},
-			{ID: "deepseek-reasoner", Label: "DeepSeek R1 — reasoning"},
+			{ID: "deepseek-v4-flash", Label: "DeepSeek V4 Flash — fast, supports thinking mode"},
+			{ID: "deepseek-v4-pro", Label: "DeepSeek V4 Pro — premium reasoning, 75% off until May 2026"},
+			{ID: "deepseek-chat", Label: "DeepSeek V4 Flash (legacy alias — deepseek-chat)"},
+			{ID: "deepseek-reasoner", Label: "DeepSeek R1 (legacy alias — deepseek-reasoner)"},
 		},
 		SuggestedMaxSubagents: 8,
-		KnownLimits:           "Trial credits on signup; pay-as-you-go after. Very cheap.",
+		KnownLimits:           "Trial credits on signup; pay-as-you-go after. Very cheap. deepseek-chat/deepseek-reasoner are deprecated aliases for deepseek-v4-flash.",
 	},
 	{
 		Name:         "gemini",
@@ -207,12 +229,15 @@ var providers = []ProviderSpec{
 		Free:         true,
 		DefaultModel: "gemini-2.5-flash",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro (free quota)", Free: true},
-			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash (free quota)", Free: true},
-			{ID: "gemini-2.0-flash", Label: "Gemini 2.0 Flash (free quota)", Free: true},
+			{ID: "gemini-3.1-pro-preview", Label: "Gemini 3.1 Pro Preview — latest flagship", Free: true},
+			{ID: "gemini-3-flash-preview", Label: "Gemini 3 Flash Preview — latest mid", Free: true},
+			{ID: "gemini-3.1-flash-lite", Label: "Gemini 3.1 Flash-Lite — stable, lowest latency", Free: true},
+			{ID: "gemini-2.5-pro", Label: "Gemini 2.5 Pro — stable until Oct 2026", Free: true},
+			{ID: "gemini-2.5-flash", Label: "Gemini 2.5 Flash — stable, best price/perf", Free: true},
+			{ID: "gemini-2.5-flash-lite", Label: "Gemini 2.5 Flash-Lite — most cost-efficient", Free: true},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Free tier varies by model; Pro has stricter quotas than Flash.",
+		KnownLimits:           "Free tier varies by model. Note: gemini-2.0-flash and gemini-2.0-flash-lite were shut down June 1 2026; gemini-1.5-pro/flash fully removed. Use 2.5 or 3.x series.",
 	},
 	{
 		Name:         "ollama",
@@ -267,23 +292,25 @@ var providers = []ProviderSpec{
 	{
 		Name:         "together",
 		Label:        "Together.ai",
-		Description:  "Strong OSS model catalog (Llama, Qwen, DeepSeek, Mixtral). Free tier credits + cheap pay-as-you-go.",
+		Description:  "Strong OSS model catalog (Llama, Qwen, DeepSeek, Mixtral). Trial credits + cheap pay-as-you-go.",
 		Kind:         KindOpenAICompat,
 		BaseURL:      "https://api.together.xyz/v1",
 		APIKeyEnv:    "TOGETHER_API_KEY",
 		NeedsKey:     true,
-		Free:         true,
+		Free:         false,
 		DefaultModel: "meta-llama/Llama-3.3-70B-Instruct-Turbo",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "meta-llama/Llama-3.3-70B-Instruct-Turbo", Label: "Llama 3.3 70B Turbo", Free: true},
-			{ID: "Qwen/Qwen2.5-Coder-32B-Instruct", Label: "Qwen 2.5 Coder 32B (code-specialized)", Free: true},
-			{ID: "deepseek-ai/DeepSeek-V3", Label: "DeepSeek V3"},
-			{ID: "deepseek-ai/DeepSeek-R1", Label: "DeepSeek R1 — reasoning"},
-			{ID: "mistralai/Mixtral-8x7B-Instruct-v0.1", Label: "Mixtral 8x7B", Free: true},
-			{ID: "Qwen/Qwen2.5-72B-Instruct-Turbo", Label: "Qwen 2.5 72B Turbo", Free: true},
+			{ID: "deepseek-ai/DeepSeek-V4-Pro", Label: "DeepSeek V4 Pro — top coding/reasoning ($2.10/$4.40/MTok)"},
+			{ID: "Qwen/Qwen3.5-397B-A17B", Label: "Qwen3.5 397B A17B — strong all-rounder ($0.60/$3.60/MTok)"},
+			{ID: "moonshotai/Kimi-K2.6", Label: "Kimi K2.6 — latest Moonshot flagship ($1.20/$4.50/MTok)"},
+			{ID: "Qwen/Qwen3-235B-A22B-Instruct-2507-tput", Label: "Qwen3 235B A22B — cheap + capable ($0.20/$0.60/MTok)"},
+			{ID: "Qwen/Qwen3-Coder-480B-A35B-Instruct-FP8", Label: "Qwen3 Coder 480B — code specialist ($2.00/$2.00/MTok)"},
+			{ID: "deepseek-ai/DeepSeek-R1", Label: "DeepSeek R1-0528 — reasoning ($3.00/$7.00/MTok)"},
+			{ID: "openai/gpt-oss-120b", Label: "GPT-OSS 120B ($0.15/$0.60/MTok)"},
+			{ID: "meta-llama/Llama-3.3-70B-Instruct-Turbo", Label: "Llama 3.3 70B Turbo — proven stable ($0.88/MTok)"},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Free tier credits ($1 on signup, more for verification). Pay-as-you-go after; competitive prices on OSS models.",
+		KnownLimits:           "Trial credits on signup (~$1 + more on verification), then pay-as-you-go. Note: Llama 4 is not available serverlessly; Qwen3.5 and Kimi K2 are current flagships.",
 	},
 	{
 		Name:         "opencode",
@@ -305,19 +332,19 @@ var providers = []ProviderSpec{
 	{
 		Name:         "ollama-cloud",
 		Label:        "Ollama Cloud",
-		Description:  "Ollama-hosted Turbo cloud inference. Trial credits.",
+		Description:  "Ollama-hosted Turbo cloud inference. Trial credits, then pay-as-you-go.",
 		Kind:         KindOpenAICompat,
 		BaseURL:      "https://api.ollama.com/v1",
 		APIKeyEnv:    "OLLAMA_API_KEY",
 		NeedsKey:     true,
-		Free:         true,
+		Free:         false,
 		DefaultModel: "llama3.3:70b",
 		RecommendedModels: []ModelSuggestion{
 			{ID: "llama3.3:70b", Label: "Llama 3.3 70B"},
 			{ID: "qwen2.5-coder:32b", Label: "Qwen 2.5 Coder 32B"},
 		},
 		SuggestedMaxSubagents: 4,
-		KnownLimits:           "Trial credits on signup.",
+		KnownLimits:           "Trial credits on signup, then pay-as-you-go.",
 	},
 	{
 		Name:                  "custom",
@@ -347,4 +374,23 @@ func AllProviders() []ProviderSpec {
 	out := make([]ProviderSpec, len(providers))
 	copy(out, providers)
 	return out
+}
+
+// FreeBySpec returns true when the model ID is known to be free according to
+// the curated provider specs — either because it has the ":free" OpenRouter
+// suffix, or because it appears with Free=true in a provider's
+// RecommendedModels list. This is "straight from our source" data reflecting
+// current provider free-tier policies.
+func FreeBySpec(id string) bool {
+	if strings.HasSuffix(strings.ToLower(id), ":free") {
+		return true
+	}
+	for _, spec := range providers {
+		for _, m := range spec.RecommendedModels {
+			if m.ID == id && m.Free {
+				return true
+			}
+		}
+	}
+	return false
 }

@@ -30,6 +30,10 @@ type FallbackEntry struct {
 	Label            string    // "<provider>/<model>" — for diagnostics
 	FallbackModels   []string  // tried in order before advancing to next entry
 	LiveModelFetcher func() []string // called at most once per run
+	// ContextWindow is the model's maximum input token count. When > 0 and the
+	// estimated request tokens exceed it, this entry is skipped before sending.
+	// Set from the registry when building the chain.
+	ContextWindow int
 }
 
 // FallbackAdapter wraps an ordered chain of adapters. Stream tries each
@@ -78,6 +82,17 @@ func (f *FallbackAdapter) tryFrom(ctx context.Context, idx int, req Request) (<-
 nextEntry:
 	for i := idx; i < len(f.entries); i++ {
 		entry := f.entries[i]
+		// Pre-flight context window check: skip this entry if we know the model's
+		// context window and the estimated prompt tokens exceed it.
+		if entry.ContextWindow > 0 {
+			if est := estimateRequestTokens(req); est > entry.ContextWindow {
+				if i < len(f.entries)-1 {
+					f.notify(i, i+1, fmt.Sprintf("context too large (%d est tokens > %d window)", est, entry.ContextWindow))
+					continue nextEntry
+				}
+				// Last entry — let it fail naturally with the provider's error.
+			}
+		}
 		// Index-based so we can append live-fetched models mid-loop.
 		models := append([]string{entry.Model}, entry.FallbackModels...)
 		liveFetched := false
@@ -283,6 +298,8 @@ func isModelUnsupported(err error) bool {
 
 // isFallbackable returns true when an error warrants trying the next
 // adapter in the chain. Retryable classes:
+//   - HTTP 401 Unauthorized / auth failures — key invalid/expired on this provider;
+//     trying the next provider may succeed.
 //   - HTTP 429 / rate-limit
 //   - HTTP 402 Payment Required (OpenRouter: insufficient credits)
 //   - HTTP 413 Request Entity Too Large (Groq / others: prompt too long)
@@ -291,11 +308,9 @@ func isModelUnsupported(err error) bool {
 //   - Network / connection failures
 //   - Deadline exceeded
 //
-// Permanent errors (auth 401/403, 404, schema
-// mismatches) bubble up unchanged. 400 Bad Request is included in
-// fallbacks because it can be caused by provider-specific strictness
-// or malformed JSON that another model might avoid or another
-// provider might accept.
+// 400 Bad Request is included because it can be caused by provider-specific
+// strictness or malformed JSON that another model/provider might avoid.
+// 403 Forbidden and hard schema errors bubble up unchanged.
 func isFallbackable(err error) bool {
 	if err == nil {
 		return false
@@ -372,6 +387,27 @@ func summariseErr(err error) string {
 
 // Compile-time check.
 var _ Adapter = (*FallbackAdapter)(nil)
+
+// estimateRequestTokens returns a rough token count for the messages in req.
+// Uses the chars/4 rule-of-thumb (conservative: 1 token ≈ 4 chars in English,
+// slightly fewer in code). Includes system prompt and all message contents.
+func estimateRequestTokens(req Request) int {
+	total := 0
+	if req.System != "" {
+		total += len(req.System)/4 + 10
+	}
+	for _, m := range req.Messages {
+		total += len(m.Text) / 4
+		for _, tr := range m.ToolResults {
+			total += len(tr.Content) / 4
+		}
+		for _, tc := range m.ToolCalls {
+			total += len(tc.Arguments) / 4
+		}
+		total += 4 // per-message overhead
+	}
+	return total
+}
 
 // helper: format a human label like "anthropic/claude-sonnet-4-6"
 func FormatLabel(provider, model string) string {

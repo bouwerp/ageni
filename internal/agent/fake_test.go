@@ -59,7 +59,7 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 		AllowedTools:    []string{"list_dir"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil)
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestSubagentRespectsBudget(t *testing.T) {
 		OutputFormat:    "<result/>",
 		BudgetToolCalls: 3,
 	}
-	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "")
+	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", "", nil)
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	sub.Run(ctx)
@@ -115,7 +115,7 @@ func TestSpawnRequiresContract(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
-	factory := func(tier string) (llm.Adapter, string) {
+	factory := func(tier string, _ []string) (llm.Adapter, string) {
 		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m"
 	}
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
@@ -151,7 +151,7 @@ func TestMasterCallsToolThenAnswers(t *testing.T) {
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
 	reg.Register(tools.ListDir{})
-	factory := func(tier string) (llm.Adapter, string) { return adapter, "m" }
+	factory := func(tier string, _ []string) (llm.Adapter, string) { return adapter, "m" }
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
 	master := NewMaster(adapter, "m", reg, bus, tracker, mgr)
 

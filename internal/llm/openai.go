@@ -60,6 +60,7 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		}
 		pending := make(map[int64]*pendingTool)
 		var usage Usage
+		var reasoningContent strings.Builder
 
 		emitTools := func() {
 			for _, t := range pending {
@@ -85,6 +86,16 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 			for _, choice := range chunk.Choices {
 				if choice.Delta.Content != "" {
 					out <- StreamEvent{Type: StreamEventText, TextDelta: choice.Delta.Content}
+				}
+				// Capture DeepSeek reasoning_content streamed as an extra field.
+				// Extra/unknown fields are marked invalid by the apijson decoder even
+				// when the value is perfectly valid JSON, so check Raw() not Valid().
+				if rf, ok := choice.Delta.JSON.ExtraFields["reasoning_content"]; ok && rf.Raw() != "" && rf.Raw() != "null" {
+					var rc string
+					if err := json.Unmarshal([]byte(rf.Raw()), &rc); err == nil && rc != "" {
+						reasoningContent.WriteString(rc)
+						out <- StreamEvent{Type: StreamEventThinking, TextDelta: rc}
+					}
 				}
 				for _, tcd := range choice.Delta.ToolCalls {
 					t, ok := pending[tcd.Index]
@@ -114,7 +125,11 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		// Drain any remaining tool calls (in case finish_reason wasn't on a chunk we saw).
 		emitTools()
 		u := usage
-		out <- StreamEvent{Type: StreamEventDone, Usage: &u}
+		done := StreamEvent{Type: StreamEventDone, Usage: &u}
+		if rc := reasoningContent.String(); rc != "" {
+			done.ReasoningContent = rc
+		}
+		out <- done
 	}()
 
 	return out, nil
@@ -149,8 +164,49 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		msgs = append(msgs, openai.SystemMessage(SanitizeText(req.System)))
 	}
 	for _, m := range req.Messages {
-		msgs = append(msgs, messageToOpenAI(m))
+		if m.Role == RoleTool && len(m.ToolResults) > 1 {
+			// Each tool result must be its own tool message so that every
+			// tool_call_id from the preceding assistant message is satisfied.
+			for _, tr := range m.ToolResults {
+				msgs = append(msgs, openai.ToolMessage(SanitizeText(tr.Content), tr.ToolCallID))
+			}
+		} else {
+			msgs = append(msgs, messageToOpenAI(m))
+		}
 	}
+
+	// DeepSeek (and strict OpenAI-compat providers) require every assistant
+	// tool_calls message to be immediately followed by tool messages that
+	// respond to EACH tool_call_id. Two failure modes:
+	//   (a) trailing: assistant tool_calls at end with no tool responses
+	//       (e.g. streaming error happened before tools executed)
+	//   (b) mid-history gap: streaming error on one turn, user sends next turn,
+	//       so the bad assistant+partial tools sit in the middle of history
+	// Scan the full list; when a gap is found, remove the bad assistant message
+	// and any partial tool responses, splicing in whatever comes after.
+	for i := 0; i < len(msgs); i++ {
+		assist := msgs[i].OfAssistant
+		if assist == nil || len(assist.ToolCalls) == 0 {
+			continue
+		}
+		needed := make(map[string]struct{}, len(assist.ToolCalls))
+		for _, tc := range assist.ToolCalls {
+			needed[tc.ID] = struct{}{}
+		}
+		j := i + 1
+		for j < len(msgs) && msgs[j].OfTool != nil {
+			delete(needed, msgs[j].OfTool.ToolCallID)
+			j++
+		}
+		if len(needed) > 0 {
+			// Remove the incomplete assistant + partial tool responses; keep rest.
+			msgs = append(msgs[:i], msgs[j:]...)
+			i-- // recheck position i (now holds what was at j)
+		} else {
+			i = j - 1 // skip past the valid tool messages
+		}
+	}
+
 	params.Messages = msgs
 
 	if len(req.Tools) > 0 {
@@ -199,11 +255,23 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 				},
 			})
 		}
+		// Providers that require content or tool_calls (e.g. DeepSeek) reject
+		// assistant messages that have neither. If we have no tool calls and no
+		// text (e.g. a thinking-only turn), set content to "" so the field is
+		// present in the serialized JSON.
+		if len(ap.ToolCalls) == 0 && m.Text == "" {
+			ap.Content = openai.ChatCompletionAssistantMessageParamContentUnion{
+				OfString: openai.String(""),
+			}
+		}
+		// DeepSeek thinking mode requires reasoning_content to be echoed back.
+		// Other OpenAI-compat providers silently ignore unknown extra fields.
+		if m.ReasoningContent != "" {
+			ap.SetExtraFields(map[string]any{"reasoning_content": m.ReasoningContent})
+		}
 		return openai.ChatCompletionMessageParamUnion{OfAssistant: &ap}
 	case RoleTool:
-		// One tool-result message per result.
-		// If multiple results in a single Message, the caller should split them
-		// upstream — for now emit only the first.
+		// Single result — the multi-result case is expanded in buildParams.
 		if len(m.ToolResults) > 0 {
 			tr := m.ToolResults[0]
 			return openai.ToolMessage(SanitizeText(tr.Content), tr.ToolCallID)

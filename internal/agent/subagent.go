@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"strings"
@@ -30,9 +31,14 @@ type SubagentTask struct {
 	AllowedTools    []string `json:"allowed_tools"`
 	TaskBoundaries  string   `json:"task_boundaries"`
 	BudgetToolCalls int      `json:"budget_tool_calls"`
-	ModelTier       string   `json:"model_tier"` // haiku | sonnet | opus
+	ModelTier       string   `json:"model_tier"` // haiku | sonnet | opus (legacy) or fast | mid | flagship
 	Context         string   `json:"context,omitempty"`
 	UseSkill        string   `json:"use_skill,omitempty"` // master can pin a specific skill for the worker
+
+	// RequiredCaps is an optional list of capabilities the selected model must
+	// have (e.g. ["vision"]). When non-empty, the manager may upgrade the tier
+	// to find a model with the required capabilities.
+	RequiredCaps []string `json:"required_capabilities,omitempty"`
 
 	// Structured context — Anthropic's published lead-curates pattern. The
 	// master pre-loads what each worker needs so workers don't re-discover
@@ -40,6 +46,22 @@ type SubagentTask struct {
 	RepoFacts     []string `json:"repo_facts,omitempty"`     // "path:role" lines master already knows
 	PriorFindings []string `json:"prior_findings,omitempty"` // attributed past worker outputs worth remembering
 	DoNotRevisit  []string `json:"do_not_revisit,omitempty"` // paths/areas other workers are handling
+
+	// Role is an optional predefined role name (e.g. "architect", "qa-engineer").
+	// When set, role defaults (tier, budget, use_skill, required_caps,
+	// task_boundaries, RoleSystemAddendum) are applied before auto-detection.
+	// Explicit spawn params always override role defaults.
+	Role string `json:"role,omitempty"`
+
+	// RoleSystemAddendum is injected into the subagent system prompt after the
+	// base instructions. Set automatically when Role is resolved; not intended
+	// to be set directly by the master.
+	RoleSystemAddendum string `json:"-"`
+
+	// TimeoutMinutes overrides the default total-runtime budget for this worker.
+	// When 0 (omitted), the system default (10 minutes) is used.
+	// Useful for long-running tasks that are known upfront to exceed the default.
+	TimeoutMinutes float64 `json:"timeout_minutes,omitempty"`
 }
 
 // Subagent runs a single delegated task in its own goroutine.
@@ -60,31 +82,64 @@ type Subagent struct {
 	hardTurnCap int
 
 	skillCatalog string
+	roleCatalog  string
+	memBlock     string // snapshot of memories at spawn time, injected into system prompt
+
+	// capabilities lists the model capabilities of this subagent's model
+	// (e.g. "vision", "reasoning"). Injected into the system prompt so the
+	// subagent knows which tools it can legitimately call.
+	capabilities []string
 
 	// inbox carries follow-up user messages from the master via
 	// send_to_subagent. The subagent loop drains this between turns and
 	// appends each as a user-role message before continuing.
 	inbox chan string
 
-	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3.
-	turnTimeout time.Duration
-	maxRetries  int
+	// Retry / timeout policy. Defaults: turnTimeout 5min, maxRetries 3, maxTotalRuntime 10min.
+	// maxTotalRuntime is overridden by SubagentTask.TimeoutMinutes when set.
+	turnTimeout     time.Duration
+	maxRetries      int
+	maxTotalRuntime time.Duration
 
 	mu         sync.Mutex
 	status     SubagentStatus
+	spawnedAt  time.Time
 	transcript []string
 	finalText  string
 	cancel     context.CancelFunc
+	scrubber   func(string) string // optional; redacts secrets from LLM text before storage
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string) *Subagent {
+// SetScrubber installs a function applied to LLM-generated text before it is
+// stored in message history or published to the bus.
+func (s *Subagent) SetScrubber(f func(string) string) {
+	s.mu.Lock()
+	s.scrubber = f
+	s.mu.Unlock()
+}
+
+func (s *Subagent) scrub(text string) string {
+	s.mu.Lock()
+	f := s.scrubber
+	s.mu.Unlock()
+	if f == nil || text == "" {
+		return text
+	}
+	return f(text)
+}
+
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, caps []string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
 	}
 	budget := task.BudgetToolCalls
 	if budget <= 0 {
-		budget = 40
+		budget = 200
+	}
+	totalRuntime := 10 * time.Minute
+	if task.TimeoutMinutes > 0 {
+		totalRuntime = time.Duration(task.TimeoutMinutes * float64(time.Minute))
 	}
 	return &Subagent{
 		ID:           id,
@@ -94,13 +149,18 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		bus:          bus,
 		tools:        allowed,
 		tracker:      tracker,
-		maxToolCalls: budget,
-		hardTurnCap:  budget * 2,
-		skillCatalog: skillCatalog,
-		inbox:        make(chan string, 16),
-		turnTimeout:  5 * time.Minute,
-		maxRetries:   3,
-		status:       StatusRunning,
+		maxToolCalls:    budget,
+		hardTurnCap:     budget * 2,
+		skillCatalog:    skillCatalog,
+		roleCatalog:     roleCatalog,
+		memBlock:        memBlock,
+		capabilities:    append([]string(nil), caps...),
+		inbox:           make(chan string, 16),
+		turnTimeout:     5 * time.Minute,
+		maxRetries:      3,
+		maxTotalRuntime: totalRuntime,
+		status:          StatusRunning,
+		spawnedAt:       time.Now(),
 	}
 }
 
@@ -127,6 +187,11 @@ func (s *Subagent) Status() SubagentStatus {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.status
+}
+
+// Elapsed returns how long the sub-agent has been running since it was spawned.
+func (s *Subagent) Elapsed() time.Duration {
+	return time.Since(s.spawnedAt).Truncate(time.Second)
 }
 
 func (s *Subagent) FinalText() string {
@@ -170,7 +235,7 @@ func (s *Subagent) Cancel() {
 
 // Run executes the subagent loop. Should be called in a goroutine.
 func (s *Subagent) Run(parent context.Context) {
-	ctx, cancel := context.WithCancel(parent)
+	ctx, cancel := context.WithTimeout(parent, s.maxTotalRuntime)
 	s.mu.Lock()
 	s.cancel = cancel
 	s.mu.Unlock()
@@ -206,17 +271,31 @@ func (s *Subagent) Run(parent context.Context) {
 			req.Tools = s.tools.Definitions()
 		}
 
-		assistantText, toolCalls, err := s.runTurnWithRetry(ctx, req)
+		assistantText, reasoningContent, toolCalls, err := s.runTurnWithRetry(ctx, req)
 		if err != nil {
 			s.fail(err)
 			return
 		}
 
+		// Scrub any secrets that may have appeared in the LLM's text response
+		// before they are stored in message history or final output.
+		cleanText := s.scrub(assistantText)
+		cleanCalls := toolCalls
+		if s.scrubber != nil {
+			cleanCalls = make([]llm.ToolCall, len(toolCalls))
+			for i, tc := range toolCalls {
+				if cleaned := s.scrub(string(tc.Arguments)); cleaned != string(tc.Arguments) {
+					tc.Arguments = json.RawMessage(cleaned)
+				}
+				cleanCalls[i] = tc
+			}
+		}
+
 		// Build assistant message + tool result messages for next turn.
-		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: assistantText, ToolCalls: toolCalls}
+		assistantMsg := llm.Message{Role: llm.RoleAssistant, Text: cleanText, ToolCalls: cleanCalls, ReasoningContent: s.scrub(reasoningContent)}
 		messages = append(messages, assistantMsg)
 
-		if len(toolCalls) == 0 {
+		if len(cleanCalls) == 0 {
 			// Text-only response. If the master injected a follow-up while we
 			// were generating, keep going instead of finishing.
 			if pending := s.drainInbox(messages); len(pending) > len(messages) {
@@ -224,16 +303,19 @@ func (s *Subagent) Run(parent context.Context) {
 				continue
 			}
 			s.mu.Lock()
-			s.finalText = assistantText
+			s.finalText = cleanText
 			s.status = StatusDone
 			s.mu.Unlock()
 			s.appendTranscript("done")
-			s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: assistantText})
+			s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: cleanText})
 			return
 		}
 
 		// Execute each tool call, one tool-result Message per call.
-		for _, tc := range toolCalls {
+		for _, tc := range cleanCalls {
+			if ctx.Err() != nil {
+				break
+			}
 			result := s.tools.Execute(ctx, tc)
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
 			s.bus.Publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})
@@ -334,29 +416,56 @@ func errMark(b bool) string {
 	return ""
 }
 
+// maxIdleRetries is the number of times a sub-agent will retry a turn after
+// the stream idle watchdog fires before giving up and failing the sub-agent.
+const maxIdleRetries = 2
+
 // runTurnWithRetry runs one LLM turn with a per-turn timeout and retries on
-// transient failures (deadline, network, rate-limit, 5xx). Returns the
-// assistant text + any tool calls, or a terminal error.
-func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (string, []llm.ToolCall, error) {
+// transient failures (deadline, network, rate-limit, 5xx, idle watchdog).
+// Returns the assistant text + any tool calls, or a terminal error.
+func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (string, string, []llm.ToolCall, error) {
 	var lastErr error
+	idleRetries := 0
 	for attempt := 0; attempt <= s.maxRetries; attempt++ {
 		if parent.Err() != nil {
-			return "", nil, parent.Err()
+			return "", "", nil, parent.Err()
 		}
 		ctx, cancel := context.WithTimeout(parent, s.turnTimeout)
-		text, calls, err := s.runOneTurn(ctx, req)
+		text, rc, calls, err := s.runOneTurn(ctx, req)
 		cancel()
 		if err == nil {
-			return text, calls, nil
+			return text, rc, calls, nil
 		}
 		lastErr = err
 
-		// Don't retry user-cancelled or task-budget conditions.
+		// Don't retry user-cancelled conditions.
 		if errors.Is(err, context.Canceled) {
-			return "", nil, err
+			return "", "", nil, err
 		}
+
+		// Idle watchdog fired — the model went silent. Retry with a nudge
+		// so the provider gets a fresh request rather than a stale one.
+		if llm.IsStreamIdle(err) {
+			idleRetries++
+			msg := fmt.Sprintf("model idle (attempt %d/%d) — retrying", idleRetries, maxIdleRetries)
+			s.appendTranscript(msg)
+			s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: msg})
+			if idleRetries >= maxIdleRetries {
+				return "", "", nil, fmt.Errorf("model not responding after %d retries — master should re-spawn this sub-agent", maxIdleRetries)
+			}
+			// Brief pause before re-issuing the request.
+			select {
+			case <-parent.Done():
+				return "", "", nil, parent.Err()
+			case <-time.After(3 * time.Second):
+			}
+			// Don't advance attempt counter — idle retries are separate.
+			attempt--
+			continue
+		}
+
 		if !isTransientErr(err) || attempt == s.maxRetries {
-			return "", nil, err
+			return "", "", nil, err
 		}
 
 		// Exponential backoff with light jitter.
@@ -365,25 +474,29 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 		s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: err.Error()})
 		select {
 		case <-parent.Done():
-			return "", nil, parent.Err()
+			return "", "", nil, parent.Err()
 		case <-time.After(wait):
 		}
 	}
-	return "", nil, lastErr
+	return "", "", nil, lastErr
 }
 
 // runOneTurn does a single Stream call and accumulates the result.
-func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []llm.ToolCall, error) {
+func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, string, []llm.ToolCall, error) {
 	// Mirror the master: emit a turn-start event so the TUI can show the
 	// sub-agent as "thinking" while the LLM call is in flight, distinct
 	// from the running-a-tool state.
 	s.bus.Publish(Event{Kind: EvSubagentTurnStart, SubagentID: s.ID})
 	stream, err := s.Adapter.Stream(ctx, req)
 	if err != nil {
-		return "", nil, err
+		return "", "", nil, err
 	}
+	// Wrap with an idle watchdog so a silent TCP connection or a stalled
+	// provider doesn't leave the sub-agent stuck in "thinking" forever.
+	stream = llm.WatchdogStream(stream)
 	var text strings.Builder
 	var calls []llm.ToolCall
+	var reasoningContent string
 	for ev := range stream {
 		switch ev.Type {
 		case llm.StreamEventText:
@@ -396,18 +509,19 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, []l
 				s.bus.Publish(Event{Kind: EvSubagentToolCall, SubagentID: s.ID, ToolCall: ev.ToolCall})
 			}
 		case llm.StreamEventError:
-			return text.String(), calls, ev.Err
+			return text.String(), "", calls, ev.Err
 		case llm.StreamEventDone:
 			if ev.Usage != nil {
 				s.tracker.Add("subagent:"+s.ID, s.Model, *ev.Usage)
 				s.bus.Publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
 			}
+			reasoningContent = ev.ReasoningContent
 		}
 	}
 	if ctx.Err() != nil {
-		return text.String(), calls, ctx.Err()
+		return text.String(), "", calls, ctx.Err()
 	}
-	return text.String(), calls, nil
+	return text.String(), reasoningContent, calls, nil
 }
 
 // drainInbox appends any pending messages from the master as user-role
@@ -456,12 +570,34 @@ func isTransientErr(err error) bool {
 }
 
 func (s *Subagent) systemPrompt() string {
+	s.mu.Lock()
+	caps := s.capabilities
+	s.mu.Unlock()
+
 	skillsBlock := ""
 	if s.skillCatalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + s.skillCatalog + "\n\nCall read_skill(name=\"...\") to load a skill's full instructions when one matches your task.\n</available_skills>"
 	}
+
+	rolesBlock := ""
+	if s.roleCatalog != "" {
+		rolesBlock = "\n\n<available_roles>\n" + s.roleCatalog + "\n</available_roles>"
+	}
+
+	memoriesBlock := ""
+	if s.memBlock != "" {
+		memoriesBlock = "\n\n" + s.memBlock
+	}
+
+	roleAddendum := ""
+	if s.Task.RoleSystemAddendum != "" {
+		roleAddendum = "\n\n<persona>\n" + strings.TrimSpace(s.Task.RoleSystemAddendum) + "\n</persona>"
+	}
+
+	capsBlock := buildSubagentCapsBlock(caps)
+
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + skillsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
@@ -478,6 +614,7 @@ When a tool returns an error, do not stop — diagnose and recover autonomously:
 - File not found: check if the path exists with list_dir or glob, then use the correct path.
 - Permission or transient error: retry up to 2 more times before including it as a blocker in your <result>.
 - Unknown tool: use the closest available alternative from <allowed_tools>.
+- Missing binary / "not found" error (e.g. "adb not found", "ffmpeg: command not found"): immediately call todo_write to create a task for installing the missing tool (title: "Install <tool>", include the recommended install command in the body), then include the missing dependency as a blocker in your <result> so the master knows to resolve it before retrying.
 Never ask the master or the user for help with recoverable errors — handle them yourself.
 </self_healing>`
 }
@@ -526,4 +663,40 @@ func (s *Subagent) userPrompt() string {
 	}
 	sb.WriteString("</task>\n\nBegin.")
 	return sb.String()
+}
+
+
+// buildSubagentCapsBlock produces the <model_capabilities> XML block injected
+// into the subagent's system prompt so it knows what tools it can call based
+// on its model's native capabilities.
+func buildSubagentCapsBlock(caps []string) string {
+if len(caps) == 0 {
+return ""
+}
+hasIn := func(c string) bool {
+for _, cap := range caps {
+if cap == c {
+return true
+}
+}
+return false
+}
+var sb strings.Builder
+sb.WriteString("\n\n<model_capabilities>")
+sb.WriteString("\nYour model's capabilities in this session:")
+if hasIn("vision") {
+sb.WriteString("\n- vision: you CAN process images. When the task involves an image file, call view_image with the file path.")
+} else {
+sb.WriteString("\n- vision: NOT available on your model. Do not call view_image. Report to the master if image analysis is needed.")
+}
+if hasIn("reasoning") {
+sb.WriteString("\n- reasoning: your model supports extended chain-of-thought. Use it for complex multi-step problems.")
+}
+for _, c := range caps {
+if c != "vision" && c != "reasoning" {
+sb.WriteString("\n- " + c)
+}
+}
+sb.WriteString("\n</model_capabilities>")
+return sb.String()
 }

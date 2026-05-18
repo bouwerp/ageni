@@ -97,17 +97,41 @@ func TestFallbackOnStreamError(t *testing.T) {
 	}
 }
 
-func TestFallbackPermanentErrPropagates(t *testing.T) {
-	// 401 / auth errors should NOT trigger fallback.
+func TestFallbackOn401(t *testing.T) {
+	// 401 / auth errors SHOULD trigger fallback to the next provider.
+	// If the primary's key is invalid/expired, trying another configured
+	// provider is the right thing to do.
 	primary := &stubAdapter{name: "p", syncErr: errors.New("HTTP 401: invalid api key")}
 	secondary := &stubAdapter{name: "s", events: []StreamEvent{{Type: StreamEventDone}}}
 	chain := NewFallbackAdapter("test",
 		FallbackEntry{Adapter: primary, Model: "p", Label: "p"},
 		FallbackEntry{Adapter: secondary, Model: "s", Label: "s"},
 	)
+	ch, err := chain.Stream(context.Background(), Request{})
+	if err != nil {
+		t.Fatalf("expected fallback to secondary, got error: %v", err)
+	}
+	var gotDone bool
+	for ev := range ch {
+		if ev.Type == StreamEventDone {
+			gotDone = true
+		}
+	}
+	if !gotDone {
+		t.Fatal("expected StreamEventDone from secondary adapter")
+	}
+}
+
+func TestFallbackOn401LastProvider(t *testing.T) {
+	// When only one provider is configured and it returns 401,
+	// the error must propagate (nowhere to fall back to).
+	primary := &stubAdapter{name: "p", syncErr: errors.New("HTTP 401: invalid api key")}
+	chain := NewFallbackAdapter("test",
+		FallbackEntry{Adapter: primary, Model: "p", Label: "p"},
+	)
 	_, err := chain.Stream(context.Background(), Request{})
 	if err == nil {
-		t.Fatal("expected auth error to propagate, got nil")
+		t.Fatal("expected error when sole provider returns 401, got nil")
 	}
 }
 
