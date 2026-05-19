@@ -153,8 +153,10 @@ func downloadAndExtract(url, shaURL, assetName, ext string) (string, error) {
 	if resp.StatusCode != http.StatusOK {
 		tmp.Close()
 		return "", fmt.Errorf("download returned %d", resp.StatusCode)
+	}
+	if _, err := io.Copy(tmp, resp.Body); err != nil {
 		tmp.Close()
-		return "", err
+		return "", fmt.Errorf("download archive: %w", err)
 	}
 	if err := tmp.Close(); err != nil {
 		return "", err
