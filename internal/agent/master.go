@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"html"
 	"strings"
 	"sync"
 	"time"
@@ -877,6 +878,8 @@ const compactionThreshold = 40_000
 // the summary.
 const compactionKeepExchanges = 3
 
+const compactedContextTag = "compacted_context"
+
 // maybeCompactHistory triggers proactive context compaction when the last
 // turn's input token count exceeded compactionThreshold. It is called after
 // each terminal (no-tool) assistant turn so the compaction happens "between
@@ -894,10 +897,41 @@ func (m *Master) maybeCompactHistory(ctx context.Context) {
 	m.compactHistory(ctx)
 }
 
+func isCompactedContextBlock(text string) bool {
+	trimmed := strings.TrimSpace(text)
+	return strings.HasPrefix(trimmed, "<"+compactedContextTag) && strings.Contains(trimmed, "</"+compactedContextTag+">")
+}
+
+func normalizeCompactedContext(text string) (string, bool) {
+	trimmed := strings.TrimSpace(text)
+	if trimmed == "" {
+		return "", false
+	}
+	if isCompactedContextBlock(trimmed) {
+		return trimmed, true
+	}
+	return fmt.Sprintf(`<%s>
+<summary>%s</summary>
+<decisions>
+- none recorded
+</decisions>
+<completed>
+- none recorded
+</completed>
+<pending>
+- none recorded
+</pending>
+<artifacts>
+- none recorded
+</artifacts>
+</%s>`, compactedContextTag, html.EscapeString(trimmed), compactedContextTag), false
+}
+
 // compactHistory summarises the older portion of m.messages using the LLM,
-// replacing it with a single summary block so that future turns start with a
-// much smaller context. The most recent compactionKeepExchanges user/assistant
-// exchanges are kept verbatim so the model has immediate conversational context.
+// replacing it with a single structured context block so that future turns
+// start with a much smaller but still machine-readable history. The most recent
+// compactionKeepExchanges user/assistant exchanges are kept verbatim so the
+// model has immediate conversational context.
 func (m *Master) compactHistory(ctx context.Context) {
 	msgs := m.messages
 
@@ -909,12 +943,18 @@ func (m *Master) compactHistory(ctx context.Context) {
 		if msgs[i].Role == llm.RoleUser {
 			exchanges++
 			if exchanges > compactionKeepExchanges {
-				keepFrom = i + 1
+				keepFrom = len(msgs)
+				for j := i + 1; j < len(msgs); j++ {
+					if msgs[j].Role == llm.RoleUser {
+						keepFrom = j
+						break
+					}
+				}
 				break
 			}
 		}
 	}
-	if keepFrom == 0 {
+	if keepFrom <= 0 || keepFrom >= len(msgs) {
 		// Not enough history to split; nothing to compact.
 		m.messages = msgs
 		return
@@ -940,15 +980,31 @@ func (m *Master) compactHistory(ctx context.Context) {
 
 	summariseReq := llm.Request{
 		Model: m.model,
-		System: `You are a conversation summariser. Your only job is to produce a concise but complete summary of the conversation excerpt you receive. The summary must:
-- Preserve all key decisions, constraints, and conclusions reached.
-- List all tasks that were completed, pending, or cancelled.
-- Note any important file paths, IDs, tool results, or values that were referenced.
-- Be written in third-person past tense ("The user asked...", "The assistant planned...").
-- Be plain text, no markdown headers, no bullet-point lists — use short prose paragraphs.
-- Be as short as possible while retaining all decision-relevant details.`,
+		System: `You are a conversation compactor. Produce ONLY XML with this exact root schema:
+<compacted_context>
+<summary>One concise paragraph covering the overall goal, important decisions, and current state.</summary>
+<decisions>
+- key decision or constraint
+</decisions>
+<completed>
+- work or tasks that were finished
+</completed>
+<pending>
+- work, risks, or tasks that remain open
+</pending>
+<artifacts>
+- important file paths, IDs, tool outputs, models, or values worth preserving
+</artifacts>
+</compacted_context>
+
+Rules:
+- Keep each list short and decision-relevant.
+- Preserve concrete file paths, IDs, and values when they matter.
+- Use "- none recorded" when a section would otherwise be empty.
+- No prose outside the XML block.
+- Do not emit markdown fences.`,
 		Messages: []llm.Message{
-			{Role: llm.RoleUser, Text: "Summarise the following conversation excerpt:\n\n" + histBuf.String()},
+			{Role: llm.RoleUser, Text: "Compact the following conversation excerpt into the required XML schema:\n\n" + histBuf.String()},
 		},
 	}
 
@@ -1023,18 +1079,18 @@ streamLoop:
 		return
 	}
 
-	summary := strings.TrimSpace(summaryBuf.String())
+	summary, structured := normalizeCompactedContext(summaryBuf.String())
 	if summary == "" {
 		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction produced empty summary — keeping history as-is"})
 		m.bus.Publish(Event{Kind: EvCompaction, Done: true, Text: "⚠️ Context compaction produced empty summary — keeping history as-is"})
 		m.messages = msgs
 		return
 	}
-
-	summaryMsg := llm.Message{
-		Role: llm.RoleUser,
-		Text: fmt.Sprintf("[Context compacted — summary of earlier conversation]\n\n%s", summary),
+	if !structured {
+		m.bus.Publish(Event{Kind: EvFlash, Text: "context compaction returned unstructured output — normalizing"})
 	}
+
+	summaryMsg := llm.Message{Role: llm.RoleUser, Text: summary}
 
 	m.messages = append([]llm.Message{summaryMsg}, toKeep...)
 	m.lastInputTokens = 0 // reset so we don't immediately compact again

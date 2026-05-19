@@ -277,6 +277,89 @@ func TestMasterSystemPromptKeepsSmallOptionalBlocks(t *testing.T) {
 	}
 }
 
+func TestMasterCompactionProducesStructuredContext(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventText, TextDelta: `<compacted_context>
+<summary>Earlier work established the baseline.</summary>
+<decisions>
+- keep durable state structured
+</decisions>
+<completed>
+- reviewed the oldest exchange
+</completed>
+<pending>
+- continue with newer exchanges
+</pending>
+<artifacts>
+- internal/agent/master.go
+</artifacts>
+</compacted_context>`},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 12, OutputTokens: 8}},
+			},
+		},
+	}
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	master := NewMaster(adapter, "m", tools.NewRegistry(), bus, tracker, nil)
+	master.messages = []llm.Message{
+		{Role: llm.RoleUser, Text: "u1"},
+		{Role: llm.RoleAssistant, Text: "a1"},
+		{Role: llm.RoleUser, Text: "u2"},
+		{Role: llm.RoleAssistant, Text: "a2"},
+		{Role: llm.RoleUser, Text: "u3"},
+		{Role: llm.RoleAssistant, Text: "a3"},
+		{Role: llm.RoleUser, Text: "u4"},
+		{Role: llm.RoleAssistant, Text: "a4"},
+	}
+
+	master.compactHistory(context.Background())
+
+	if len(master.messages) != 7 {
+		t.Fatalf("message count after compaction = %d, want 7", len(master.messages))
+	}
+	if !strings.HasPrefix(master.messages[0].Text, "<compacted_context>") {
+		t.Fatalf("first message = %q, want structured compacted context", master.messages[0].Text)
+	}
+	if master.messages[1].Role != llm.RoleUser || master.messages[1].Text != "u2" {
+		t.Fatalf("expected compaction to preserve whole exchange boundary, got %+v", master.messages[1])
+	}
+}
+
+func TestMasterCompactionNormalizesPlainSummary(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventText, TextDelta: "plain prose summary"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 12, OutputTokens: 8}},
+			},
+		},
+	}
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	master := NewMaster(adapter, "m", tools.NewRegistry(), bus, tracker, nil)
+	master.messages = []llm.Message{
+		{Role: llm.RoleUser, Text: "u1"},
+		{Role: llm.RoleAssistant, Text: "a1"},
+		{Role: llm.RoleUser, Text: "u2"},
+		{Role: llm.RoleAssistant, Text: "a2"},
+		{Role: llm.RoleUser, Text: "u3"},
+		{Role: llm.RoleAssistant, Text: "a3"},
+		{Role: llm.RoleUser, Text: "u4"},
+		{Role: llm.RoleAssistant, Text: "a4"},
+	}
+
+	master.compactHistory(context.Background())
+
+	if !strings.HasPrefix(master.messages[0].Text, "<compacted_context>") {
+		t.Fatalf("expected normalized structured context, got %q", master.messages[0].Text)
+	}
+	if !strings.Contains(master.messages[0].Text, "<summary>plain prose summary</summary>") {
+		t.Fatalf("expected raw summary to be preserved in normalized block, got %q", master.messages[0].Text)
+	}
+}
+
 func TestSubagentPauseResume(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()
