@@ -45,6 +45,7 @@ type CancelFunc func() int
 // App is the top-level Bubble Tea model.
 type App struct {
 	bus            *agent.Bus
+	master         *agent.Master
 	manager        *agent.Manager
 	tracker        *llm.Tracker
 	masterIn       chan<- agent.Event
@@ -62,30 +63,31 @@ type App struct {
 	height int
 
 	// Buffers
-	chatBuf           strings.Builder
-	currentMaster     strings.Builder
-	currentReasoning  strings.Builder // in-progress reasoning/thinking delta
-	currentSubText    map[string]*strings.Builder // in-progress text per sub-agent
-	subBufs           map[string]*strings.Builder
-	subStatus      map[string]agent.SubagentStatus
-	subOrder       []string
-	subObjectives  map[string]string // first line of each sub-agent's objective
-	sidebarMaxSubs  int    // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
-	showMorePopup   string // "shells" or "subs" when the older-items popover is open
-	popoverSel      int    // index of the selected item within the popover list
-	popoverPrevSub  string // viewSub to restore if user Esc-dismisses popover
-	popoverItems    []string // ordered IDs shown in the current popover
+	chatBuf          strings.Builder
+	currentMaster    strings.Builder
+	currentReasoning strings.Builder             // in-progress reasoning/thinking delta
+	currentSubText   map[string]*strings.Builder // in-progress text per sub-agent
+	subBufs          map[string]*strings.Builder
+	subStatus        map[string]agent.SubagentStatus
+	subOrder         []string
+	subObjectives    map[string]string // first line of each sub-agent's objective
+	sidebarMaxSubs   int               // max entries shown per section (AGENI_SIDEBAR_SUBAGENTS)
+	showMorePopup    string            // "shells" or "subs" when the older-items popover is open
+	popoverSel       int               // index of the selected item within the popover list
+	popoverPrevSub   string            // viewSub to restore if user Esc-dismisses popover
+	popoverItems     []string          // ordered IDs shown in the current popover
 
 	// Shell sessions opened by the master or sub-agents.
-	shellBufs     map[string]*strings.Builder
-	shellStatus   map[string]agent.ShellStatus
-	shellLabels   map[string]string
-	shellKinds    map[string]agent.ShellKind
-	shellCmds     map[string]string // last command dispatched to each shell
-	shellBusy     map[string]bool   // true while shell_exec is in flight (sync mode)
-	shellLastExit map[string]*int   // nil=never run, else last exit code
-	shellOrder    []string
-	shellMgr      *agent.ShellManager
+	shellBufs      map[string]*strings.Builder
+	shellStatus    map[string]agent.ShellStatus
+	shellLabels    map[string]string
+	shellKinds     map[string]agent.ShellKind
+	shellCmds      map[string]string // last command dispatched to each shell
+	shellBusy      map[string]bool   // true while shell_exec is in flight (sync mode)
+	shellLastExit  map[string]*int   // nil=never run, else last exit code
+	shellLostBytes map[string]int64
+	shellOrder     []string
+	shellMgr       *agent.ShellManager
 
 	// Incremental glamour-render cache for live streaming.
 	// masterRenderedUpTo is the byte offset in currentMaster through which we
@@ -113,7 +115,7 @@ type App struct {
 	providerList     *providerListModel
 	settingsForm     *huh.Form
 	settingsState    *settingsState
-	flashMessage  string
+	flashMessage     string
 
 	// killConfirm is true when the user pressed Ctrl+X and is being asked to
 	// confirm the kill-all action. Enter confirms; Esc cancels.
@@ -154,6 +156,7 @@ type App struct {
 	// running sub-agent is doing right now, used by the side-pane label.
 	// spinFrame advances on every tickMsg.
 	masterBusy     bool
+	masterPaused   bool
 	spinFrame      int
 	masterToolIn   string
 	masterTurnTime time.Time // wall-clock time when the current master turn started
@@ -183,7 +186,7 @@ type App struct {
 	scrubFn func(string) string
 }
 
-func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager) *App {
+func New(ctx context.Context, bus *agent.Bus, master *agent.Master, manager *agent.Manager, tracker *llm.Tracker, masterIn chan<- agent.Event, reload ReloadFunc, cancelInFlight CancelFunc, sess *session.Session, todo *tools.TodoWrite, changes *tools.ChangeTracker, shellMgr *agent.ShellManager) *App {
 	cctx, cancel := context.WithCancel(ctx)
 
 	ta := textarea.New()
@@ -199,40 +202,45 @@ func New(ctx context.Context, bus *agent.Bus, manager *agent.Manager, tracker *l
 	side := viewport.New(30, 20)
 
 	a := &App{
-		bus:            bus,
-		manager:        manager,
-		tracker:        tracker,
-		masterIn:       masterIn,
-		reload:         reload,
-		cancelInFlight: cancelInFlight,
-		session:        sess,
-		todo:           todo,
-		changes:        changes,
-		chat:           chat,
-		side:           side,
-		input:          ta,
-		subBufs:        make(map[string]*strings.Builder),
-		currentSubText: make(map[string]*strings.Builder),
-		subStatus:      make(map[string]agent.SubagentStatus),
-		subActivity:    make(map[string]string),
-		subObjectives:  make(map[string]string),
-		sidebarMaxSubs: intFromEnvOr("AGENI_SIDEBAR_SUBAGENTS", 5),
+		bus:              bus,
+		master:           master,
+		manager:          manager,
+		tracker:          tracker,
+		masterIn:         masterIn,
+		reload:           reload,
+		cancelInFlight:   cancelInFlight,
+		session:          sess,
+		todo:             todo,
+		changes:          changes,
+		chat:             chat,
+		side:             side,
+		input:            ta,
+		subBufs:          make(map[string]*strings.Builder),
+		currentSubText:   make(map[string]*strings.Builder),
+		subStatus:        make(map[string]agent.SubagentStatus),
+		subActivity:      make(map[string]string),
+		subObjectives:    make(map[string]string),
+		sidebarMaxSubs:   intFromEnvOr("AGENI_SIDEBAR_SUBAGENTS", 5),
 		subRenderedUpTo:  make(map[string]int),
 		subRenderedCache: make(map[string]string),
-		shellBufs:     make(map[string]*strings.Builder),
-		shellStatus:   make(map[string]agent.ShellStatus),
-		shellLabels:   make(map[string]string),
-		shellKinds:    make(map[string]agent.ShellKind),
-		shellCmds:     make(map[string]string),
-		shellBusy:     make(map[string]bool),
-		shellLastExit: make(map[string]*int),
-		shellMgr:      shellMgr,
-		history:      LoadHistory(),
-		historyIdx:   -1,
-		mouseOn:      true,
-		ctx:          cctx,
-		cancel:       cancel,
-		pendingCalls: make(map[string]llm.ToolCall),
+		shellBufs:        make(map[string]*strings.Builder),
+		shellStatus:      make(map[string]agent.ShellStatus),
+		shellLabels:      make(map[string]string),
+		shellKinds:       make(map[string]agent.ShellKind),
+		shellCmds:        make(map[string]string),
+		shellBusy:        make(map[string]bool),
+		shellLastExit:    make(map[string]*int),
+		shellLostBytes:   make(map[string]int64),
+		shellMgr:         shellMgr,
+		history:          LoadHistory(),
+		historyIdx:       -1,
+		mouseOn:          true,
+		ctx:              cctx,
+		cancel:           cancel,
+		pendingCalls:     make(map[string]llm.ToolCall),
+	}
+	if master != nil {
+		a.masterPaused = master.Paused()
 	}
 	// Show the active master model in the status bar. The env vars are already
 	// loaded by config.Load() before New() is called, so os.Getenv is reliable.
@@ -262,7 +270,6 @@ func (a *App) scrub(s string) string {
 	}
 	return a.scrubFn(s)
 }
-
 
 // so a resumed session shows where the user left off. Master tool calls
 // + results are rendered the same way live events render them, so the
@@ -301,6 +308,54 @@ func (a *App) LoadHistory(messages []llm.Message) {
 	}
 	a.chatBuf.WriteString(mutedStyle.Render("─── continuing ───") + "\n\n")
 	a.refreshChat()
+}
+
+func (a *App) LoadShellHistory(shells []session.ShellSnapshot) {
+	for _, sh := range shells {
+		if a.shellBufs[sh.ID] == nil {
+			a.shellBufs[sh.ID] = &strings.Builder{}
+			a.shellOrder = append(a.shellOrder, sh.ID)
+		}
+		a.shellStatus[sh.ID] = sh.Status
+		a.shellLabels[sh.ID] = sh.Label
+		a.shellKinds[sh.ID] = sh.Kind
+		a.shellLostBytes[sh.ID] = sh.LostBytes
+		if sh.Output != "" {
+			a.shellBufs[sh.ID].WriteString(a.scrub(ansiEscape.ReplaceAllString(sh.Output, "")))
+		}
+	}
+	a.refreshSide()
+	if strings.HasPrefix(a.viewSub, "sh") {
+		a.refreshChatForce()
+	}
+}
+
+func (a *App) LoadWorkerHistory(workers []session.WorkerSnapshot) {
+	for _, w := range workers {
+		if a.subBufs[w.ID] == nil {
+			a.subBufs[w.ID] = &strings.Builder{}
+			a.subOrder = append(a.subOrder, w.ID)
+		}
+		a.subStatus[w.ID] = w.Status
+		if obj := w.Objective; obj != "" {
+			if i := strings.IndexAny(obj, "\n\r"); i >= 0 {
+				obj = obj[:i]
+			}
+			a.subObjectives[w.ID] = obj
+		}
+		if a.subBufs[w.ID].Len() == 0 {
+			header := titleStyle.Render(w.ID+" — "+w.Model) + "\n" +
+				styledLines(toolArgsStyle, w.Objective) + "\n\n"
+			a.subBufs[w.ID].WriteString(header)
+		}
+		if w.Buffer != "" {
+			a.subBufs[w.ID].WriteString(a.scrub(w.Buffer))
+		}
+	}
+	a.refreshSide()
+	if a.viewSub != "" && !strings.HasPrefix(a.viewSub, "sh") {
+		a.refreshChatForce()
+	}
 }
 
 // Tea Msg types
@@ -618,6 +673,12 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, a.openSettings()
 		case msg.String() == "ctrl+r":
 			return a, a.openRankings()
+		case msg.String() == "ctrl+p":
+			a.togglePauseSelection()
+			return a, nil
+		case msg.String() == "ctrl+g":
+			a.interruptSelection()
+			return a, nil
 		case msg.Type == tea.KeyF2:
 			return a, a.toggleMouse()
 		case msg.Type == tea.KeyF3:
@@ -928,6 +989,12 @@ func (a *App) stopGeneration() {
 	// may never arrive if the master had nothing in-flight (e.g. a message
 	// was queued in masterIn but the master hadn't started its turn yet).
 	a.masterBusy = false
+	for _, id := range a.subOrder {
+		if a.subStatus[id] == agent.StatusRunning || a.subStatus[id] == agent.StatusPaused {
+			a.subStatus[id] = agent.StatusCancelled
+			delete(a.subActivity, id)
+		}
+	}
 	a.masterToolIn = ""
 	// Tell the master to discard any accumulated pending sub-agent events
 	// so that cancelled workers don't re-trigger a new generation turn.
@@ -947,6 +1014,63 @@ func (a *App) stopGeneration() {
 	default:
 		a.flashMessage = "stopped generation"
 	}
+}
+
+func (a *App) togglePauseSelection() {
+	switch {
+	case a.viewSub == "":
+		if a.master == nil {
+			return
+		}
+		if a.masterPaused {
+			if a.master.Resume() {
+				a.masterPaused = false
+			}
+		} else if a.master.Pause() {
+			a.masterPaused = true
+		}
+	case strings.HasPrefix(a.viewSub, "sh"):
+		a.flashMessage = "shell sessions do not support pause; use Ctrl+G to interrupt"
+	default:
+		id := a.viewSub
+		if a.subStatus[id] == agent.StatusPaused {
+			if err := a.manager.Resume(id); err != nil {
+				a.flashMessage = err.Error()
+			}
+		} else {
+			if err := a.manager.Pause(id); err != nil {
+				a.flashMessage = err.Error()
+			}
+		}
+	}
+	a.refreshSide()
+	a.refreshChat()
+}
+
+func (a *App) interruptSelection() {
+	switch {
+	case strings.HasPrefix(a.viewSub, "sh"):
+		if a.shellMgr == nil {
+			return
+		}
+		if err := a.shellMgr.Interrupt(a.viewSub); err != nil {
+			a.flashMessage = err.Error()
+		} else {
+			a.flashMessage = fmt.Sprintf("interrupt sent to %s", a.viewSub)
+		}
+	case a.viewSub != "":
+		if err := a.manager.Kill(a.viewSub); err != nil {
+			a.flashMessage = err.Error()
+		} else {
+			a.subStatus[a.viewSub] = agent.StatusCancelled
+			delete(a.subActivity, a.viewSub)
+			a.flashMessage = fmt.Sprintf("cancelled %s", a.viewSub)
+		}
+	default:
+		a.stopGeneration()
+	}
+	a.refreshSide()
+	a.refreshChat()
 }
 
 // performKill executes the kill-switch: cancels all in-flight generation,
@@ -1280,7 +1404,6 @@ func (a *App) updateSettings(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return a, cmd
 }
 
-
 // cycleView steps through the master, shell, and sub-agent panes.
 // dir=1 (Tab) moves down the sidebar; dir=-1 (ShiftTab) moves up.
 // The order matches the sidebar's visual top-to-bottom layout exactly.
@@ -1402,8 +1525,6 @@ func (a *App) sidebarCycleList() []string {
 
 	return all
 }
-
-
 
 func (a *App) layout() {
 	if a.width < 60 || a.height < 12 {
@@ -1530,6 +1651,22 @@ func (a *App) handleEvent(ev agent.Event) {
 	case agent.EvSubagentTurnStart:
 		a.subActivity[ev.SubagentID] = "thinking"
 		a.sideDirty = true
+	case agent.EvSubagentPaused:
+		a.subStatus[ev.SubagentID] = agent.StatusPaused
+		delete(a.subActivity, ev.SubagentID)
+		if b, ok := a.subBufs[ev.SubagentID]; ok {
+			b.WriteString("\n[paused]\n")
+		}
+		a.refreshSide()
+		a.refreshChat()
+	case agent.EvSubagentResumed:
+		a.subStatus[ev.SubagentID] = agent.StatusRunning
+		a.subActivity[ev.SubagentID] = "resumed"
+		if b, ok := a.subBufs[ev.SubagentID]; ok {
+			b.WriteString("\n[resumed]\n")
+		}
+		a.refreshSide()
+		a.refreshChat()
 	case agent.EvSubagentText:
 		// Stream to per-sub-agent in-progress buffer with incremental glamour.
 		cur := a.currentSubText[ev.SubagentID]
@@ -1608,7 +1745,9 @@ func (a *App) handleEvent(ev agent.Event) {
 		}
 		a.refreshChat()
 	case agent.EvSubagentDone:
-		a.subStatus[ev.SubagentID] = agent.StatusDone
+		if a.subStatus[ev.SubagentID] != agent.StatusCancelled || ev.Text != "" {
+			a.subStatus[ev.SubagentID] = agent.StatusDone
+		}
 		delete(a.subActivity, ev.SubagentID)
 		// ev.Text is the authoritative final assistant turn — drop any
 		// in-progress streamed copy and render the canonical version once.
@@ -1658,6 +1797,14 @@ func (a *App) handleEvent(ev agent.Event) {
 		compactStyle := lipgloss.NewStyle().Foreground(lipgloss.Color("214")).Italic(true)
 		a.chatBuf.WriteString("\n" + compactStyle.Render(ev.Text) + "\n")
 		a.refreshChat()
+	case agent.EvMasterPaused:
+		a.masterPaused = true
+		a.flashMessage = "master paused"
+		a.refreshSide()
+	case agent.EvMasterResumed:
+		a.masterPaused = false
+		a.flashMessage = "master resumed"
+		a.refreshSide()
 	case agent.EvShellOpened:
 		id := ev.SubagentID
 		if a.shellBufs[id] == nil {
@@ -1682,9 +1829,25 @@ func (a *App) handleEvent(ev agent.Event) {
 			a.chatDirty = true
 		}
 		a.sideDirty = true
+	case agent.EvShellOutputLoss:
+		id := ev.SubagentID
+		if ev.Bytes > a.shellLostBytes[id] {
+			a.shellLostBytes[id] = ev.Bytes
+		}
+		if a.viewSub == id {
+			a.chatDirty = true
+		}
+		a.sideDirty = true
 	case agent.EvShellExited:
 		id := ev.SubagentID
 		a.shellStatus[id] = agent.ShellStatusExited
+		a.refreshSide()
+		if a.viewSub == id {
+			a.refreshChatForce()
+		}
+	case agent.EvShellClosed:
+		id := ev.SubagentID
+		a.shellStatus[id] = agent.ShellStatusClosed
 		a.refreshSide()
 		if a.viewSub == id {
 			a.refreshChatForce()
@@ -1911,6 +2074,9 @@ func (a *App) buildChatContent() string {
 				case agent.ShellStatusClosed:
 					footer = "\n" + mutedStyle.Render("[session closed]")
 				}
+				if dropped := a.shellLostBytes[a.viewSub]; dropped > 0 {
+					footer += "\n" + mutedStyle.Render(fmt.Sprintf("[buffer wrapped; %d oldest bytes no longer readable live]", dropped))
+				}
 				return header + b.String() + footer
 			}
 		}
@@ -1935,7 +2101,7 @@ func (a *App) buildChatContent() string {
 	body := a.chatBuf.String()
 	if a.currentReasoning.Len() > 0 && a.currentMaster.Len() == 0 {
 		// Show live reasoning stream in a muted block before the response.
-		body += mutedStyle.Render("⟨thinking⟩\n"+a.currentReasoning.String())
+		body += mutedStyle.Render("⟨thinking⟩\n" + a.currentReasoning.String())
 	}
 	if a.currentMaster.Len() > 0 {
 		text := a.currentMaster.String()
@@ -2007,6 +2173,10 @@ func (a *App) refreshSide() {
 		var masterSt lipgloss.Style
 		var masterLabel string
 		switch {
+		case a.masterPaused:
+			masterMarker = "⏸"
+			masterSt = mutedStyle
+			masterLabel = "paused"
 		case a.masterToolIn == "soundboard":
 			masterMarker = "⚖"
 			masterSt = lipgloss.NewStyle().Foreground(lipgloss.Color("214")) // amber
@@ -2147,6 +2317,7 @@ func (a *App) refreshSide() {
 			shellLabel := a.shellLabels[id]
 			busy := a.shellBusy[id]
 			lastExit := a.shellLastExit[id]
+			dropped := a.shellLostBytes[id]
 
 			var marker, statusText string
 			var stStyle lipgloss.Style
@@ -2219,6 +2390,9 @@ func (a *App) refreshSide() {
 				display = fmt.Sprintf("%s  %s", id, shellLabel)
 			}
 			line := fmt.Sprintf("%s %s  %s", marker, display, statusText)
+			if dropped > 0 {
+				line += mutedStyle.Render("  [wrapped]")
+			}
 			if id == a.viewSub {
 				sb.WriteString(lipgloss.NewStyle().Reverse(true).Render(line) + "\n")
 			} else {
@@ -2261,6 +2435,10 @@ func (a *App) refreshSide() {
 				if act := a.subActivity[id]; act != "" {
 					label = act
 				}
+			case agent.StatusPaused:
+				marker = "⏸"
+				st2 = mutedStyle
+				label = "paused"
 			case agent.StatusDone:
 				st2 = subDoneStyle
 				marker = "✓"
@@ -2582,6 +2760,10 @@ func (a *App) renderPopoverSidebar() string {
 			label := string(st)
 			var stStyle lipgloss.Style = subRunningStyle
 			switch st {
+			case agent.StatusPaused:
+				marker = "⏸"
+				label = "paused"
+				stStyle = mutedStyle
 			case agent.StatusDone:
 				marker = "✓"
 				stStyle = subDoneStyle
@@ -2731,7 +2913,7 @@ func (a *App) statusLine() string {
 	if len(a.msgQueue) > 0 {
 		queued = fmt.Sprintf("  │  %d queued", len(a.msgQueue))
 	}
-	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+X=kill  Ctrl+,=settings  Ctrl+R=rankings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
+	return fmt.Sprintf("%s%s  │  %s%s%s  │  %s  │  Tab/S-Tab=cycle agents  ↑↓=scroll  PgUp/PgDn=scroll  Ctrl+P=pause  Ctrl+G=interrupt  F2=mouse(%s)  F3=dump  F4=diff  Esc=stop  Ctrl+X=kill  Ctrl+,=settings  Ctrl+R=rankings  Ctrl+C=quit%s", view, model, state, sess, queued, a.usage, mouseStr, flash)
 }
 
 // masterStateLabel returns a short string describing what the master is
@@ -2743,6 +2925,8 @@ func (a *App) statusLine() string {
 func (a *App) masterStateLabel() string {
 	frame := a.spinner()
 	switch {
+	case a.masterPaused:
+		return mutedStyle.Render("master paused")
 	case a.masterToolIn != "":
 		return frame + " master:" + a.masterToolIn + "…"
 	case a.masterBusy:
@@ -2755,13 +2939,13 @@ func (a *App) masterStateLabel() string {
 	return mutedStyle.Render("master idle")
 }
 
-// runningSubIDs returns the IDs of sub-agents currently in StatusRunning,
+// runningSubIDs returns the IDs of sub-agents currently in an active state,
 // in the order they were spawned. Used by the status bar to tell the user
 // who the master is waiting on.
 func (a *App) runningSubIDs() []string {
 	out := make([]string, 0, len(a.subOrder))
 	for _, id := range a.subOrder {
-		if a.subStatus[id] == agent.StatusRunning {
+		if a.subStatus[id] == agent.StatusRunning || a.subStatus[id] == agent.StatusPaused {
 			out = append(out, id)
 		}
 	}
@@ -2911,72 +3095,72 @@ func (a *App) diffForCall(call llm.ToolCall) string {
 // trackShellToolCall captures a shell_exec or shell_send_input tool call so
 // the shell pane can display the active command and mark the shell as busy.
 func (a *App) trackShellToolCall(tc *llm.ToolCall) {
-if tc == nil {
-return
-}
-switch tc.Name {
-case "shell_exec":
-var args struct {
-ID      string `json:"id"`
-Command string `json:"command"`
-Mode    string `json:"mode"`
-}
-if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
-return
-}
-a.shellCmds[args.ID] = args.Command
-// Only mark busy for sync mode (async returns immediately).
-if args.Mode != "async" {
-a.shellBusy[args.ID] = true
-}
-if a.viewSub == args.ID {
-a.refreshChatForce()
-}
-case "shell_send_input":
-var args struct {
-ID    string `json:"id"`
-Input string `json:"input"`
-}
-if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
-return
-}
-// Show the input as the "active command" but don't mark busy
-// (send_input is fire-and-forget from the tool perspective).
-a.shellCmds[args.ID] = args.Input
-if a.viewSub == args.ID {
-a.refreshChatForce()
-}
-}
+	if tc == nil {
+		return
+	}
+	switch tc.Name {
+	case "shell_exec":
+		var args struct {
+			ID      string `json:"id"`
+			Command string `json:"command"`
+			Mode    string `json:"mode"`
+		}
+		if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
+			return
+		}
+		a.shellCmds[args.ID] = args.Command
+		// Only mark busy for sync mode (async returns immediately).
+		if args.Mode != "async" {
+			a.shellBusy[args.ID] = true
+		}
+		if a.viewSub == args.ID {
+			a.refreshChatForce()
+		}
+	case "shell_send_input":
+		var args struct {
+			ID    string `json:"id"`
+			Input string `json:"input"`
+		}
+		if err := json.Unmarshal(tc.Arguments, &args); err != nil || args.ID == "" {
+			return
+		}
+		// Show the input as the "active command" but don't mark busy
+		// (send_input is fire-and-forget from the tool perspective).
+		a.shellCmds[args.ID] = args.Input
+		if a.viewSub == args.ID {
+			a.refreshChatForce()
+		}
+	}
 }
 
 // trackShellToolDone clears the busy flag and records the exit code when a
 // shell_exec tool result arrives.
 func (a *App) trackShellToolDone(result *llm.ToolResult, call llm.ToolCall) {
-if call.Name != "shell_exec" {
-return
-}
-var args struct {
-ID   string `json:"id"`
-Mode string `json:"mode"`
-}
-if err := json.Unmarshal(call.Arguments, &args); err != nil || args.ID == "" {
-return
-}
-a.shellBusy[args.ID] = false
+	if call.Name != "shell_exec" {
+		return
+	}
+	var args struct {
+		ID   string `json:"id"`
+		Mode string `json:"mode"`
+	}
+	if err := json.Unmarshal(call.Arguments, &args); err != nil || args.ID == "" {
+		return
+	}
+	a.shellBusy[args.ID] = false
 
-// Parse exit code from result content: Exec() appends "[exit N]" on
-// non-zero exits; absence of that suffix implies exit 0.
-code := 0
-if strings.Contains(result.Content, "[exit ") {
-idx := strings.LastIndex(result.Content, "[exit ")
-if idx >= 0 {
-fmt.Sscanf(result.Content[idx:], "[exit %d]", &code)
-}
-}
-a.shellLastExit[args.ID] = &code
-if a.viewSub == args.ID {
-a.refreshChatForce()
-}
+	// Parse exit code from result content: Exec() appends "[exit N]" on
+	// non-zero exits; absence of that suffix implies exit 0.
+	code := 0
+	if strings.Contains(result.Content, "[exit ") {
+		idx := strings.LastIndex(result.Content, "[exit ")
+		if idx >= 0 {
+			fmt.Sscanf(result.Content[idx:], "[exit %d]", &code)
+		}
+	}
+	a.shellLastExit[args.ID] = &code
+	if a.viewSub == args.ID {
+		a.refreshChatForce()
+	}
 }
 
 // sortedTodos returns a display-order copy of items: active items (pending +
@@ -2985,14 +3169,14 @@ a.refreshChatForce()
 // work is always visible at the top of the sidebar regardless of the order
 // the backing store holds items in (e.g. after a replace action).
 func sortedTodos(items []tools.TodoItem) []tools.TodoItem {
-var active, done []tools.TodoItem
-for _, it := range items {
-if it.Status == tools.TodoCompleted {
-done = append(done, it)
-} else {
-active = append(active, it)
-}
-}
-// Both slices already arrive in ID order from the store; no explicit sort needed.
-return append(active, done...)
+	var active, done []tools.TodoItem
+	for _, it := range items {
+		if it.Status == tools.TodoCompleted {
+			done = append(done, it)
+		} else {
+			active = append(active, it)
+		}
+	}
+	// Both slices already arrive in ID order from the store; no explicit sort needed.
+	return append(active, done...)
 }

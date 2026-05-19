@@ -41,7 +41,7 @@ func NewLogger(s *Session) (*Logger, error) {
 	}
 	// Append, don't truncate — on resume, prior turns must remain in the
 	// log so future replays can reconstruct them.
-	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644) //nolint:gosec
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o600) //nolint:gosec
 	if err != nil {
 		return nil, err
 	}
@@ -62,7 +62,7 @@ func (l *Logger) Run(ctx context.Context, sub <-chan agent.Event) {
 			if !ok {
 				return
 			}
-			l.write(ev)
+			l.WriteEvent(ev)
 		}
 	}
 }
@@ -70,12 +70,15 @@ func (l *Logger) Run(ctx context.Context, sub <-chan agent.Event) {
 type entry struct {
 	Kind          string `json:"kind"`
 	At            string `json:"at"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 	SubagentID    string `json:"subagent_id,omitempty"`
 	Text          string `json:"text,omitempty"`
 	ToolName      string `json:"tool_name,omitempty"`
 	ToolArgs      string `json:"tool_args,omitempty"`
 	ToolResult    string `json:"tool_result,omitempty"`
 	ToolError     bool   `json:"tool_error,omitempty"`
+	ShellKind     string `json:"shell_kind,omitempty"`
+	Bytes         int64  `json:"bytes,omitempty"`
 	InputTokens   int    `json:"input_tokens,omitempty"`
 	OutputTokens  int    `json:"output_tokens,omitempty"`
 	CacheRead     int    `json:"cache_read_tokens,omitempty"`
@@ -85,14 +88,18 @@ type entry struct {
 	Err           string `json:"err,omitempty"`
 }
 
-func (l *Logger) write(ev agent.Event) {
+// WriteEvent persists one event to the append-only session journal.
+func (l *Logger) WriteEvent(ev agent.Event) {
 	e := entry{
 		Kind:          string(ev.Kind),
 		At:            ev.At.Format(time.RFC3339Nano),
+		CorrelationID: ev.CorrelationID,
 		SubagentID:    ev.SubagentID,
 		Text:          ev.Text,
 		SubagentTask:  ev.SubagentTask,
 		SubagentModel: ev.SubagentModel,
+		ShellKind:     string(ev.ShellKind),
+		Bytes:         ev.Bytes,
 	}
 	if ev.ToolCall != nil {
 		e.ToolName = ev.ToolCall.Name
@@ -113,5 +120,6 @@ func (l *Logger) write(ev agent.Event) {
 	}
 	l.mu.Lock()
 	_ = l.enc.Encode(&e)
+	_ = l.file.Sync()
 	l.mu.Unlock()
 }

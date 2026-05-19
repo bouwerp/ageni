@@ -13,7 +13,7 @@ type OpenShellTool struct {
 	SM *ShellManager
 }
 
-func (t OpenShellTool) Name() string        { return "open_shell" }
+func (t OpenShellTool) Name() string { return "open_shell" }
 func (t OpenShellTool) Description() string {
 	return "Open a new persistent bash shell session. Returns the session ID for use with shell_exec, shell_read, etc."
 }
@@ -62,7 +62,7 @@ type ShellExecTool struct {
 	SM *ShellManager
 }
 
-func (t ShellExecTool) Name() string        { return "shell_exec" }
+func (t ShellExecTool) Name() string { return "shell_exec" }
 func (t ShellExecTool) Description() string {
 	return "Execute a command in a persistent shell session. Use mode=sync (default) to wait for completion, mode=async for fire-and-forget."
 }
@@ -105,7 +105,7 @@ type ShellReadTool struct {
 	SM *ShellManager
 }
 
-func (t ShellReadTool) Name() string        { return "shell_read" }
+func (t ShellReadTool) Name() string { return "shell_read" }
 func (t ShellReadTool) Description() string {
 	return "Read output from a shell session. Use tail_lines for the last N lines, or offset+max_bytes for incremental reads."
 }
@@ -141,7 +141,11 @@ func (t ShellReadTool) Call(ctx context.Context, args json.RawMessage) (string, 
 		if maxBytes <= 0 {
 			maxBytes = 8192
 		}
+		base := s.BaseOffset()
 		data, nextOffset := s.ReadFrom(*a.Offset, maxBytes)
+		if *a.Offset < base {
+			return fmt.Sprintf("warning: shell buffer dropped oldest %d bytes; read resumed at offset %d\noffset=%d\n%s", s.LostBytes(), base, nextOffset, string(data)), nil
+		}
 		return fmt.Sprintf("offset=%d\n%s", nextOffset, string(data)), nil
 	}
 
@@ -157,7 +161,7 @@ type ShellWaitTool struct {
 	SM *ShellManager
 }
 
-func (t ShellWaitTool) Name() string        { return "shell_wait" }
+func (t ShellWaitTool) Name() string { return "shell_wait" }
 func (t ShellWaitTool) Description() string {
 	return "Wait until a pattern appears in the shell output. Useful for waiting for servers to start, build completion, etc."
 }
@@ -285,6 +289,37 @@ func (t CloseShellTool) Call(ctx context.Context, args json.RawMessage) (string,
 	return fmt.Sprintf("shell %s closed", a.ID), nil
 }
 
+// InterruptShellTool sends an interrupt signal to a running shell session.
+type InterruptShellTool struct {
+	SM *ShellManager
+}
+
+func (t InterruptShellTool) Name() string { return "interrupt_shell" }
+func (t InterruptShellTool) Description() string {
+	return "Send an interrupt signal (SIGINT / Ctrl+C equivalent) to a running shell session."
+}
+func (t InterruptShellTool) Schema() json.RawMessage {
+	return json.RawMessage(`{
+		"type": "object",
+		"properties": {
+			"id": {"type": "string", "description": "Shell session ID"}
+		},
+		"required": ["id"]
+	}`)
+}
+func (t InterruptShellTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
+	var a struct {
+		ID string `json:"id"`
+	}
+	if err := json.Unmarshal(args, &a); err != nil {
+		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if err := t.SM.Interrupt(a.ID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("interrupt sent to %s", a.ID), nil
+}
+
 // ListShellsTool lists all shell sessions.
 type ListShellsTool struct {
 	SM *ShellManager
@@ -315,7 +350,11 @@ func (t ListShellsTool) Call(ctx context.Context, args json.RawMessage) (string,
 		} else {
 			label = fmt.Sprintf("%s (%s)", s.ID(), label)
 		}
-		fmt.Fprintf(&sb, "%s  kind=%s  status=%s  bytes=%d\n", label, s.Kind(), status, s.TotalBytes())
+		lost := ""
+		if dropped := s.LostBytes(); dropped > 0 {
+			lost = fmt.Sprintf("  dropped=%d", dropped)
+		}
+		fmt.Fprintf(&sb, "%s  kind=%s  status=%s  bytes=%d%s\n", label, s.Kind(), status, s.TotalBytes(), lost)
 	}
 	return strings.TrimRight(sb.String(), "\n"), nil
 }

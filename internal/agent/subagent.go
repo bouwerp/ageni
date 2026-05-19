@@ -17,6 +17,7 @@ type SubagentStatus string
 
 const (
 	StatusRunning   SubagentStatus = "running"
+	StatusPaused    SubagentStatus = "paused"
 	StatusIdle      SubagentStatus = "idle"
 	StatusDone      SubagentStatus = "done"
 	StatusError     SubagentStatus = "error"
@@ -101,13 +102,16 @@ type Subagent struct {
 	maxRetries      int
 	maxTotalRuntime time.Duration
 
-	mu         sync.Mutex
-	status     SubagentStatus
-	spawnedAt  time.Time
-	transcript []string
-	finalText  string
-	cancel     context.CancelFunc
-	scrubber   func(string) string // optional; redacts secrets from LLM text before storage
+	mu            sync.Mutex
+	status        SubagentStatus
+	spawnedAt     time.Time
+	transcript    []string
+	finalText     string
+	cancel        context.CancelFunc
+	scrubber      func(string) string // optional; redacts secrets from LLM text before storage
+	correlationID string
+	paused        bool
+	pauseCond     *sync.Cond
 }
 
 // SetScrubber installs a function applied to LLM-generated text before it is
@@ -128,7 +132,7 @@ func (s *Subagent) scrub(text string) string {
 	return f(text)
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, caps []string) *Subagent {
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, caps []string, correlationID string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
@@ -141,14 +145,14 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	if task.TimeoutMinutes > 0 {
 		totalRuntime = time.Duration(task.TimeoutMinutes * float64(time.Minute))
 	}
-	return &Subagent{
-		ID:           id,
-		Task:         task,
-		Model:        model,
-		Adapter:      adapter,
-		bus:          bus,
-		tools:        allowed,
-		tracker:      tracker,
+	sub := &Subagent{
+		ID:              id,
+		Task:            task,
+		Model:           model,
+		Adapter:         adapter,
+		bus:             bus,
+		tools:           allowed,
+		tracker:         tracker,
 		maxToolCalls:    budget,
 		hardTurnCap:     budget * 2,
 		skillCatalog:    skillCatalog,
@@ -161,7 +165,15 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		maxTotalRuntime: totalRuntime,
 		status:          StatusRunning,
 		spawnedAt:       time.Now(),
+		correlationID:   correlationID,
 	}
+	sub.pauseCond = sync.NewCond(&sub.mu)
+	return sub
+}
+
+func (s *Subagent) publish(ev Event) {
+	ev.CorrelationID = s.correlationID
+	s.bus.Publish(ev)
 }
 
 // Send injects a user-role message into the sub-agent's loop. The message is
@@ -224,6 +236,66 @@ func (s *Subagent) setStatus(st SubagentStatus) {
 	s.mu.Unlock()
 }
 
+func (s *Subagent) Pause() bool {
+	s.mu.Lock()
+	emit := false
+	switch s.status {
+	case StatusDone, StatusError, StatusCancelled:
+		s.mu.Unlock()
+		return false
+	case StatusPaused:
+		s.mu.Unlock()
+		return true
+	}
+	s.paused = true
+	s.status = StatusPaused
+	emit = true
+	s.mu.Unlock()
+	if emit {
+		s.appendTranscript("paused")
+		s.publish(Event{Kind: EvSubagentPaused, SubagentID: s.ID})
+	}
+	return true
+}
+
+func (s *Subagent) Resume() bool {
+	s.mu.Lock()
+	if !s.paused {
+		s.mu.Unlock()
+		return false
+	}
+	s.paused = false
+	s.status = StatusRunning
+	s.pauseCond.Broadcast()
+	s.mu.Unlock()
+	s.appendTranscript("resumed")
+	s.publish(Event{Kind: EvSubagentResumed, SubagentID: s.ID})
+	return true
+}
+
+func (s *Subagent) waitIfPaused(ctx context.Context) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for s.paused {
+		done := make(chan struct{})
+		go func() {
+			select {
+			case <-ctx.Done():
+				s.mu.Lock()
+				s.pauseCond.Broadcast()
+				s.mu.Unlock()
+			case <-done:
+			}
+		}()
+		s.pauseCond.Wait()
+		close(done)
+		if ctx.Err() != nil {
+			return ctx.Err()
+		}
+	}
+	return nil
+}
+
 // Cancel terminates the subagent.
 func (s *Subagent) Cancel() {
 	s.mu.Lock()
@@ -246,7 +318,7 @@ func (s *Subagent) Run(parent context.Context) {
 		{Role: llm.RoleUser, Text: s.userPrompt()},
 	}
 
-	s.bus.Publish(Event{
+	s.publish(Event{
 		Kind:          EvSubagentSpawn,
 		SubagentID:    s.ID,
 		SubagentTask:  s.Task.Objective,
@@ -257,6 +329,10 @@ func (s *Subagent) Run(parent context.Context) {
 	wrappingUp := false
 
 	for turn := 0; turn < s.hardTurnCap; turn++ {
+		if err := s.waitIfPaused(ctx); err != nil {
+			s.fail(err)
+			return
+		}
 		// Drain inbox messages from the master before this turn.
 		messages = s.drainInbox(messages)
 
@@ -307,7 +383,7 @@ func (s *Subagent) Run(parent context.Context) {
 			s.status = StatusDone
 			s.mu.Unlock()
 			s.appendTranscript("done")
-			s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: cleanText})
+			s.publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: cleanText})
 			return
 		}
 
@@ -316,9 +392,13 @@ func (s *Subagent) Run(parent context.Context) {
 			if ctx.Err() != nil {
 				break
 			}
+			if err := s.waitIfPaused(ctx); err != nil {
+				s.fail(err)
+				return
+			}
 			result := s.tools.Execute(ctx, tc)
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
-			s.bus.Publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})
+			s.publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})
 			messages = append(messages, llm.Message{
 				Role:        llm.RoleTool,
 				ToolResults: []llm.ToolResult{result},
@@ -332,7 +412,7 @@ func (s *Subagent) Run(parent context.Context) {
 		if !wrappingUp && toolCallsUsed >= s.maxToolCalls {
 			wrappingUp = true
 			s.appendTranscript(fmt.Sprintf("budget exhausted (%d/%d tool calls); requesting wrap-up", toolCallsUsed, s.maxToolCalls))
-			s.bus.Publish(Event{
+			s.publish(Event{
 				Kind:       EvSubagentRetry,
 				SubagentID: s.ID,
 				Text:       fmt.Sprintf("budget exhausted (%d tool calls used) — requesting wrap-up", toolCallsUsed),
@@ -352,7 +432,7 @@ func (s *Subagent) Run(parent context.Context) {
 	s.mu.Unlock()
 	err := fmt.Errorf("hard turn cap (%d) reached without a final response", s.hardTurnCap)
 	s.appendTranscript("error: " + err.Error())
-	s.bus.Publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: err})
+	s.publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: err})
 }
 
 func (s *Subagent) fail(err error) {
@@ -366,7 +446,7 @@ func (s *Subagent) fail(err error) {
 		s.status = StatusCancelled
 		s.mu.Unlock()
 		s.appendTranscript("cancelled")
-		s.bus.Publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: ""})
+		s.publish(Event{Kind: EvSubagentDone, SubagentID: s.ID, Text: ""})
 		return
 	}
 	s.mu.Lock()
@@ -378,7 +458,7 @@ func (s *Subagent) fail(err error) {
 	tag := classifyErr(err)
 	wrapped := fmt.Errorf("[%s] %w", tag, err)
 	s.appendTranscript("error(" + tag + "): " + err.Error())
-	s.bus.Publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: wrapped})
+	s.publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: wrapped})
 }
 
 // classifyErr returns a short tag describing the error class for diagnostics.
@@ -386,27 +466,7 @@ func classifyErr(err error) string {
 	if err == nil {
 		return "nil"
 	}
-	if errors.Is(err, context.Canceled) {
-		return "context-cancelled"
-	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return "deadline-exceeded"
-	}
-	msg := strings.ToLower(err.Error())
-	switch {
-	case strings.Contains(msg, "401"), strings.Contains(msg, "unauthorized"):
-		return "auth"
-	case strings.Contains(msg, "404"):
-		return "not-found"
-	case strings.Contains(msg, "429"), strings.Contains(msg, "rate"):
-		return "rate-limit"
-	case strings.Contains(msg, "500"), strings.Contains(msg, "502"),
-		strings.Contains(msg, "503"), strings.Contains(msg, "504"):
-		return "server-error"
-	case strings.Contains(msg, "connection"), strings.Contains(msg, "timeout"), strings.Contains(msg, "eof"):
-		return "network"
-	}
-	return "other"
+	return llm.ErrorClassTag(err)
 }
 
 func errMark(b bool) string {
@@ -449,7 +509,7 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 			idleRetries++
 			msg := fmt.Sprintf("model idle (attempt %d/%d) — retrying", idleRetries, maxIdleRetries)
 			s.appendTranscript(msg)
-			s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: msg})
+			s.publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: msg})
 			if idleRetries >= maxIdleRetries {
 				return "", "", nil, fmt.Errorf("model not responding after %d retries — master should re-spawn this sub-agent", maxIdleRetries)
 			}
@@ -471,7 +531,7 @@ func (s *Subagent) runTurnWithRetry(parent context.Context, req llm.Request) (st
 		// Exponential backoff with light jitter.
 		wait := time.Duration(1<<attempt) * time.Second // 1s, 2s, 4s
 		s.appendTranscript(fmt.Sprintf("retry %d/%d in %s: %v", attempt+1, s.maxRetries, wait, err))
-		s.bus.Publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: err.Error()})
+		s.publish(Event{Kind: EvSubagentRetry, SubagentID: s.ID, Text: err.Error()})
 		select {
 		case <-parent.Done():
 			return "", "", nil, parent.Err()
@@ -486,7 +546,7 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 	// Mirror the master: emit a turn-start event so the TUI can show the
 	// sub-agent as "thinking" while the LLM call is in flight, distinct
 	// from the running-a-tool state.
-	s.bus.Publish(Event{Kind: EvSubagentTurnStart, SubagentID: s.ID})
+	s.publish(Event{Kind: EvSubagentTurnStart, SubagentID: s.ID})
 	stream, err := s.Adapter.Stream(ctx, req)
 	if err != nil {
 		return "", "", nil, err
@@ -501,19 +561,19 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 		switch ev.Type {
 		case llm.StreamEventText:
 			text.WriteString(ev.TextDelta)
-			s.bus.Publish(Event{Kind: EvSubagentText, SubagentID: s.ID, Text: ev.TextDelta})
+			s.publish(Event{Kind: EvSubagentText, SubagentID: s.ID, Text: ev.TextDelta})
 		case llm.StreamEventToolCall:
 			if ev.ToolCall != nil {
 				calls = append(calls, *ev.ToolCall)
 				s.appendTranscript(fmt.Sprintf("tool_call: %s", ev.ToolCall.Name))
-				s.bus.Publish(Event{Kind: EvSubagentToolCall, SubagentID: s.ID, ToolCall: ev.ToolCall})
+				s.publish(Event{Kind: EvSubagentToolCall, SubagentID: s.ID, ToolCall: ev.ToolCall})
 			}
 		case llm.StreamEventError:
 			return text.String(), "", calls, ev.Err
 		case llm.StreamEventDone:
 			if ev.Usage != nil {
 				s.tracker.Add("subagent:"+s.ID, s.Model, *ev.Usage)
-				s.bus.Publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
+				s.publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
 			}
 			reasoningContent = ev.ReasoningContent
 		}
@@ -535,7 +595,7 @@ func (s *Subagent) drainInbox(messages []llm.Message) []llm.Message {
 				Text: "<master_message>" + msg + "</master_message>",
 			})
 			s.appendTranscript("inbox: " + msg)
-			s.bus.Publish(Event{Kind: EvSubagentInbox, SubagentID: s.ID, Text: msg})
+			s.publish(Event{Kind: EvSubagentInbox, SubagentID: s.ID, Text: msg})
 		default:
 			return messages
 		}
@@ -545,28 +605,15 @@ func (s *Subagent) drainInbox(messages []llm.Message) []llm.Message {
 // isTransientErr returns true for errors that are likely to succeed on
 // retry: deadline exceeded, rate limits, 5xx responses, network errors.
 func isTransientErr(err error) bool {
-	if err == nil {
+	switch llm.ClassifyError(err) {
+	case llm.ErrorClassDeadlineExceeded,
+		llm.ErrorClassRateLimit,
+		llm.ErrorClassServer,
+		llm.ErrorClassNetwork:
+		return true
+	default:
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
-		return true
-	}
-	msg := strings.ToLower(err.Error())
-	transientHints := []string{
-		"timeout", "timed out",
-		"connection refused", "connection reset", "broken pipe",
-		"eof", "unexpected eof",
-		"429", "rate limit", "rate-limit",
-		"500", "502", "503", "504",
-		"overloaded", "service unavailable",
-		"temporary failure",
-	}
-	for _, h := range transientHints {
-		if strings.Contains(msg, h) {
-			return true
-		}
-	}
-	return false
 }
 
 func (s *Subagent) systemPrompt() string {
@@ -665,38 +712,37 @@ func (s *Subagent) userPrompt() string {
 	return sb.String()
 }
 
-
 // buildSubagentCapsBlock produces the <model_capabilities> XML block injected
 // into the subagent's system prompt so it knows what tools it can call based
 // on its model's native capabilities.
 func buildSubagentCapsBlock(caps []string) string {
-if len(caps) == 0 {
-return ""
-}
-hasIn := func(c string) bool {
-for _, cap := range caps {
-if cap == c {
-return true
-}
-}
-return false
-}
-var sb strings.Builder
-sb.WriteString("\n\n<model_capabilities>")
-sb.WriteString("\nYour model's capabilities in this session:")
-if hasIn("vision") {
-sb.WriteString("\n- vision: you CAN process images. When the task involves an image file, call view_image with the file path.")
-} else {
-sb.WriteString("\n- vision: NOT available on your model. Do not call view_image. Report to the master if image analysis is needed.")
-}
-if hasIn("reasoning") {
-sb.WriteString("\n- reasoning: your model supports extended chain-of-thought. Use it for complex multi-step problems.")
-}
-for _, c := range caps {
-if c != "vision" && c != "reasoning" {
-sb.WriteString("\n- " + c)
-}
-}
-sb.WriteString("\n</model_capabilities>")
-return sb.String()
+	if len(caps) == 0 {
+		return ""
+	}
+	hasIn := func(c string) bool {
+		for _, cap := range caps {
+			if cap == c {
+				return true
+			}
+		}
+		return false
+	}
+	var sb strings.Builder
+	sb.WriteString("\n\n<model_capabilities>")
+	sb.WriteString("\nYour model's capabilities in this session:")
+	if hasIn("vision") {
+		sb.WriteString("\n- vision: you CAN process images. When the task involves an image file, call view_image with the file path.")
+	} else {
+		sb.WriteString("\n- vision: NOT available on your model. Do not call view_image. Report to the master if image analysis is needed.")
+	}
+	if hasIn("reasoning") {
+		sb.WriteString("\n- reasoning: your model supports extended chain-of-thought. Use it for complex multi-step problems.")
+	}
+	for _, c := range caps {
+		if c != "vision" && c != "reasoning" {
+			sb.WriteString("\n- " + c)
+		}
+	}
+	sb.WriteString("\n</model_capabilities>")
+	return sb.String()
 }

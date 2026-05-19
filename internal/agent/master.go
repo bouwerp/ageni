@@ -55,9 +55,9 @@ type Master struct {
 	skillCatalog    string           // optional: appended to the cached system prompt
 	roleCatalog     string           // optional: appended to the cached system prompt
 	memReg          *memory.Registry // optional: live memory registry injected each turn
-	repoMap         string // optional: rendered repository map appended to the cached prefix
-	agentsMD        string // optional: project AGENTS.md instructions (cross-vendor convention)
-	correctionsPath string // optional: session corrections.jsonl; tail block reads last K
+	repoMap         string           // optional: rendered repository map appended to the cached prefix
+	agentsMD        string           // optional: project AGENTS.md instructions (cross-vendor convention)
+	correctionsPath string           // optional: session corrections.jsonl; tail block reads last K
 
 	// todo gives the master read access to the session todo list so it can
 	// include the current state in the active_context block on every turn.
@@ -84,6 +84,10 @@ type Master struct {
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
 	// CancelCurrent). nil when no call is in flight.
 	turnCancel context.CancelFunc
+	// lastMonitorTurn records the most recent orchestration/monitoring turn,
+	// including periodic self-check turns triggered while workers are running.
+	lastMonitorTurn time.Time
+	paused          bool
 
 	// masterCaps lists capabilities of the master's own model (e.g. "vision",
 	// "reasoning"). Used to inject a runtime capabilities block into the system
@@ -107,6 +111,12 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 		maxTurns: 30,
 	}
 }
+
+const (
+	monitorTickInterval  = 5 * time.Second
+	monitorTurnMinGap    = 15 * time.Second
+	maxPendingEventLines = 12
+)
 
 // SetSkillCatalog injects a "<available_skills>...</available_skills>" block
 // into the master's stable system prompt. Pass an empty string to clear.
@@ -268,7 +278,6 @@ func (m *Master) scrub(s string) string {
 	return f(s)
 }
 
-
 // Tracker returns the token usage tracker. Used by tools that make their own
 // LLM calls (e.g. SoundboardTool) to record usage under the correct role.
 func (m *Master) Tracker() *llm.Tracker {
@@ -282,7 +291,6 @@ func (m *Master) CriticAdapter() (llm.Adapter, string) {
 	defer m.mu.RUnlock()
 	return m.criticAdapter, m.criticModel
 }
-
 
 // iteration of takeTurns. Iteration 0 → lead (if set); iteration 1+
 // → worker.
@@ -306,6 +314,38 @@ func (m *Master) CancelCurrent() {
 	}
 }
 
+func (m *Master) Pause() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.paused {
+		return false
+	}
+	m.paused = true
+	if m.bus != nil {
+		m.bus.Publish(Event{Kind: EvMasterPaused})
+	}
+	return true
+}
+
+func (m *Master) Resume() bool {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if !m.paused {
+		return false
+	}
+	m.paused = false
+	if m.bus != nil {
+		m.bus.Publish(Event{Kind: EvMasterResumed})
+	}
+	return true
+}
+
+func (m *Master) Paused() bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.paused
+}
+
 // Run drives the master loop. inbox carries events the master must act on
 // (user messages, sub-agent updates the master should see). Returns when
 // ctx is cancelled.
@@ -316,10 +356,12 @@ func (m *Master) CancelCurrent() {
 // integration turn instead of paying N×cached-prefix cost for N near-
 // simultaneous completions.
 func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
+	ticker := time.NewTicker(monitorTickInterval)
+	defer ticker.Stop()
 	// On session resume: if the todo list has pending/unfinished items,
 	// immediately call takeTurns so the master picks up where it left off
 	// without waiting for the user to send a message.
-	if m.resumed && m.todo != nil {
+	if m.resumed && m.todo != nil && !m.Paused() {
 		items := m.todo.Items()
 		for _, it := range items {
 			if it.Status == tools.TodoPending || it.Status == tools.TodoInProgress {
@@ -333,6 +375,10 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 		select {
 		case <-ctx.Done():
 			return
+		case <-ticker.C:
+			if m.handleInboxEvent(Event{Kind: EvTick}) && !m.Paused() {
+				m.takeTurns(ctx)
+			}
 		case ev := <-inbox:
 			// EvCancelAll is sent by the TUI when the user presses Esc.
 			// Discard accumulated pending sub-agent events and skip the
@@ -361,7 +407,7 @@ func (m *Master) Run(ctx context.Context, inbox <-chan Event) {
 					break drain
 				}
 			}
-			if runTurn {
+			if runTurn && !m.Paused() {
 				m.takeTurns(ctx)
 			}
 		}
@@ -376,17 +422,35 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 	case ev.Kind == EvUserMessage:
 		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
 		return true
-	case isSubagentEvent(ev.Kind):
+	case ev.Kind == EvTick:
+		if !m.hasRunningSubagents() {
+			return false
+		}
+		if len(m.pendingEvs) == 0 && !m.lastMonitorTurn.IsZero() && time.Since(m.lastMonitorTurn) < monitorTurnMinGap {
+			return false
+		}
+		return true
+	case isMonitoringEvent(ev.Kind):
 		m.pendingEvs = append(m.pendingEvs, ev)
 		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError
 	}
 	return false
 }
 
-func isSubagentEvent(k EventKind) bool {
+func (m *Master) hasRunningSubagents() bool {
+	for _, s := range m.manager.List() {
+		if s.Status() == StatusRunning {
+			return true
+		}
+	}
+	return false
+}
+
+func isMonitoringEvent(k EventKind) bool {
 	switch k {
 	case EvSubagentSpawn, EvSubagentText, EvSubagentToolCall, EvSubagentToolDone,
-		EvSubagentDone, EvSubagentError, EvSubagentUsage:
+		EvSubagentDone, EvSubagentError, EvSubagentUsage, EvSubagentRetry,
+		EvSubagentInbox, EvShellOpened, EvShellExited:
 		return true
 	}
 	return false
@@ -502,10 +566,33 @@ func (m *Master) refreshActiveContext() {
 
 	if len(m.pendingEvs) > 0 {
 		sb.WriteString("\nNew events since your last turn:\n")
-		for _, ev := range m.pendingEvs {
+		evs := m.pendingEvs
+		if len(evs) > maxPendingEventLines {
+			sb.WriteString(fmt.Sprintf("- %d earlier event(s) omitted for brevity\n", len(evs)-maxPendingEventLines))
+			evs = evs[len(evs)-maxPendingEventLines:]
+		}
+		for _, ev := range evs {
 			switch ev.Kind {
 			case EvSubagentSpawn:
 				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
+			case EvSubagentToolCall:
+				if ev.ToolCall != nil {
+					sb.WriteString(fmt.Sprintf("- %s calling tool %s\n", ev.SubagentID, ev.ToolCall.Name))
+				}
+			case EvSubagentToolDone:
+				if ev.ToolResult != nil && ev.ToolResult.IsError {
+					sb.WriteString(fmt.Sprintf("- %s tool error: %s\n", ev.SubagentID, clipText(ev.ToolResult.Content, 240)))
+				} else if ev.ToolResult != nil {
+					sb.WriteString(fmt.Sprintf("- %s tool finished successfully\n", ev.SubagentID))
+				}
+			case EvSubagentRetry:
+				sb.WriteString(fmt.Sprintf("- %s retrying: %s\n", ev.SubagentID, clipText(ev.Text, 180)))
+			case EvSubagentInbox:
+				sb.WriteString(fmt.Sprintf("- %s received a correction/follow-up from the master\n", ev.SubagentID))
+			case EvSubagentUsage:
+				if ev.Usage != nil {
+					sb.WriteString(fmt.Sprintf("- %s usage: in=%d out=%d\n", ev.SubagentID, ev.Usage.InputTokens, ev.Usage.OutputTokens))
+				}
 			case EvSubagentDone:
 				if m.todo != nil {
 					m.todo.AutoRelease(ev.SubagentID)
@@ -527,6 +614,10 @@ func (m *Master) refreshActiveContext() {
 				if m.todo != nil {
 					m.todo.AutoRelease(ev.SubagentID)
 				}
+			case EvShellOpened:
+				sb.WriteString(fmt.Sprintf("- shell %s opened (%s)\n", ev.SubagentID, ev.ShellKind))
+			case EvShellExited:
+				sb.WriteString(fmt.Sprintf("- shell %s exited\n", ev.SubagentID))
 			}
 		}
 		sb.WriteString("React: process outputs above, correct via send_to_subagent, or proceed.\n")
@@ -539,8 +630,14 @@ func (m *Master) refreshActiveContext() {
 
 func (m *Master) takeTurns(parent context.Context) {
 	ctx, cancel := context.WithCancel(parent)
+	turnID := CorrelationIDFromContext(parent)
+	if turnID == "" {
+		turnID = NewCorrelationID("master")
+	}
+	ctx = WithCorrelationID(ctx, turnID)
 	m.mu.Lock()
 	m.turnCancel = cancel
+	m.lastMonitorTurn = time.Now()
 	m.mu.Unlock()
 	defer func() {
 		m.mu.Lock()
@@ -564,10 +661,14 @@ func (m *Master) takeTurns(parent context.Context) {
 	// transientRetries caps retries for transient network/protocol errors.
 	const maxTransientRetries = 3
 	var transientRetries int
+	publish := func(e Event) {
+		e.CorrelationID = turnID
+		m.bus.Publish(e)
+	}
 
 	for turn := 0; turn < m.maxTurns; turn++ {
 		if ctx.Err() != nil {
-			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
+			publish(Event{Kind: EvMasterTurnDone, Text: "[cancelled]"})
 			return
 		}
 		adapter, model := m.adapterForIter(turn)
@@ -587,22 +688,22 @@ func (m *Master) takeTurns(parent context.Context) {
 		// Mark the moment the LLM call goes out so the TUI can light up the
 		// "thinking" indicator regardless of what triggered the turn (user
 		// submit, sub-agent completion, retry).
-		m.bus.Publish(Event{Kind: EvMasterTurnStart})
+		publish(Event{Kind: EvMasterTurnStart})
 		stream, err := adapter.Stream(ctx, req)
 		if err != nil {
 			if isContextTooLong(err) && trimCount < maxTrims && m.trimHistory() {
 				trimCount++
-				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
+				publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
 				continue
 			}
 			// If Stream returns an error directly, it means the fallback chain was exhausted
 			// or a non-fallbackable error occurred.
-			if errors.Is(err, errors.New("fallback chain exhausted")) {
+			if errors.Is(err, llm.ErrFallbackChainExhausted) {
 				err = fmt.Errorf("master adapter: fallback chain exhausted trying to talk to models: %w", err)
 			} else {
 				err = fmt.Errorf("master adapter: primary model failed: %w", err)
 			}
-			m.bus.Publish(Event{Kind: EvError, Err: err})
+			publish(Event{Kind: EvError, Err: err})
 			return
 		}
 		// Wrap with an idle watchdog: if no event arrives within
@@ -626,14 +727,14 @@ func (m *Master) takeTurns(parent context.Context) {
 			switch ev.Type {
 			case llm.StreamEventText:
 				assistantText.WriteString(ev.TextDelta)
-				m.bus.Publish(Event{Kind: EvMasterText, Text: ev.TextDelta})
+				publish(Event{Kind: EvMasterText, Text: ev.TextDelta})
 			case llm.StreamEventThinking:
 				reasoningContent += ev.TextDelta
-				m.bus.Publish(Event{Kind: EvMasterReasoning, Text: ev.TextDelta})
+				publish(Event{Kind: EvMasterReasoning, Text: ev.TextDelta})
 			case llm.StreamEventToolCall:
 				if ev.ToolCall != nil {
 					toolCalls = append(toolCalls, *ev.ToolCall)
-					m.bus.Publish(Event{Kind: EvMasterToolCall, ToolCall: ev.ToolCall})
+					publish(Event{Kind: EvMasterToolCall, ToolCall: ev.ToolCall})
 				}
 			case llm.StreamEventError:
 				streamErr = ev.Err
@@ -646,7 +747,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			case llm.StreamEventDone:
 				if ev.Usage != nil {
 					m.tracker.Add(trackerRole, model, *ev.Usage)
-					m.bus.Publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
+					publish(Event{Kind: EvMasterUsage, Usage: ev.Usage})
 					// Track input tokens for proactive compaction.
 					m.lastInputTokens = ev.Usage.InputTokens + ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens
 				}
@@ -655,7 +756,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				// we haven't already accumulated via StreamEventThinking deltas.
 				if reasoningContent == "" && ev.ReasoningContent != "" {
 					reasoningContent = ev.ReasoningContent
-					m.bus.Publish(Event{Kind: EvMasterReasoning, Text: ev.ReasoningContent})
+					publish(Event{Kind: EvMasterReasoning, Text: ev.ReasoningContent})
 				}
 			}
 		}
@@ -663,7 +764,7 @@ func (m *Master) takeTurns(parent context.Context) {
 		if streamErr != nil {
 			if isContextTooLong(streamErr) && trimCount < maxTrims && m.trimHistory() {
 				trimCount++
-				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
+				publish(Event{Kind: EvFlash, Text: fmt.Sprintf("context window exceeded — trimmed oldest messages (attempt %d/%d)", trimCount, maxTrims)})
 				assistantText.Reset()
 				toolCalls = nil
 				reasoningContent = ""
@@ -671,7 +772,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			}
 			if llm.IsStreamIdle(streamErr) && idleRetries < maxIdleRetries {
 				idleRetries++
-				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("model not responding — retrying (%d/%d)…", idleRetries, maxIdleRetries)})
+				publish(Event{Kind: EvFlash, Text: fmt.Sprintf("model not responding — retrying (%d/%d)…", idleRetries, maxIdleRetries)})
 				assistantText.Reset()
 				toolCalls = nil
 				reasoningContent = ""
@@ -679,13 +780,13 @@ func (m *Master) takeTurns(parent context.Context) {
 			}
 			if llm.IsTransientStreamError(streamErr) && transientRetries < maxTransientRetries {
 				transientRetries++
-				m.bus.Publish(Event{Kind: EvFlash, Text: fmt.Sprintf("stream interrupted — retrying (%d/%d)…", transientRetries, maxTransientRetries)})
+				publish(Event{Kind: EvFlash, Text: fmt.Sprintf("stream interrupted — retrying (%d/%d)…", transientRetries, maxTransientRetries)})
 				assistantText.Reset()
 				toolCalls = nil
 				reasoningContent = ""
 				continue
 			}
-			m.bus.Publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", streamErr)})
+			publish(Event{Kind: EvError, Err: fmt.Errorf("master adapter: streaming error: %w", streamErr)})
 			return
 		}
 
@@ -718,7 +819,7 @@ func (m *Master) takeTurns(parent context.Context) {
 		}
 
 		if len(toolCalls) == 0 {
-			m.bus.Publish(Event{Kind: EvMasterTurnDone, Text: assistantText.String()})
+			publish(Event{Kind: EvMasterTurnDone, Text: assistantText.String()})
 			// Check whether proactive compaction should run before the next
 			// user-initiated turn. We do it here (after the last tool-free
 			// assistant reply) so the compaction itself doesn't stall a
@@ -732,7 +833,7 @@ func (m *Master) takeTurns(parent context.Context) {
 				break
 			}
 			result := m.tools.Execute(ctx, tc)
-			m.bus.Publish(Event{Kind: EvMasterToolDone, ToolCall: &tc, ToolResult: &result})
+			publish(Event{Kind: EvMasterToolDone, ToolCall: &tc, ToolResult: &result})
 			m.messages = append(m.messages, llm.Message{
 				Role:        llm.RoleTool,
 				ToolResults: []llm.ToolResult{result},
@@ -969,24 +1070,9 @@ streamLoop:
 	})
 }
 
-
 // the model's context window.
 func isContextTooLong(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, h := range []string{
-		"context_length_exceeded", "context length exceeded",
-		"maximum context length", "prompt is too long",
-		"too many tokens", "reduce the length",
-		"context window", "tokens exceeds",
-	} {
-		if strings.Contains(msg, h) {
-			return true
-		}
-	}
-	return false
+	return llm.IsContextLimitError(err)
 }
 
 // fmtDuration renders a duration in a compact, human-readable form.
@@ -999,6 +1085,14 @@ func fmtDuration(d time.Duration) string {
 	default:
 		return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
 	}
+}
+
+func clipText(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // MarshalCaller is a placeholder so we can extend turn limits per session.

@@ -178,6 +178,7 @@ func guessAlternative(name string) string {
 // scope what a sub-agent is allowed to call.
 func (r *Registry) Subset(names []string) *Registry {
 	sub := NewRegistry()
+	sub.scrubber = r.scrubber
 	for _, n := range names {
 		if t, ok := r.tools[n]; ok {
 			sub.Register(t)

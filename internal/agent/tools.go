@@ -122,7 +122,7 @@ type CheckTool struct{ M *Manager }
 
 func (CheckTool) Name() string { return "check_subagent" }
 func (CheckTool) Description() string {
-	return "Inspect a sub-agent's current status and recent activity (last ~50 events). Returns status (running/idle/done/error/cancelled) and a compact log."
+	return "Inspect a sub-agent's current status and recent activity (last ~50 events). Returns status (running/paused/idle/done/error/cancelled) and a compact log."
 }
 func (CheckTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)
@@ -200,6 +200,48 @@ func (t KillTool) Call(ctx context.Context, args json.RawMessage) (string, error
 	return fmt.Sprintf("killed sub-agent %s", p.ID), nil
 }
 
+// PauseTool pauses a sub-agent at the next safe boundary.
+type PauseTool struct{ M *Manager }
+
+func (PauseTool) Name() string { return "pause_subagent" }
+func (PauseTool) Description() string {
+	return "Pause a sub-agent at the next safe boundary (between turns or before the next tool execution)."
+}
+func (PauseTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)
+}
+func (t PauseTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct{ ID string }
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if err := t.M.Pause(p.ID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("paused sub-agent %s", p.ID), nil
+}
+
+// ResumeTool resumes a paused sub-agent.
+type ResumeTool struct{ M *Manager }
+
+func (ResumeTool) Name() string { return "resume_subagent" }
+func (ResumeTool) Description() string {
+	return "Resume a paused sub-agent."
+}
+func (ResumeTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)
+}
+func (t ResumeTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
+	var p struct{ ID string }
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if err := t.M.Resume(p.ID); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("resumed sub-agent %s", p.ID), nil
+}
+
 // criticSystemPrompt is the fixed system prompt for the soundboard critic.
 // The critic has NO tools — it only reasons about the plan and returns critique.
 const criticSystemPrompt = `You are a senior adversarial reviewer. Your job is to stress-test the plan you receive before it is executed.
@@ -220,10 +262,10 @@ type SoundboardTool struct{ M *Master }
 
 func (SoundboardTool) Name() string { return "soundboard" }
 func (SoundboardTool) Description() string {
-return `Submit your decomposed plan to an independent critic LLM for adversarial review before spawning workers. Use this for plans involving 3+ workers, cross-cutting changes, risky/irreversible operations, or when you are uncertain about your approach. Skip it for simple single-worker tasks or straightforward lookups. The critic audits delegation correctness, surfaces risks, flags missing edge cases, and suggests alternatives. Returns a concise critique; incorporate any significant concerns before proceeding.`
+	return `Submit your decomposed plan to an independent critic LLM for adversarial review before spawning workers. Use this for plans involving 3+ workers, cross-cutting changes, risky/irreversible operations, or when you are uncertain about your approach. Skip it for simple single-worker tasks or straightforward lookups. The critic audits delegation correctness, surfaces risks, flags missing edge cases, and suggests alternatives. Returns a concise critique; incorporate any significant concerns before proceeding.`
 }
 func (SoundboardTool) Schema() json.RawMessage {
-return json.RawMessage(`{
+	return json.RawMessage(`{
 "type":"object",
 "properties":{
   "plan":{"type":"string","description":"1-5 sentences describing what you are about to do and why. Be specific about files, tools, and expected outcomes."}
@@ -232,65 +274,65 @@ return json.RawMessage(`{
 }`)
 }
 func (t SoundboardTool) Call(ctx context.Context, args json.RawMessage) (string, error) {
-var p struct{ Plan string }
-if err := json.Unmarshal(args, &p); err != nil {
-return "", err
-}
-if strings.TrimSpace(p.Plan) == "" {
-return "", errors.New("soundboard requires a non-empty plan")
-}
+	var p struct{ Plan string }
+	if err := json.Unmarshal(args, &p); err != nil {
+		return "", err
+	}
+	if strings.TrimSpace(p.Plan) == "" {
+		return "", errors.New("soundboard requires a non-empty plan")
+	}
 
-adapter, model := t.M.CriticAdapter()
-if adapter == nil {
-	return "(soundboard: no dedicated critic configured — skipping review)", nil
-}
+	adapter, model := t.M.CriticAdapter()
+	if adapter == nil {
+		return "(soundboard: no dedicated critic configured — skipping review)", nil
+	}
 
-// Notify the bus so the TUI can show "critic reviewing…" in the sidebar.
-t.M.bus.Publish(Event{Kind: EvFlash, Text: "critic reviewing plan…"})
+	// Notify the bus so the TUI can show "critic reviewing…" in the sidebar.
+	t.M.bus.Publish(Event{Kind: EvFlash, Text: "critic reviewing plan…"})
 
-req := llm.Request{
-Model:  model,
-System: criticSystemPrompt,
-Messages: []llm.Message{
-{Role: llm.RoleUser, Text: "Plan to review:\n\n" + p.Plan},
-},
-}
+	req := llm.Request{
+		Model:  model,
+		System: criticSystemPrompt,
+		Messages: []llm.Message{
+			{Role: llm.RoleUser, Text: "Plan to review:\n\n" + p.Plan},
+		},
+	}
 
-stream, err := adapter.Stream(ctx, req)
-if err != nil {
-return "", fmt.Errorf("soundboard: critic call failed: %w", err)
-}
+	stream, err := adapter.Stream(ctx, req)
+	if err != nil {
+		return "", fmt.Errorf("soundboard: critic call failed: %w", err)
+	}
 
-var sb strings.Builder
-var usage llm.Usage
-for ev := range stream {
-switch ev.Type {
-case llm.StreamEventText:
-sb.WriteString(ev.TextDelta)
-case llm.StreamEventDone:
-if ev.Usage != nil {
-usage = *ev.Usage
-}
-case llm.StreamEventError:
-return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
-}
-}
+	var sb strings.Builder
+	var usage llm.Usage
+	for ev := range stream {
+		switch ev.Type {
+		case llm.StreamEventText:
+			sb.WriteString(ev.TextDelta)
+		case llm.StreamEventDone:
+			if ev.Usage != nil {
+				usage = *ev.Usage
+			}
+		case llm.StreamEventError:
+			return "", fmt.Errorf("soundboard: critic streaming error: %w", ev.Err)
+		}
+	}
 
-if usage.InputTokens+usage.OutputTokens > 0 {
-if tr := t.M.Tracker(); tr != nil {
-tr.Add("critic", model, usage)
-}
-}
+	if usage.InputTokens+usage.OutputTokens > 0 {
+		if tr := t.M.Tracker(); tr != nil {
+			tr.Add("critic", model, usage)
+		}
+	}
 
-result := strings.TrimSpace(sb.String())
-if result == "" {
-result = "(critic returned no feedback)"
-}
-// Cap critique at 1200 chars to avoid ballooning the master context window.
-// The critic should be concise; anything longer is usually padding.
-const maxCritiqueLen = 1200
-if len(result) > maxCritiqueLen {
-result = result[:maxCritiqueLen] + "\n…[critique truncated]"
-}
-return fmt.Sprintf("[Critic review]\n\n%s", result), nil
+	result := strings.TrimSpace(sb.String())
+	if result == "" {
+		result = "(critic returned no feedback)"
+	}
+	// Cap critique at 1200 chars to avoid ballooning the master context window.
+	// The critic should be concise; anything longer is usually padding.
+	const maxCritiqueLen = 1200
+	if len(result) > maxCritiqueLen {
+		result = result[:maxCritiqueLen] + "\n…[critique truncated]"
+	}
+	return fmt.Sprintf("[Critic review]\n\n%s", result), nil
 }

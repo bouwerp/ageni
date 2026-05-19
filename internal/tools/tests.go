@@ -17,7 +17,7 @@ type RunTests struct{}
 
 func (RunTests) Name() string { return "run_tests" }
 func (RunTests) Description() string {
-	return `Run tests. Defaults to auto-detect by repo files (go.mod → go test, package.json → npm test, pyproject.toml → pytest, Cargo.toml → cargo test). Pass 'command' to override. Go output is parsed structurally; others return trimmed stdout/stderr.`
+	return `Run tests. Defaults to auto-detect by repo files (go.mod → go test, package.json → npm/pnpm/yarn/bun test, pyproject.toml → pytest, Cargo.toml → cargo test, pom.xml/gradlew → Java test runners). Pass 'command' to override. Go output is parsed structurally; others return trimmed stdout/stderr.`
 }
 func (RunTests) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -58,11 +58,24 @@ func (RunTests) Call(ctx context.Context, args json.RawMessage) (string, error) 
 	case fileExists("go.mod"):
 		return runGoTests(rctx, p.Path), nil
 	case fileExists("package.json"):
-		return runShellTest(rctx, "npm test --silent"), nil
+		switch {
+		case fileExists("pnpm-lock.yaml"):
+			return runShellTest(rctx, "pnpm test --silent"), nil
+		case fileExists("yarn.lock"):
+			return runShellTest(rctx, "yarn test --silent"), nil
+		case fileExists("bun.lockb"), fileExists("bun.lock"):
+			return runShellTest(rctx, "bun test"), nil
+		default:
+			return runShellTest(rctx, "npm test --silent"), nil
+		}
 	case fileExists("pyproject.toml"), fileExists("setup.py"):
 		return runShellTest(rctx, "pytest -q"), nil
 	case fileExists("Cargo.toml"):
 		return runShellTest(rctx, "cargo test --quiet"), nil
+	case fileExists("pom.xml"):
+		return runShellTest(rctx, "mvn -q test"), nil
+	case fileExists("gradlew"):
+		return runShellTest(rctx, "./gradlew -q test"), nil
 	default:
 		return "", errors.New("could not auto-detect test runner; pass 'command' explicitly")
 	}

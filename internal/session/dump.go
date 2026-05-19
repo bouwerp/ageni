@@ -115,6 +115,12 @@ func FormatLog(s *Session, w io.Writer) error {
 			} else {
 				fmt.Fprintf(bw, "\n[%s] %s done (no final text)\n", ts, e.SubagentID)
 			}
+		case "subagent_paused":
+			flush()
+			fmt.Fprintf(bw, "[%s] %s paused\n", ts, e.SubagentID)
+		case "subagent_resumed":
+			flush()
+			fmt.Fprintf(bw, "[%s] %s resumed\n", ts, e.SubagentID)
 		case "subagent_error":
 			flush()
 			fmt.Fprintf(bw, "\n[%s] %s ERROR: %s\n", ts, e.SubagentID, e.Err)
@@ -126,6 +132,39 @@ func FormatLog(s *Session, w io.Writer) error {
 			fmt.Fprintf(bw, "[%s] master → %s: %s\n", ts, e.SubagentID, oneLine(e.Text))
 		case "master_turn_done":
 			flush()
+		case "master_paused":
+			flush()
+			fmt.Fprintf(bw, "\n[%s] master paused\n", ts)
+		case "master_resumed":
+			flush()
+			fmt.Fprintf(bw, "\n[%s] master resumed\n", ts)
+		case "shell_opened":
+			flush()
+			label := e.SubagentID
+			if e.Text != "" {
+				label += " " + e.Text
+			}
+			kind := e.ShellKind
+			if kind == "" {
+				kind = "task"
+			}
+			fmt.Fprintf(bw, "\n[%s] shell %s opened (%s)\n", ts, label, kind)
+		case "shell_output":
+			speaker := "shell:" + e.SubagentID
+			if accumSpeaker != speaker {
+				flush()
+				accumSpeaker = speaker
+			}
+			accum.WriteString(e.Text)
+		case "shell_output_loss":
+			flush()
+			fmt.Fprintf(bw, "[%s] shell %s warning: %s\n", ts, e.SubagentID, oneLine(e.Text))
+		case "shell_exited":
+			flush()
+			fmt.Fprintf(bw, "\n[%s] shell %s exited\n", ts, e.SubagentID)
+		case "shell_closed":
+			flush()
+			fmt.Fprintf(bw, "\n[%s] shell %s closed\n", ts, e.SubagentID)
 		case "error":
 			flush()
 			fmt.Fprintf(bw, "\n[%s] ERROR: %s\n", ts, e.Err)
@@ -152,6 +191,8 @@ type logEntry struct {
 	ToolArgs      string `json:"tool_args,omitempty"`
 	ToolResult    string `json:"tool_result,omitempty"`
 	ToolError     bool   `json:"tool_error,omitempty"`
+	ShellKind     string `json:"shell_kind,omitempty"`
+	Bytes         int64  `json:"bytes,omitempty"`
 	SubagentTask  string `json:"subagent_task,omitempty"`
 	SubagentModel string `json:"subagent_model,omitempty"`
 	Err           string `json:"err,omitempty"`

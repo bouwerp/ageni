@@ -24,3 +24,11 @@ func shellKillGroup(proc *os.Process) {
 		proc.Kill()
 	}
 }
+
+func shellInterruptGroup(proc *os.Process) error {
+	pgid, err := syscall.Getpgid(proc.Pid)
+	if err == nil && pgid > 0 {
+		return syscall.Kill(-pgid, syscall.SIGINT)
+	}
+	return proc.Signal(syscall.SIGINT)
+}

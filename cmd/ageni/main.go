@@ -278,15 +278,17 @@ func run() error {
 		}
 	}
 
-	registerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
+	registerWorkerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
 		r.Register(secrets.NewGuardedReadFile())
 		r.Register(tools.WriteFile{Tracker: tr})
 		r.Register(tools.EditFile{Tracker: tr})
 		r.Register(tools.MultiEdit{Tracker: tr})
+		r.Register(tools.TransactionalEdit{Tracker: tr})
 		r.Register(tools.ApplyDiff{Tracker: tr})
 		r.Register(tools.ListDir{})
 		r.Register(tools.Glob{})
 		r.Register(secrets.NewGuardedGrep())
+		r.Register(tools.SearchSymbols{})
 		r.Register(tools.MakeDir{Tracker: tr})
 		r.Register(tools.MoveFile{Tracker: tr})
 		r.Register(tools.DeleteFile{Tracker: tr})
@@ -323,6 +325,20 @@ func run() error {
 			r.SetScrubber(secretStore.Redactor().Scrub)
 		}
 	}
+	registerMasterBase := func(r *tools.Registry, todo *tools.TodoWrite) {
+		r.Register(todo)
+		if skillReg != nil {
+			r.Register(skills.ReadSkill{Registry: skillReg})
+		}
+		if memReg != nil {
+			r.Register(memory.RememberTool{Reg: memReg})
+			r.Register(memory.RecallTool{Reg: memReg})
+			r.Register(memory.ForgetTool{Reg: memReg})
+		}
+		if secretStore != nil {
+			r.SetScrubber(secretStore.Redactor().Scrub)
+		}
+	}
 
 	// Open a session — either resume an existing one (--session <id>) or
 	// start fresh. Per-instance state lives under ~/.ageni/sessions/<id>/
@@ -346,7 +362,7 @@ func run() error {
 	changes := tools.NewChangeTracker(sess.Path("changes.jsonl"), sess.Path("snapshots"))
 
 	registry := tools.NewRegistry()
-	registerBase(registry, todo, changes)
+	registerWorkerBase(registry, todo, changes)
 
 	// view_image is subagent-only: the master must always delegate image
 	// analysis to a worker so vision calls don't block the orchestration loop.
@@ -402,23 +418,27 @@ func run() error {
 	registry.Register(agent.ShellReadTool{SM: shellMgr})
 	registry.Register(agent.ShellWaitTool{SM: shellMgr})
 	registry.Register(agent.ShellSendInputTool{SM: shellMgr})
+	registry.Register(agent.InterruptShellTool{SM: shellMgr})
 	registry.Register(agent.CloseShellTool{SM: shellMgr})
 	registry.Register(agent.ListShellsTool{SM: shellMgr})
 
 	masterReg := tools.NewRegistry()
-	registerBase(masterReg, todo, changes)
+	registerMasterBase(masterReg, todo)
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
 	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
+	masterReg.Register(agent.PauseTool{M: manager})
+	masterReg.Register(agent.ResumeTool{M: manager})
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
 	masterReg.Register(agent.OpenShellTool{SM: shellMgr})
 	masterReg.Register(agent.ShellExecTool{SM: shellMgr})
 	masterReg.Register(agent.ShellReadTool{SM: shellMgr})
 	masterReg.Register(agent.ShellWaitTool{SM: shellMgr})
 	masterReg.Register(agent.ShellSendInputTool{SM: shellMgr})
+	masterReg.Register(agent.InterruptShellTool{SM: shellMgr})
 	masterReg.Register(agent.CloseShellTool{SM: shellMgr})
 	masterReg.Register(agent.ListShellsTool{SM: shellMgr})
 
@@ -529,13 +549,23 @@ func run() error {
 			fmt.Printf("Loaded %d AGENTS.md file(s) from %s\n", len(res.Paths), root)
 		}
 	}
-	masterIn := make(chan agent.Event, 16)
+	masterIn := make(chan agent.Event, 256)
 
 	// Forward sub-agent events from the bus into the master inbox so it can react.
 	subFwd := bus.Subscribe(128)
 	go func() {
 		for ev := range subFwd {
-			if ev.Kind == agent.EvSubagentDone || ev.Kind == agent.EvSubagentError {
+			switch ev.Kind {
+			case agent.EvSubagentSpawn,
+				agent.EvSubagentToolCall,
+				agent.EvSubagentToolDone,
+				agent.EvSubagentRetry,
+				agent.EvSubagentInbox,
+				agent.EvSubagentUsage,
+				agent.EvSubagentDone,
+				agent.EvSubagentError,
+				agent.EvShellOpened,
+				agent.EvShellExited:
 				select {
 				case masterIn <- ev:
 				default:
@@ -549,7 +579,19 @@ func run() error {
 	// full history. Errors are non-fatal — we'd rather start with an empty
 	// buffer than refuse to launch.
 	var resumeHistory []llm.Message
+	var shellSnapshots []session.ShellSnapshot
+	var workerSnapshots []session.WorkerSnapshot
+	var workerMaxN int
 	if resumed {
+		if shells, shellMaxN, shellErr := session.LoadShellSnapshots(sess); shellErr == nil {
+			shellSnapshots = shells
+			shellMgr.SetNextShellID(shellMaxN)
+		}
+		if workers, maxWorkerN, workerErr := session.LoadWorkerSnapshots(sess); workerErr == nil {
+			workerSnapshots = workers
+			workerMaxN = maxWorkerN
+			manager.SetNextSubagentID(maxWorkerN)
+		}
 		hist, herr := session.LoadHistory(sess)
 		if herr != nil {
 			fmt.Fprintf(os.Stderr, "ageni: replay log: %v (continuing without history)\n", herr)
@@ -559,9 +601,17 @@ func run() error {
 			// remembers, then append a system-reminder so the master
 			// doesn't try to check / send-to / kill stale workers.
 			priorIDs, maxN := session.PriorSubagentIDs(hist)
-			manager.SetNextSubagentID(maxN)
+			if maxN > workerMaxN {
+				manager.SetNextSubagentID(maxN)
+			}
 			if reminder := session.ResumeReminder(priorIDs, maxN+1); reminder != "" {
 				hist = append(hist, llm.Message{Role: llm.RoleUser, Text: reminder})
+			}
+			if shellIDs, maxShellN := session.PriorShellIDs(shellSnapshots); len(shellIDs) > 0 {
+				if reminder := session.ResumeShellReminder(shellIDs, maxShellN+1); reminder != "" {
+					hist = append(hist, llm.Message{Role: llm.RoleUser, Text: reminder})
+				}
+				fmt.Printf("Restored %d prior shell transcript(s): %s\n", len(shellIDs), strings.Join(shellIDs, ", "))
 			}
 			resumeHistory = hist
 			master.LoadHistory(hist)
@@ -580,8 +630,7 @@ func run() error {
 		return fmt.Errorf("session log: %w", err)
 	}
 	defer logger.Close()
-	logSub := bus.Subscribe(256)
-	go logger.Run(ctx, logSub)
+	bus.AddSink(logger)
 
 	// Hot-reload callback: re-reads ~/.ageni/.env, rebuilds adapters, swaps
 	// them into master + manager. Triggered by the in-TUI settings page.
@@ -624,12 +673,18 @@ func run() error {
 	}
 
 	// TUI
-	app := tui.New(ctx, bus, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
+	app := tui.New(ctx, bus, master, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
 	if secretStore != nil {
 		app.SetScrubber(secretStore.Redactor().Scrub)
 	}
 	if len(resumeHistory) > 0 {
 		app.LoadHistory(resumeHistory)
+	}
+	if len(shellSnapshots) > 0 {
+		app.LoadShellHistory(shellSnapshots)
+	}
+	if len(workerSnapshots) > 0 {
+		app.LoadWorkerHistory(workerSnapshots)
 	}
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
 

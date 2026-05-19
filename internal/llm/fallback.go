@@ -8,6 +8,8 @@ import (
 	"strings"
 )
 
+var ErrFallbackChainExhausted = errors.New("fallback chain exhausted")
+
 // FallbackEntry pairs an adapter with the model it should be invoked
 // against. Different fallbacks typically use different model names
 // (anthropic uses "claude-…", groq uses "llama-…"), so the chain
@@ -27,8 +29,8 @@ import (
 type FallbackEntry struct {
 	Adapter          Adapter
 	Model            string
-	Label            string    // "<provider>/<model>" — for diagnostics
-	FallbackModels   []string  // tried in order before advancing to next entry
+	Label            string          // "<provider>/<model>" — for diagnostics
+	FallbackModels   []string        // tried in order before advancing to next entry
 	LiveModelFetcher func() []string // called at most once per run
 	// ContextWindow is the model's maximum input token count. When > 0 and the
 	// estimated request tokens exceed it, this entry is skipped before sending.
@@ -176,7 +178,7 @@ nextEntry:
 			return replay([]StreamEvent{ev}, ch), nil
 		}
 	}
-	return nil, errors.New("fallback chain exhausted")
+	return nil, ErrFallbackChainExhausted
 }
 
 // nextModel returns any additional model IDs to append to the rotation
@@ -278,22 +280,7 @@ func replay(peeked []StreamEvent, src <-chan StreamEvent) <-chan StreamEvent {
 // only after all FallbackModels for that entry are exhausted do they
 // advance to the next FallbackEntry.
 func isModelUnsupported(err error) bool {
-	if err == nil {
-		return false
-	}
-	msg := strings.ToLower(err.Error())
-	for _, h := range []string{
-		"model not supported", "model_not_supported",
-		"model not found", "modelnotfound",
-		"modelerror",
-		"not supported",
-		"404", // provider returns 404 when the model ID doesn't exist
-	} {
-		if strings.Contains(msg, h) {
-			return true
-		}
-	}
-	return false
+	return IsModelUnsupportedError(err)
 }
 
 // isFallbackable returns true when an error warrants trying the next
@@ -315,33 +302,11 @@ func isFallbackable(err error) bool {
 	if err == nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) {
+	if IsRetryableError(err) {
 		return true
 	}
 	msg := strings.ToLower(err.Error())
-	for _, h := range []string{
-		"429", "rate limit", "rate-limit",
-		"402", "payment required", "insufficient credits", "can only afford",
-		"413", "request too large", "request entity too large",
-		"400", "bad request", "bad_request",
-		"401", "unauthorized", "authentication failed", "invalid api key",
-		"context_length_exceeded", "context length exceeded",
-		"maximum context length", "prompt is too long",
-		"500", "502", "503", "504",
-		"overloaded", "service unavailable", "temporarily unavailable",
-		"connection refused", "connection reset", "broken pipe",
-		"eof", "unexpected eof",
-		"timeout", "timed out",
-		"model not supported", "model_not_supported", "modelnotfound", "model not found",
-		"not supported", "modelerror",
-		"404", // model ID not found on provider
-		"failed to call a function",
-	} {
-		if strings.Contains(msg, h) {
-			return true
-		}
-	}
-	return false
+	return strings.Contains(msg, "failed to call a function")
 }
 
 // extractAffordableTokens parses the token budget from an OpenRouter 402

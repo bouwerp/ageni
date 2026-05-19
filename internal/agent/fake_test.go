@@ -59,7 +59,7 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 		AllowedTools:    []string{"list_dir"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil)
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -101,7 +101,7 @@ func TestSubagentRespectsBudget(t *testing.T) {
 		OutputFormat:    "<result/>",
 		BudgetToolCalls: 3,
 	}
-	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", "", nil)
+	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", "", nil, "test-corr")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	sub.Run(ctx)
@@ -179,5 +179,63 @@ func TestMasterCallsToolThenAnswers(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+func TestSubagentPauseResume(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	sub := NewSubagent("s1", SubagentTask{Objective: "x", OutputFormat: "y"}, &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub.setStatus(StatusRunning)
+
+	subEvents := bus.Subscribe(8)
+	if !sub.Pause() {
+		t.Fatal("Pause() = false, want true")
+	}
+	if got := sub.Status(); got != StatusPaused {
+		t.Fatalf("status after pause = %s, want %s", got, StatusPaused)
+	}
+	if !sub.Resume() {
+		t.Fatal("Resume() = false, want true")
+	}
+	if got := sub.Status(); got != StatusRunning {
+		t.Fatalf("status after resume = %s, want %s", got, StatusRunning)
+	}
+	seen := map[EventKind]bool{}
+	for i := 0; i < 2; i++ {
+		seen[(<-subEvents).Kind] = true
+	}
+	if !seen[EvSubagentPaused] || !seen[EvSubagentResumed] {
+		t.Fatalf("pause/resume events missing: %+v", seen)
+	}
+}
+
+func TestMasterPauseResume(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, func(string, []string) (llm.Adapter, string) { return nil, "" }, 1)
+	master := NewMaster(nil, "m", reg, bus, tracker, mgr)
+
+	sub := bus.Subscribe(8)
+	if !master.Pause() {
+		t.Fatal("Pause() = false, want true")
+	}
+	if !master.Paused() {
+		t.Fatal("master should be paused")
+	}
+	if !master.Resume() {
+		t.Fatal("Resume() = false, want true")
+	}
+	if master.Paused() {
+		t.Fatal("master should not be paused")
+	}
+	seen := map[EventKind]bool{}
+	for i := 0; i < 2; i++ {
+		seen[(<-sub).Kind] = true
+	}
+	if !seen[EvMasterPaused] || !seen[EvMasterResumed] {
+		t.Fatalf("pause/resume events missing: %+v", seen)
 	}
 }

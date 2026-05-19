@@ -399,7 +399,7 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`: tests with 
 
 ## Scope
 
-### v1 (current — v0.37.7)
+### v1 (current — v0.38.35)
 
 - Master/sub-agent loop with EventBus
 - Anthropic + OpenAI-compatible adapters with streaming + tool use
@@ -446,3 +446,40 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 - **`ageni exec "<prompt>"` headless mode + GitHub Action** that wraps it. Structured JSON output for CI / PR-bot use.
 - **Reverse MCP** — `ageni mcp-server` so other agents can call into ageni.
 - **Context condenser** — explicit memory compression strategy when the master fills, beyond Anthropic's auto-compaction.
+
+### Follow-up TODOs from technical + functional review
+
+#### Runtime architecture / orchestration
+
+- [ ] Enforce hard master-vs-worker tool boundaries at the registry/tool layer instead of relying on prompt instructions alone.
+- [ ] Make live monitoring real: forward mid-flight worker events to the master, add periodic tick/self-check events, and support interruptible supervision.
+- [ ] Add durable, append-only event journaling with correlation IDs so replay/debugging does not depend on lossy bus subscribers.
+- [ ] Replace string-matched error recovery with typed/provider-aware error classes and clearer retry / escalation policy.
+- [ ] Add substantially more race/integration coverage around the master loop, resume flow, shells, logging, and safety boundaries.
+
+#### Safety / permissions
+
+- [ ] Add approval modes for risky/destructive operations instead of v1 auto-approval.
+- [ ] Implement sandbox tiers (`read-only` / `workspace-write` / `danger-full-access`) with explicit writable roots and network policy.
+- [ ] Add risky-command detection and stricter permission scopes for bash, file deletion, and other high-blast-radius actions.
+- [ ] Default sub-agents to narrower capabilities/allowed-tools by role instead of broad full-access unless explicitly widened.
+- [ ] Make session/event logs private-by-default and scrub tool args/results before persistence.
+
+#### Durability / long-running work
+
+- [ ] Make session continuity stronger than chat replay: persist shell output/state, support resumable jobs, and allow worker/shell reattachment after restart.
+- [ ] Add pause/interrupt primitives for long model/tool turns instead of only coarse stop/kill flows.
+- [ ] Persist shell logs for long-running services/tasks and surface buffer-wrap / output-loss warnings.
+
+#### Code intelligence / editing ergonomics
+
+- [ ] Add semantic code intelligence (LSP / AST-backed symbol search, find references, rename, move, etc.) instead of relying mostly on text search and string replacement.
+- [ ] Add transactional multi-file edit support so coordinated refactors can validate first and apply atomically.
+- [ ] Improve repo mapping/navigation beyond the current simple optional ctags-based map and ranking.
+- [ ] Expand post-edit validation beyond Go/Python and add stronger ecosystem-aware verification for TS/JS, Rust, Java, etc.
+
+#### UX / control surface
+
+- [ ] Add staged diff review with approve/reject checkpoints before applying high-impact edits.
+- [ ] Add pause/resume/inspect controls for the master and workers mid-flight, not just stop/kill.
+- [ ] Improve worker visibility in the TUI with richer status, progress, and transcript inspection during long runs.

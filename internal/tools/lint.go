@@ -29,6 +29,14 @@ func lintAfterEdit(absPath string) string {
 		return goLint(absPath)
 	case ".py":
 		return pyLint(absPath)
+	case ".ts", ".tsx":
+		return tsLint(absPath)
+	case ".js", ".jsx", ".mjs", ".cjs":
+		return jsLint(absPath)
+	case ".rs":
+		return rustLint(absPath)
+	case ".java":
+		return javaLint(absPath)
 	}
 	return ""
 }
@@ -77,6 +85,136 @@ func pyLint(path string) string {
 		out = out[:4000] + "\n…(truncated)"
 	}
 	return "[lint] ruff:\n" + out
+}
+
+func tsLint(path string) string {
+	if out := biomeLint(path); out != "" {
+		return out
+	}
+	if !fileExists("tsconfig.json") && !fileExists("tsconfig.base.json") {
+		return ""
+	}
+	if bin, args := resolveLocalOrGlobal("tsc"); bin != "" {
+		out, err := runLinter(bin, append(args, "--noEmit", "--pretty", "false"), 20*time.Second)
+		if err != nil {
+			return ""
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return "[lint] tsc: ok"
+		}
+		if len(out) > 4000 {
+			out = out[:4000] + "\n…(truncated)"
+		}
+		return "[lint] tsc:\n" + out
+	}
+	return ""
+}
+
+func jsLint(path string) string {
+	if out := biomeLint(path); out != "" {
+		return out
+	}
+	if bin, args := resolveLocalOrGlobal("eslint"); bin != "" {
+		out, err := runLinter(bin, append(args, "--format", "unix", path), 12*time.Second)
+		if err != nil {
+			return ""
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return "[lint] eslint: ok"
+		}
+		if len(out) > 4000 {
+			out = out[:4000] + "\n…(truncated)"
+		}
+		return "[lint] eslint:\n" + out
+	}
+	return ""
+}
+
+func biomeLint(path string) string {
+	if bin, args := resolveLocalOrGlobal("biome"); bin != "" {
+		out, err := runLinter(bin, append(args, "check", "--formatter-enabled=false", path), 12*time.Second)
+		if err != nil {
+			return ""
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return "[lint] biome: ok"
+		}
+		if len(out) > 4000 {
+			out = out[:4000] + "\n…(truncated)"
+		}
+		return "[lint] biome:\n" + out
+	}
+	return ""
+}
+
+func rustLint(path string) string {
+	if !fileExists("Cargo.toml") {
+		return ""
+	}
+	if _, err := exec.LookPath("cargo"); err != nil {
+		return ""
+	}
+	out, err := runLinter("cargo", []string{"check", "--quiet"}, 30*time.Second)
+	if err != nil {
+		return ""
+	}
+	out = strings.TrimSpace(out)
+	if out == "" {
+		return "[lint] cargo check: ok"
+	}
+	if len(out) > 4000 {
+		out = out[:4000] + "\n…(truncated)"
+	}
+	return "[lint] cargo check:\n" + out
+}
+
+func javaLint(path string) string {
+	switch {
+	case fileExists("pom.xml"):
+		if _, err := exec.LookPath("mvn"); err != nil {
+			return ""
+		}
+		out, err := runLinter("mvn", []string{"-q", "-DskipTests", "compile"}, 30*time.Second)
+		if err != nil {
+			return ""
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return "[lint] mvn compile: ok"
+		}
+		if len(out) > 4000 {
+			out = out[:4000] + "\n…(truncated)"
+		}
+		return "[lint] mvn compile:\n" + out
+	case fileExists("gradlew"):
+		out, err := runLinter("./gradlew", []string{"-q", "classes"}, 30*time.Second)
+		if err != nil {
+			return ""
+		}
+		out = strings.TrimSpace(out)
+		if out == "" {
+			return "[lint] gradle classes: ok"
+		}
+		if len(out) > 4000 {
+			out = out[:4000] + "\n…(truncated)"
+		}
+		return "[lint] gradle classes:\n" + out
+	}
+	return ""
+}
+
+func resolveLocalOrGlobal(name string) (string, []string) {
+	local := filepath.Join("node_modules", ".bin", name)
+	if _, err := exec.LookPath(local); err == nil {
+		return local, nil
+	}
+	if global, err := exec.LookPath(name); err == nil {
+		return global, nil
+	}
+	return "", nil
 }
 
 // runLinter executes a linter with a hard timeout, returning combined

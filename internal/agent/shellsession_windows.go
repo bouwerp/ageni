@@ -14,3 +14,10 @@ func shellSetPgid(cmd *exec.Cmd) {}
 func shellKillGroup(proc *os.Process) {
 	proc.Kill()
 }
+
+func shellInterruptGroup(proc *os.Process) error {
+	if err := proc.Signal(os.Interrupt); err == nil {
+		return nil
+	}
+	return proc.Kill()
+}

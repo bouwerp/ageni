@@ -38,6 +38,14 @@ type Symbol struct {
 	Line int
 }
 
+type SymbolMatch struct {
+	Path string
+	Lang string
+	Name string
+	Kind string
+	Line int
+}
+
 // FileEntry is one file in the map with its extracted symbols.
 type FileEntry struct {
 	Path     string // relative to repo root
@@ -101,6 +109,81 @@ func Build(ctx context.Context, root string, opts Options) (*RepoMap, error) {
 		Rendered:    rendered,
 		GeneratedAt: time.Now(),
 	}, nil
+}
+
+// SearchSymbols returns ctags-backed symbol matches ranked by exact/prefix/substring
+// match quality and then by file path. Returns nil, nil when ctags is unavailable.
+func SearchSymbols(ctx context.Context, root, query string, limit int) ([]SymbolMatch, error) {
+	query = strings.TrimSpace(query)
+	if query == "" {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	bin, err := exec.LookPath("ctags")
+	if err != nil {
+		return nil, nil
+	}
+	files, err := runCtags(ctx, bin, root)
+	if err != nil {
+		return nil, fmt.Errorf("ctags: %w", err)
+	}
+	lq := strings.ToLower(query)
+	type scored struct {
+		match SymbolMatch
+		score int
+	}
+	var scoredMatches []scored
+	for _, f := range files {
+		for _, s := range f.Symbols {
+			ls := strings.ToLower(s.Name)
+			score := 0
+			switch {
+			case ls == lq:
+				score = 300
+			case strings.HasPrefix(ls, lq):
+				score = 200
+			case strings.Contains(ls, lq):
+				score = 100
+			default:
+				continue
+			}
+			if strings.EqualFold(filepath.Base(f.Path), query) {
+				score += 25
+			}
+			scoredMatches = append(scoredMatches, scored{
+				match: SymbolMatch{
+					Path: f.Path,
+					Lang: f.Lang,
+					Name: s.Name,
+					Kind: s.Kind,
+					Line: s.Line,
+				},
+				score: score,
+			})
+		}
+	}
+	sort.Slice(scoredMatches, func(i, j int) bool {
+		if scoredMatches[i].score != scoredMatches[j].score {
+			return scoredMatches[i].score > scoredMatches[j].score
+		}
+		if scoredMatches[i].match.Path != scoredMatches[j].match.Path {
+			return scoredMatches[i].match.Path < scoredMatches[j].match.Path
+		}
+		if scoredMatches[i].match.Name != scoredMatches[j].match.Name {
+			return scoredMatches[i].match.Name < scoredMatches[j].match.Name
+		}
+		return scoredMatches[i].match.Line < scoredMatches[j].match.Line
+	})
+	if len(scoredMatches) > limit {
+		scoredMatches = scoredMatches[:limit]
+	}
+	out := make([]SymbolMatch, 0, len(scoredMatches))
+	for _, m := range scoredMatches {
+		out = append(out, m.match)
+	}
+	return out, nil
 }
 
 // runCtags invokes ctags and returns one FileEntry per source file with its

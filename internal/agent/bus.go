@@ -12,6 +12,7 @@ type EventKind string
 
 const (
 	EvUserMessage       EventKind = "user_message"
+	EvTick              EventKind = "tick"
 	EvMasterTurnStart   EventKind = "master_turn_start"
 	EvMasterText        EventKind = "master_text"
 	EvMasterReasoning   EventKind = "master_reasoning" // incremental thinking/reasoning delta
@@ -19,6 +20,8 @@ const (
 	EvMasterToolDone    EventKind = "master_tool_done"
 	EvMasterTurnDone    EventKind = "master_turn_done"
 	EvMasterUsage       EventKind = "master_usage"
+	EvMasterPaused      EventKind = "master_paused"
+	EvMasterResumed     EventKind = "master_resumed"
 	EvSubagentSpawn     EventKind = "subagent_spawn"
 	EvSubagentTurnStart EventKind = "subagent_turn_start"
 	EvSubagentText      EventKind = "subagent_text"
@@ -29,6 +32,8 @@ const (
 	EvSubagentRetry     EventKind = "subagent_retry"
 	EvSubagentInbox     EventKind = "subagent_inbox"
 	EvSubagentUsage     EventKind = "subagent_usage"
+	EvSubagentPaused    EventKind = "subagent_paused"
+	EvSubagentResumed   EventKind = "subagent_resumed"
 	EvError             EventKind = "error"
 	EvFlash             EventKind = "flash"
 	// EvCompaction is published when proactive context compaction runs.
@@ -42,15 +47,21 @@ const (
 	EvCancelAll EventKind = "cancel_all"
 
 	// Shell session events. SubagentID holds the shell session ID (sh1, sh2, …).
-	EvShellOpened EventKind = "shell_opened"
-	EvShellOutput EventKind = "shell_output"
-	EvShellExited EventKind = "shell_exited"
+	EvShellOpened     EventKind = "shell_opened"
+	EvShellOutput     EventKind = "shell_output"
+	EvShellExited     EventKind = "shell_exited"
+	EvShellClosed     EventKind = "shell_closed"
+	EvShellOutputLoss EventKind = "shell_output_loss"
 )
 
 // Event is a single message on the bus.
 type Event struct {
 	Kind EventKind
 	At   time.Time
+
+	// CorrelationID links related events together (for example one master
+	// orchestration turn and the sub-agents it spawns).
+	CorrelationID string
 
 	// Identifiers
 	SubagentID string
@@ -68,6 +79,9 @@ type Event struct {
 	// Shell metadata for EvShellOpened events
 	ShellKind ShellKind
 
+	// Bytes carries shell dropped-byte counts and similar numeric diagnostics.
+	Bytes int64
+
 	// Done is set on EvCompaction to distinguish the completion event
 	// from the start notice.
 	Done bool
@@ -78,11 +92,18 @@ type Event struct {
 // Bus is a many-to-many event channel. Publishers call Publish; subscribers
 // call Subscribe to get a buffered channel they own.
 type Bus struct {
-	mu   sync.RWMutex
-	subs []chan Event
+	mu    sync.RWMutex
+	subs  []chan Event
+	sinks []EventSink
 }
 
 func NewBus() *Bus { return &Bus{} }
+
+// EventSink is a durable event consumer registered directly on the bus.
+// Sinks are invoked on every Publish before best-effort subscriber fan-out.
+type EventSink interface {
+	WriteEvent(Event)
+}
 
 // Subscribe returns a buffered channel that receives events. Slow subscribers
 // drop events rather than blocking publishers.
@@ -97,14 +118,36 @@ func (b *Bus) Subscribe(buffer int) <-chan Event {
 	return ch
 }
 
+// AddSink registers a durable sink that receives every published event.
+func (b *Bus) AddSink(sink EventSink) {
+	if sink == nil {
+		return
+	}
+	b.mu.Lock()
+	b.sinks = append(b.sinks, sink)
+	b.mu.Unlock()
+}
+
 // Publish broadcasts an event. Stamps At if zero.
 func (b *Bus) Publish(e Event) {
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
+	if e.CorrelationID == "" {
+		switch {
+		case e.SubagentID != "":
+			e.CorrelationID = "subagent:" + e.SubagentID
+		default:
+			e.CorrelationID = "event:" + string(e.Kind)
+		}
+	}
 	b.mu.RLock()
-	subs := b.subs
+	subs := append([]chan Event(nil), b.subs...)
+	sinks := append([]EventSink(nil), b.sinks...)
 	b.mu.RUnlock()
+	for _, sink := range sinks {
+		sink.WriteEvent(e)
+	}
 	for _, ch := range subs {
 		select {
 		case ch <- e:

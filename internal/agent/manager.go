@@ -129,7 +129,8 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	running := 0
 	for _, s := range m.subs {
-		if s.Status() == StatusRunning {
+		switch s.Status() {
+		case StatusRunning, StatusPaused:
 			running++
 		}
 	}
@@ -139,6 +140,11 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	}
 	m.nextID++
 	id := fmt.Sprintf("s%d", m.nextID)
+	correlationID := CorrelationIDFromContext(ctx)
+	if correlationID == "" {
+		correlationID = NewCorrelationID("spawn")
+	}
+	correlationID = correlationID + "/" + id
 	adapter, model := m.factory(task.ModelTier, task.RequiredCaps)
 	if adapter == nil {
 		m.mu.Unlock()
@@ -149,7 +155,7 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	if m.memReg != nil {
 		memBlock = m.memReg.InlineBlock()
 	}
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps)
+	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps, correlationID)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}
@@ -161,7 +167,6 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	// usually the master's per-turn ctx, which is cancelled the instant the
 	// master's turn returns — taking every freshly-spawned sub-agent down
 	// with it. Sub-agents must outlive the spawning turn.
-	_ = ctx
 	go sub.Run(rootCtx)
 	return id, nil
 }
@@ -190,6 +195,28 @@ func (m *Manager) Kill(id string) error {
 	}
 	s.Cancel()
 	s.setStatus(StatusCancelled)
+	return nil
+}
+
+func (m *Manager) Pause(id string) error {
+	s, ok := m.Get(id)
+	if !ok {
+		return fmt.Errorf("no such sub-agent: %s", id)
+	}
+	if !s.Pause() {
+		return fmt.Errorf("sub-agent %s cannot be paused (status=%s)", id, s.Status())
+	}
+	return nil
+}
+
+func (m *Manager) Resume(id string) error {
+	s, ok := m.Get(id)
+	if !ok {
+		return fmt.Errorf("no such sub-agent: %s", id)
+	}
+	if !s.Resume() {
+		return fmt.Errorf("sub-agent %s is not paused", id)
+	}
 	return nil
 }
 
