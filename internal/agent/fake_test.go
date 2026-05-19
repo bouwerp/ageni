@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -226,6 +227,53 @@ func TestMasterActiveContextIsEphemeral(t *testing.T) {
 	}
 	if len(master.messages) != 2 {
 		t.Fatalf("durable message count = %d, want 2", len(master.messages))
+	}
+}
+
+func TestMasterSystemPromptRespectsBudget(t *testing.T) {
+	master := &Master{}
+	master.SetAgentsMD(strings.Repeat("project rule\n", 500))
+	master.SetSkillCatalog(strings.Repeat("skill-entry\n", 12_000))
+	master.SetRoleCatalog(strings.Repeat("role-entry\n", 12_000))
+	master.SetRepoMap(strings.Repeat("path/file.go: symbol\n", 12_000))
+
+	prompt := master.systemPrompt()
+
+	if got := models.EstimateTokens(prompt); got > systemPromptBudgetTokens {
+		t.Fatalf("system prompt estimated at %d tokens, want <= %d", got, systemPromptBudgetTokens)
+	}
+	if !strings.Contains(prompt, "<prompt_budget_notice>") {
+		t.Fatalf("expected prompt budget notice, got prompt without one")
+	}
+	if !strings.Contains(prompt, "<project_instructions source=\"AGENTS.md\">") {
+		t.Fatalf("expected higher-priority AGENTS block to remain")
+	}
+	if strings.Contains(prompt, "<repo_map>") {
+		t.Fatalf("expected lower-priority repo_map block to be omitted under budget pressure")
+	}
+}
+
+func TestMasterSystemPromptKeepsSmallOptionalBlocks(t *testing.T) {
+	master := &Master{}
+	master.SetSkillCatalog("skill-a")
+	master.SetRoleCatalog("role-a")
+	master.SetRepoMap("path/file.go: func A")
+	master.SetAgentsMD("Follow nested instructions.")
+
+	prompt := master.systemPrompt()
+
+	if strings.Contains(prompt, "<prompt_budget_notice>") {
+		t.Fatalf("did not expect prompt budget notice for small prompt")
+	}
+	for _, want := range []string{
+		"<available_skills>",
+		"<available_roles>",
+		"<repo_map>",
+		"<project_instructions source=\"AGENTS.md\">",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q", want)
+		}
 	}
 }
 

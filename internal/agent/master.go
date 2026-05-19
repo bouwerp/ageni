@@ -11,11 +11,12 @@ import (
 
 	"github.com/bouwerp/ageni/internal/llm"
 	"github.com/bouwerp/ageni/internal/memory"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
 // activeCorrectionsMax is how many of the most-recent corrections from the
-// session log get rendered into the master's active-context tail block.
+// session log get rendered into the master's ephemeral active-context block.
 const activeCorrectionsMax = 8
 
 // Master is the user-facing agent. It runs a single loop that:
@@ -57,10 +58,10 @@ type Master struct {
 	memReg          *memory.Registry // optional: live memory registry injected each turn
 	repoMap         string           // optional: rendered repository map appended to the cached prefix
 	agentsMD        string           // optional: project AGENTS.md instructions (cross-vendor convention)
-	correctionsPath string           // optional: session corrections.jsonl; tail block reads last K
+	correctionsPath string           // optional: session corrections.jsonl; active context reads last K
 
 	// todo gives the master read access to the session todo list so it can
-	// include the current state in the active_context block on every turn.
+	// include the current state in the ephemeral active_context on every turn.
 	todo *tools.TodoWrite
 
 	// scrubber, if non-nil, is applied to all assistant text before it is
@@ -76,9 +77,10 @@ type Master struct {
 	// can trigger proactive context compaction before hitting the hard limit.
 	lastInputTokens int
 
-	// resumed is set by LoadHistory; cleared after the first refreshActiveContext
-	// injects a session-resume notice. Ensures the master is reminded of its
-	// orchestration role even when there are no active sub-agents on resume.
+	// resumed is set by LoadHistory; cleared after the first active-context
+	// snapshot injects a session-resume notice. Ensures the master is reminded
+	// of its orchestration role even when there are no active sub-agents on
+	// resume.
 	resumed bool
 
 	// turnCancel cancels the in-flight LLM call (set by takeTurns; read by
@@ -163,7 +165,7 @@ func (m *Master) SetAgentsMD(rendered string) {
 }
 
 // SetCorrectionsPath tells the master where to read session corrections
-// from when refreshing its active-context tail block.
+// from when building its ephemeral active-context snapshot.
 func (m *Master) SetCorrectionsPath(path string) {
 	m.mu.Lock()
 	m.correctionsPath = path
@@ -238,7 +240,7 @@ func (m *Master) SetCompact(adapter llm.Adapter, model string) {
 }
 
 // SetTodo gives the master read access to the session todo list so the
-// current task state can be included in the active_context block on every turn.
+// current task state can be included in the active_context on every turn.
 func (m *Master) SetTodo(t *tools.TodoWrite) {
 	m.todo = t
 }
@@ -1094,6 +1096,43 @@ const CanonicalWorkerOutputFormat = `<result>
 </result>
 <reasoning>Brief notes on what you searched / tried and why these are the relevant findings.</reasoning>`
 
+const systemPromptBudgetTokens = 8_000
+
+type promptContextBlock struct {
+	name string
+	text string
+}
+
+func fitPromptBlocks(budget int, blocks []promptContextBlock) string {
+	if budget <= 0 {
+		return ""
+	}
+	var sb strings.Builder
+	var omitted []string
+	for _, block := range blocks {
+		text := strings.TrimSpace(block.text)
+		if text == "" {
+			continue
+		}
+		if est := models.EstimateTokens(block.text); est <= budget {
+			sb.WriteString(block.text)
+			budget -= est
+			continue
+		}
+		omitted = append(omitted, block.name)
+	}
+	if len(omitted) == 0 {
+		return sb.String()
+	}
+	notice := "\n\n<prompt_budget_notice>\nAuxiliary context omitted to stay within the system prompt budget: " +
+		strings.Join(omitted, ", ") +
+		". Fetch anything missing on demand instead of assuming it was included.\n</prompt_budget_notice>"
+	if models.EstimateTokens(notice) <= budget {
+		sb.WriteString(notice)
+	}
+	return sb.String()
+}
+
 func (m *Master) systemPrompt() string {
 	m.mu.RLock()
 	catalog := m.skillCatalog
@@ -1105,6 +1144,7 @@ func (m *Master) systemPrompt() string {
 	subagentCaps := m.subagentCaps
 	m.mu.RUnlock()
 
+	roleBlock := `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>`
 	skillsBlock := ""
 	if catalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + catalog + "\n\nWhen a user request matches a skill's trigger phrases or domain, call read_skill(name=\"...\") to load its full instructions before proceeding. Pass topic=\"...\" for sub-references when listed.\n</available_skills>"
@@ -1129,9 +1169,15 @@ func (m *Master) systemPrompt() string {
 	}
 
 	capsBlock := buildMasterCapsBlock(masterCaps, subagentCaps)
+	optionalBlocks := []promptContextBlock{
+		{name: "AGENTS.md project instructions", text: agentsBlock},
+		{name: "persistent memories", text: memoriesBlock},
+		{name: "available skills catalog", text: skillsBlock},
+		{name: "available roles catalog", text: rolesBlock},
+		{name: "repository map", text: repoMapBlock},
+	}
 
-	// Stable across the session — sits in the cached prefix region.
-	return `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + skillsBlock + rolesBlock + memoriesBlock + repoMapBlock + agentsBlock + capsBlock + `
+	coreBlock := `
 
 <orchestration_rules>
 You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.
@@ -1301,6 +1347,16 @@ You MUST be self-healing. When a tool call or provider request returns an error,
    c. Incorporate soundboard feedback AND research findings into the next spawn. If soundboard and research together cannot surface a viable path, THEN escalate to the user with a precise description of what was attempted and why it failed.
    Spawning a third unchanged attempt without a revised strategy is a HARD CONTRACT VIOLATION.
 </self_healing>`
+
+	optionalBudget := systemPromptBudgetTokens - models.EstimateTokens(roleBlock) - models.EstimateTokens(capsBlock) - models.EstimateTokens(coreBlock)
+	if optionalBudget < 0 {
+		optionalBudget = 0
+	}
+
+	// Stable across the session — sits in the cached prefix region. Auxiliary
+	// context is capped so dynamic catalogs and repo metadata can't silently
+	// crowd out the orchestration contract.
+	return roleBlock + fitPromptBlocks(optionalBudget, optionalBlocks) + capsBlock + coreBlock
 }
 
 // buildMasterCapsBlock produces the <model_capabilities> XML block injected

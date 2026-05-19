@@ -399,7 +399,7 @@ CI (`.github/workflows/ci.yml`) runs on every PR and push to `main`: tests with 
 
 ## Scope
 
-### v1 (current — v0.38.36)
+### v1 (current — v0.38.37)
 
 - Master/sub-agent loop with EventBus
 - Anthropic + OpenAI-compatible adapters with streaming + tool use
