@@ -4,6 +4,7 @@ import (
 	"bufio"
 	"encoding/json"
 	"fmt"
+	"html"
 	"os"
 	"regexp"
 	"sort"
@@ -132,7 +133,179 @@ func LoadHistory(s *Session) ([]llm.Message, error) {
 	if err := scanner.Err(); err != nil {
 		return nil, fmt.Errorf("read log: %w", err)
 	}
-	return msgs, nil
+	return compactReplayHistory(msgs), nil
+}
+
+const replayKeepExchanges = 3
+
+func compactReplayHistory(msgs []llm.Message) []llm.Message {
+	exchanges := 0
+	for _, msg := range msgs {
+		if msg.Role == llm.RoleUser {
+			exchanges++
+		}
+	}
+	if exchanges <= replayKeepExchanges {
+		return msgs
+	}
+	keepFrom := replayKeepBoundary(msgs)
+	if keepFrom <= 0 || keepFrom >= len(msgs) {
+		return msgs
+	}
+	compacted := buildReplayCompactedContext(msgs[:keepFrom], msgs[keepFrom:])
+	if compacted == "" {
+		return msgs
+	}
+	return append([]llm.Message{{Role: llm.RoleUser, Text: compacted}}, msgs[keepFrom:]...)
+}
+
+func replayKeepBoundary(msgs []llm.Message) int {
+	exchanges := 0
+	for i := len(msgs) - 1; i >= 0; i-- {
+		if msgs[i].Role != llm.RoleUser {
+			continue
+		}
+		exchanges++
+		if exchanges <= replayKeepExchanges {
+			continue
+		}
+		for j := i + 1; j < len(msgs); j++ {
+			if msgs[j].Role == llm.RoleUser {
+				return j
+			}
+		}
+	}
+	return 0
+}
+
+func buildReplayCompactedContext(older, recent []llm.Message) string {
+	const maxSectionItems = 6
+	decisions := make([]string, 0, maxSectionItems)
+	completed := make([]string, 0, maxSectionItems)
+	pending := make([]string, 0, maxSectionItems)
+	artifacts := make([]string, 0, maxSectionItems)
+	seenArtifacts := map[string]bool{}
+
+	addUnique := func(dst *[]string, value string) {
+		value = strings.TrimSpace(value)
+		if value == "" || len(*dst) >= maxSectionItems {
+			return
+		}
+		for _, existing := range *dst {
+			if existing == value {
+				return
+			}
+		}
+		*dst = append(*dst, value)
+	}
+
+	for _, msg := range older {
+		switch msg.Role {
+		case llm.RoleUser:
+			trimmed := strings.TrimSpace(msg.Text)
+			if trimmed == "" || strings.HasPrefix(trimmed, "<system-reminder>") || strings.HasPrefix(trimmed, "<session-resume>") {
+				continue
+			}
+			addUnique(&decisions, "User asked: "+replayClip(trimmed, 180))
+			for _, match := range replayArtifactRE.FindAllString(trimmed, -1) {
+				if !seenArtifacts[match] {
+					seenArtifacts[match] = true
+					addUnique(&artifacts, match)
+				}
+			}
+			if replayLooksPending(trimmed) {
+				addUnique(&pending, replayClip(trimmed, 180))
+			}
+		case llm.RoleAssistant:
+			trimmed := strings.TrimSpace(msg.Text)
+			if trimmed != "" {
+				addUnique(&decisions, "Assistant concluded: "+replayClip(trimmed, 180))
+				if replayLooksPending(trimmed) {
+					addUnique(&pending, replayClip(trimmed, 180))
+				}
+			}
+			for _, tc := range msg.ToolCalls {
+				addUnique(&completed, "Tool call: "+tc.Name)
+			}
+		case llm.RoleTool:
+			for _, tr := range msg.ToolResults {
+				label := "Tool result: "
+				if tr.IsError {
+					label = "Tool error: "
+				}
+				addUnique(&completed, label+replayClip(tr.Content, 180))
+				for _, match := range replayArtifactRE.FindAllString(tr.Content, -1) {
+					if !seenArtifacts[match] {
+						seenArtifacts[match] = true
+						addUnique(&artifacts, match)
+					}
+				}
+				if replayLooksPending(tr.Content) {
+					addUnique(&pending, replayClip(tr.Content, 180))
+				}
+			}
+		}
+	}
+
+	recentExchanges := 0
+	for _, msg := range recent {
+		if msg.Role == llm.RoleUser {
+			recentExchanges++
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString(`<compacted_context source="replay">` + "\n")
+	sb.WriteString("<summary>")
+	sb.WriteString(html.EscapeString(fmt.Sprintf(
+		"Resumed session with %d older message(s) compacted from the session log. The %d most recent exchange(s) remain verbatim below.",
+		len(older), recentExchanges,
+	)))
+	sb.WriteString("</summary>\n")
+	writeReplaySection(&sb, "decisions", decisions)
+	writeReplaySection(&sb, "completed", completed)
+	writeReplaySection(&sb, "pending", pending)
+	writeReplaySection(&sb, "artifacts", artifacts)
+	sb.WriteString("</compacted_context>")
+	return sb.String()
+}
+
+var replayArtifactRE = regexp.MustCompile(`(?:[A-Za-z0-9_.\-/]+\.[A-Za-z0-9_]+(?::\d+)?)|(?:s\d+|sh\d+|replay-\d+|v\d+\.\d+\.\d+)`)
+
+func writeReplaySection(sb *strings.Builder, tag string, items []string) {
+	sb.WriteString("<")
+	sb.WriteString(tag)
+	sb.WriteString(">\n")
+	if len(items) == 0 {
+		sb.WriteString("- none recorded\n")
+	} else {
+		for _, item := range items {
+			sb.WriteString("- ")
+			sb.WriteString(html.EscapeString(item))
+			sb.WriteString("\n")
+		}
+	}
+	sb.WriteString("</")
+	sb.WriteString(tag)
+	sb.WriteString(">\n")
+}
+
+func replayClip(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
+}
+
+func replayLooksPending(s string) bool {
+	s = strings.ToLower(s)
+	return strings.Contains(s, "pending") ||
+		strings.Contains(s, "remaining") ||
+		strings.Contains(s, "todo") ||
+		strings.Contains(s, "next step") ||
+		strings.Contains(s, "follow-up") ||
+		strings.Contains(s, "open question")
 }
 
 // spawnedSubagentRE finds sub-agent IDs in spawn_subagent tool results.
