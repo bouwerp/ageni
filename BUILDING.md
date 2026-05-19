@@ -9,7 +9,7 @@ commit log.
 The repo is at `github.com/bouwerp/ageni`. Releases follow the rule
 "every push that ships a user-visible change gets a new tag" — minor
 bumps for features, patch bumps for fixes. At the time of writing the
-project is on **v0.38.39**.
+project is on **v0.38.40**.
 
 ---
 

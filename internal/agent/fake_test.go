@@ -360,6 +360,75 @@ func TestMasterCompactionNormalizesPlainSummary(t *testing.T) {
 	}
 }
 
+func TestSubagentUserPromptCompressesLargeContext(t *testing.T) {
+	task := SubagentTask{
+		Objective:    "inspect auth flow",
+		OutputFormat: "<result/>",
+		RepoFacts: []string{
+			strings.Repeat("repo-fact-1 ", 40),
+			strings.Repeat("repo-fact-2 ", 40),
+			strings.Repeat("repo-fact-3 ", 40),
+			strings.Repeat("repo-fact-4 ", 40),
+			strings.Repeat("repo-fact-5 ", 40),
+			strings.Repeat("repo-fact-6 ", 40),
+			strings.Repeat("repo-fact-7 ", 40),
+			strings.Repeat("repo-fact-8 ", 40),
+			strings.Repeat("repo-fact-9 ", 40),
+			strings.Repeat("repo-fact-10 ", 40),
+		},
+		PriorFindings: []string{
+			strings.Repeat("prior-finding ", 50),
+			strings.Repeat("prior-finding ", 50),
+			strings.Repeat("prior-finding ", 50),
+			strings.Repeat("prior-finding ", 50),
+			strings.Repeat("prior-finding ", 50),
+		},
+		DoNotRevisit: []string{
+			strings.Repeat("path/area-one ", 40),
+			strings.Repeat("path/area-two ", 40),
+			strings.Repeat("path/area-three ", 40),
+			strings.Repeat("path/area-four ", 40),
+			strings.Repeat("path/area-five ", 40),
+		},
+		Context: strings.Repeat("free-form context ", 600),
+	}
+
+	prompt := (&Subagent{Task: task}).userPrompt()
+
+	if !strings.Contains(prompt, "<context_budget_notice>") {
+		t.Fatalf("expected context budget notice in prompt")
+	}
+	if !strings.Contains(prompt, "repo_facts compressed") && !strings.Contains(prompt, "context truncated") {
+		t.Fatalf("expected compression note, got %q", prompt)
+	}
+	if got := models.EstimateTokens(prompt); got > subagentContextBudgetTokens+400 {
+		t.Fatalf("compressed worker prompt estimated at %d tokens, want <= %d", got, subagentContextBudgetTokens+400)
+	}
+}
+
+func TestSubagentUserPromptKeepsSmallContext(t *testing.T) {
+	task := SubagentTask{
+		Objective:      "inspect auth flow",
+		OutputFormat:   "<result/>",
+		RepoFacts:      []string{"internal/auth/jwt.go: issues tokens"},
+		PriorFindings:  []string{"s3 found middleware in internal/http/auth.go:42"},
+		DoNotRevisit:   []string{"internal/http/router.go"},
+		Context:        "Focus on token expiry handling.",
+		TaskBoundaries: "Do not edit files.",
+	}
+
+	prompt := (&Subagent{Task: task}).userPrompt()
+
+	if strings.Contains(prompt, "<context_budget_notice>") {
+		t.Fatalf("did not expect budget notice for small context")
+	}
+	for _, want := range []string{"<repo_facts>", "<prior_findings>", "<do_not_revisit>", "<context>Focus on token expiry handling.</context>"} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q", want)
+		}
+	}
+}
+
 func TestSubagentPauseResume(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()

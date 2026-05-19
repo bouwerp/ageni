@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
 
@@ -22,6 +23,12 @@ const (
 	StatusDone      SubagentStatus = "done"
 	StatusError     SubagentStatus = "error"
 	StatusCancelled SubagentStatus = "cancelled"
+)
+
+const (
+	subagentContextBudgetTokens = 2_500
+	subagentContextMaxItems     = 8
+	subagentContextItemMaxChars = 220
 )
 
 // SubagentTask is the contract every spawn must specify. Vague spawns are
@@ -683,33 +690,120 @@ func (s *Subagent) userPrompt() string {
 	if s.Task.UseSkill != "" {
 		sb.WriteString("<use_skill>" + s.Task.UseSkill + "</use_skill>\n")
 	}
-	if len(s.Task.RepoFacts) > 0 {
-		sb.WriteString("<repo_facts>\n")
-		for _, f := range s.Task.RepoFacts {
-			sb.WriteString("- " + f + "\n")
+	remaining := subagentContextBudgetTokens
+	var compressed []string
+	writeSection := func(section string, used int, note string) {
+		if section == "" {
+			if note != "" {
+				compressed = append(compressed, note)
+			}
+			return
 		}
-		sb.WriteString("</repo_facts>\n")
-	}
-	if len(s.Task.PriorFindings) > 0 {
-		sb.WriteString("<prior_findings>\n")
-		for _, f := range s.Task.PriorFindings {
-			sb.WriteString("- " + f + "\n")
+		sb.WriteString(section)
+		remaining -= used
+		if note != "" {
+			compressed = append(compressed, note)
 		}
-		sb.WriteString("</prior_findings>\n")
 	}
-	if len(s.Task.DoNotRevisit) > 0 {
-		sb.WriteString("<do_not_revisit>\n")
-		for _, f := range s.Task.DoNotRevisit {
-			sb.WriteString("- " + f + "\n")
-		}
-		sb.WriteString("</do_not_revisit>\n")
-		sb.WriteString("(other workers are handling these — stay clear)\n")
-	}
-	if s.Task.Context != "" {
-		sb.WriteString("<context>" + s.Task.Context + "</context>\n")
+	section, used, note := buildSubagentListSection("repo_facts", s.Task.RepoFacts, remaining, "")
+	writeSection(section, used, note)
+	section, used, note = buildSubagentListSection("prior_findings", s.Task.PriorFindings, remaining, "")
+	writeSection(section, used, note)
+	section, used, note = buildSubagentListSection("do_not_revisit", s.Task.DoNotRevisit, remaining, "(other workers are handling these — stay clear)\n")
+	writeSection(section, used, note)
+	section, used, note = buildSubagentTextSection("context", s.Task.Context, remaining)
+	writeSection(section, used, note)
+	if len(compressed) > 0 {
+		sb.WriteString("<context_budget_notice>" + strings.Join(compressed, "; ") + "</context_budget_notice>\n")
 	}
 	sb.WriteString("</task>\n\nBegin.")
 	return sb.String()
+}
+
+func buildSubagentListSection(tag string, items []string, budget int, trailing string) (string, int, string) {
+	if len(items) == 0 || budget <= 0 {
+		if len(items) == 0 {
+			return "", 0, ""
+		}
+		return "", 0, tag + " omitted to fit worker context budget"
+	}
+	open := "<" + tag + ">\n"
+	close := "</" + tag + ">\n"
+	closeCost := models.EstimateTokens(close)
+	var sb strings.Builder
+	sb.WriteString(open)
+	used := models.EstimateTokens(open)
+	included := 0
+	omitted := 0
+	for _, item := range items {
+		item = subagentClip(item, subagentContextItemMaxChars)
+		line := "- " + item + "\n"
+		lineCost := models.EstimateTokens(line)
+		if included >= subagentContextMaxItems || used+lineCost+closeCost > budget {
+			omitted++
+			continue
+		}
+		sb.WriteString(line)
+		used += lineCost
+		included++
+	}
+	if trailing != "" {
+		trailingCost := models.EstimateTokens(trailing)
+		if used+trailingCost+closeCost <= budget {
+			sb.WriteString(trailing)
+			used += trailingCost
+		}
+	}
+	if included == 0 {
+		return "", 0, fmt.Sprintf("%s omitted to fit worker context budget", tag)
+	}
+	if omitted > 0 {
+		noteLine := fmt.Sprintf("- … (%d more omitted to fit worker context budget)\n", omitted)
+		noteCost := models.EstimateTokens(noteLine)
+		if used+noteCost+closeCost <= budget {
+			sb.WriteString(noteLine)
+			used += noteCost
+		}
+	}
+	sb.WriteString(close)
+	used += closeCost
+	note := ""
+	if omitted > 0 {
+		note = fmt.Sprintf("%s compressed (%d omitted)", tag, omitted)
+	}
+	return sb.String(), used, note
+}
+
+func buildSubagentTextSection(tag, text string, budget int) (string, int, string) {
+	text = strings.TrimSpace(text)
+	if text == "" {
+		return "", 0, ""
+	}
+	if budget <= 0 {
+		return "", 0, tag + " omitted to fit worker context budget"
+	}
+	open := "<" + tag + ">"
+	close := "</" + tag + ">\n"
+	overhead := models.EstimateTokens(open) + models.EstimateTokens(close)
+	if budget <= overhead {
+		return "", 0, tag + " omitted to fit worker context budget"
+	}
+	maxChars := (budget - overhead) * 4
+	note := ""
+	if maxChars < len(text) {
+		text = subagentClip(text, maxChars)
+		note = tag + " truncated"
+	}
+	rendered := open + text + close
+	return rendered, models.EstimateTokens(rendered), note
+}
+
+func subagentClip(s string, max int) string {
+	s = strings.TrimSpace(strings.ReplaceAll(s, "\n", " "))
+	if max <= 0 || len(s) <= max {
+		return s
+	}
+	return s[:max] + "…"
 }
 
 // buildSubagentCapsBlock produces the <model_capabilities> XML block injected
