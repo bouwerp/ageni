@@ -456,29 +456,11 @@ func isMonitoringEvent(k EventKind) bool {
 	return false
 }
 
-// activeContextMarker tags the auto-generated tail block so we can find and
-// replace it on the next turn instead of accumulating duplicates in history.
-const activeContextMarker = "<active_context_block>"
-
-// refreshActiveContext drops any prior <active_context_block> from the tail
-// of the message list and appends a fresh one summarising current state.
-// This replaces the old "accumulating sub-agent reminders" pattern: instead
-// of letting reminders pile up across turns (each one a permanent token
-// cost), we maintain a single self-replacing block that's always current.
-//
-// pendingEvs are folded into a "since last turn" delta inside the block,
-// then cleared.
-func (m *Master) refreshActiveContext() {
-	// Strip any prior block from the tail.
-	for len(m.messages) > 0 {
-		last := m.messages[len(m.messages)-1]
-		if last.Role == llm.RoleUser && strings.HasPrefix(last.Text, activeContextMarker) {
-			m.messages = m.messages[:len(m.messages)-1]
-			continue
-		}
-		break
-	}
-
+// buildActiveContext synthesizes a one-turn orchestration snapshot summarising
+// current worker/todo/correction state. The returned message is ephemeral: it
+// is sent with the next LLM request but never stored in m.messages, so replay
+// and compaction don't accumulate meta-context.
+func (m *Master) buildActiveContext() *llm.Message {
 	subs := m.manager.List()
 	corrections := tools.LoadCorrections(m.correctionsPath, activeCorrectionsMax)
 	isResumed := m.resumed
@@ -490,12 +472,11 @@ func (m *Master) refreshActiveContext() {
 	}
 
 	if len(subs) == 0 && len(m.pendingEvs) == 0 && len(corrections) == 0 && !isResumed && len(todoItems) == 0 {
-		return
+		return nil
 	}
 
 	var sb strings.Builder
-	sb.WriteString(activeContextMarker)
-	sb.WriteString("\n<active_context>\n")
+	sb.WriteString("<active_context>\n")
 
 	if isResumed {
 		// All workers from the prior process are terminated. Release any todos
@@ -625,7 +606,7 @@ func (m *Master) refreshActiveContext() {
 	}
 
 	sb.WriteString("</active_context>")
-	m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: sb.String()})
+	return &llm.Message{Role: llm.RoleUser, Text: sb.String()}
 }
 
 func (m *Master) takeTurns(parent context.Context) {
@@ -646,9 +627,9 @@ func (m *Master) takeTurns(parent context.Context) {
 		cancel()
 	}()
 
-	// Regenerate the <active_context> tail block before this turn. The old
-	// block (if any) is stripped first so we don't accumulate duplicates.
-	m.refreshActiveContext()
+	// Build a one-turn orchestration snapshot. This context is ephemeral and
+	// never becomes part of durable conversation history.
+	activeContext := m.buildActiveContext()
 
 	// trimCount caps automatic context-trim retries within one takeTurns call.
 	const maxTrims = 3
@@ -679,10 +660,14 @@ func (m *Master) takeTurns(parent context.Context) {
 		if usingLead {
 			trackerRole = "master/lead"
 		}
+		reqMessages := append([]llm.Message(nil), m.messages...)
+		if activeContext != nil {
+			reqMessages = append(reqMessages, *activeContext)
+		}
 		req := llm.Request{
 			Model:    model,
 			System:   m.systemPrompt(),
-			Messages: m.messages,
+			Messages: reqMessages,
 			Tools:    m.tools.Definitions(),
 		}
 		// Mark the moment the LLM call goes out so the TUI can light up the
@@ -843,19 +828,19 @@ func (m *Master) takeTurns(parent context.Context) {
 }
 
 // trimHistory drops the oldest complete exchange from m.messages to recover
-// from context-window-exceeded errors. It finds the first non-active-context
-// RoleUser message after index 0 and removes everything before it, prepending
-// a short notice so the model knows the history was truncated. Falls back to
-// dropping the first half when no clean turn boundary exists. Returns false
-// only if the history is already too short to trim.
+// from context-window-exceeded errors. It finds the first RoleUser message
+// after index 0 and removes everything before it, prepending a short notice so
+// the model knows the history was truncated. Falls back to dropping the first
+// half when no clean turn boundary exists. Returns false only if the history is
+// already too short to trim.
 func (m *Master) trimHistory() bool {
 	msgs := m.messages
-	// Find the first RoleUser message after index 0 that is not an
-	// active_context block — that marks the start of the second exchange,
-	// so everything before it is one complete round-trip we can safely drop.
+	// Find the first RoleUser message after index 0 — that marks the start of
+	// the second exchange, so everything before it is one complete round-trip
+	// we can safely drop.
 	for i := 1; i < len(msgs)-1; i++ {
 		msg := msgs[i]
-		if msg.Role == llm.RoleUser && !strings.HasPrefix(msg.Text, activeContextMarker) {
+		if msg.Role == llm.RoleUser {
 			notice := llm.Message{
 				Role: llm.RoleUser,
 				Text: fmt.Sprintf("[Note: %d oldest message(s) removed to fit context window]", i),
@@ -885,9 +870,9 @@ func (m *Master) trimHistory() bool {
 // headroom for the reply and tool calls.
 const compactionThreshold = 40_000
 
-// compactionKeepExchanges is the number of complete user/assistant exchanges
-// (not counting the active_context tail block) to retain verbatim after
-// compaction. Everything older than that is replaced by the summary.
+// compactionKeepExchanges is the number of complete user/assistant exchanges to
+// retain verbatim after compaction. Everything older than that is replaced by
+// the summary.
 const compactionKeepExchanges = 3
 
 // maybeCompactHistory triggers proactive context compaction when the last
@@ -913,17 +898,6 @@ func (m *Master) maybeCompactHistory(ctx context.Context) {
 // exchanges are kept verbatim so the model has immediate conversational context.
 func (m *Master) compactHistory(ctx context.Context) {
 	msgs := m.messages
-
-	// Strip any active_context tail block — we'll let refreshActiveContext
-	// regenerate it before the next real turn.
-	for len(msgs) > 0 {
-		last := msgs[len(msgs)-1]
-		if last.Role == llm.RoleUser && strings.HasPrefix(last.Text, activeContextMarker) {
-			msgs = msgs[:len(msgs)-1]
-		} else {
-			break
-		}
-	}
 
 	// Identify the slice boundary: keep the last compactionKeepExchanges
 	// complete user/assistant pairs, compact everything before that.

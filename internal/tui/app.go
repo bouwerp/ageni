@@ -287,9 +287,9 @@ func (a *App) LoadHistory(messages []llm.Message) {
 	for _, m := range messages {
 		switch m.Role {
 		case llm.RoleUser:
-			// Skip system-injected reminders / active_context blocks; users
+			// Skip system-injected reminders / active-context blocks; users
 			// don't need to see those replayed.
-			if strings.HasPrefix(m.Text, "<active_context_block>") || strings.HasPrefix(m.Text, "<system-reminder>") || strings.HasPrefix(m.Text, "<session-resume>") {
+			if strings.HasPrefix(m.Text, "<active_context>") || strings.HasPrefix(m.Text, "<active_context_block>") || strings.HasPrefix(m.Text, "<system-reminder>") || strings.HasPrefix(m.Text, "<session-resume>") {
 				continue
 			}
 			a.chatBuf.WriteString(userStyle.Render("you ❯ ") + m.Text + "\n\n")

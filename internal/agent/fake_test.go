@@ -15,12 +15,14 @@ import (
 type fakeAdapter struct {
 	scripts [][]llm.StreamEvent
 	calls   int
+	reqs    []llm.Request
 }
 
 func (f *fakeAdapter) Provider() string { return "fake" }
 func (f *fakeAdapter) Stream(ctx context.Context, req llm.Request) (<-chan llm.StreamEvent, error) {
 	idx := f.calls
 	f.calls++
+	f.reqs = append(f.reqs, req)
 	if idx >= len(f.scripts) {
 		idx = len(f.scripts) - 1
 	}
@@ -179,6 +181,51 @@ func TestMasterCallsToolThenAnswers(t *testing.T) {
 				return
 			}
 		}
+	}
+}
+
+func TestMasterActiveContextIsEphemeral(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventText, TextDelta: "done"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, func(string, []string) (llm.Adapter, string) {
+		return adapter, "m"
+	}, 1)
+	master := NewMaster(adapter, "m", reg, bus, tracker, mgr)
+	master.messages = []llm.Message{{Role: llm.RoleUser, Text: "start"}}
+	master.pendingEvs = []Event{{Kind: EvSubagentRetry, SubagentID: "s1", Text: "retrying tool"}}
+
+	master.takeTurns(context.Background())
+
+	if len(adapter.reqs) != 1 {
+		t.Fatalf("adapter reqs = %d, want 1", len(adapter.reqs))
+	}
+	reqMsgs := adapter.reqs[0].Messages
+	if len(reqMsgs) != 2 {
+		t.Fatalf("request messages = %d, want 2", len(reqMsgs))
+	}
+	last := reqMsgs[len(reqMsgs)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "<active_context>") {
+		t.Fatalf("last request message = %+v, want ephemeral active context", last)
+	}
+	if got := master.pendingEvs; len(got) != 0 {
+		t.Fatalf("pending events not cleared: %+v", got)
+	}
+	for _, msg := range master.messages {
+		if strings.Contains(msg.Text, "<active_context>") {
+			t.Fatalf("durable history contains active context: %+v", master.messages)
+		}
+	}
+	if len(master.messages) != 2 {
+		t.Fatalf("durable message count = %d, want 2", len(master.messages))
 	}
 }
 

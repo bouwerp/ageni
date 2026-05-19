@@ -9,7 +9,7 @@ commit log.
 The repo is at `github.com/bouwerp/ageni`. Releases follow the rule
 "every push that ships a user-visible change gets a new tag" — minor
 bumps for features, patch bumps for fixes. At the time of writing the
-project is on **v0.37.7** and 64 commits.
+project is on **v0.38.36**.
 
 ---
 
@@ -835,7 +835,7 @@ per subscriber; slow subscribers drop events. Used by:
 
 ```go
 for turn := 0; turn < maxTurns; turn++ {
-    refreshActiveContext()           // strip + rewrite tail block
+    buildActiveContext()             // synthesize one-turn ephemeral context
     publish(EvMasterTurnStart)
     stream := adapter.Stream(req)
     for ev := range stream {         // text deltas + tool calls
