@@ -13,6 +13,7 @@ import (
 type evalFixture struct {
 	Name            string   `json:"name"`
 	Prompt          string   `json:"prompt"`
+	Tags            []string `json:"tags,omitempty"`
 	WantContains    []string `json:"want_contains,omitempty"`
 	WantNotContains []string `json:"want_not_contains,omitempty"`
 }
@@ -20,6 +21,7 @@ type evalFixture struct {
 type evalResult struct {
 	Name               string   `json:"name"`
 	Prompt             string   `json:"prompt"`
+	Tags               []string `json:"tags,omitempty"`
 	OK                 bool     `json:"ok"`
 	DurationMS         int64    `json:"duration_ms"`
 	MissingContains    []string `json:"missing_contains,omitempty"`
@@ -31,6 +33,7 @@ type evalResult struct {
 type evalReport struct {
 	AgeniVersion string       `json:"ageni_version"`
 	FixturePath  string       `json:"fixture_path"`
+	SelectedTags []string     `json:"selected_tags,omitempty"`
 	StartedAt    time.Time    `json:"started_at"`
 	FinishedAt   time.Time    `json:"finished_at"`
 	Total        int          `json:"total"`
@@ -42,6 +45,7 @@ type evalReport struct {
 type evalOptions struct {
 	Path string
 	Out  string
+	Tags []string
 }
 
 func runEval(args []string) error {
@@ -53,9 +57,14 @@ func runEval(args []string) error {
 	if err != nil {
 		return err
 	}
+	fixtures = filterEvalFixtures(fixtures, opts.Tags)
+	if len(fixtures) == 0 {
+		return fmt.Errorf("no eval fixtures matched %q with tags %v", opts.Path, opts.Tags)
+	}
 	report := evalReport{
 		AgeniVersion: version,
 		FixturePath:  opts.Path,
+		SelectedTags: append([]string(nil), opts.Tags...),
 		StartedAt:    time.Now().UTC(),
 		Results:      make([]evalResult, 0, len(fixtures)),
 	}
@@ -66,6 +75,7 @@ func runEval(args []string) error {
 		result := evalResult{
 			Name:       fixture.Name,
 			Prompt:     fixture.Prompt,
+			Tags:       append([]string(nil), fixture.Tags...),
 			DurationMS: time.Since(start).Milliseconds(),
 			Output:     output,
 		}
@@ -100,19 +110,25 @@ func parseEvalArgs(args []string) (evalOptions, error) {
 		switch args[i] {
 		case "--out":
 			if i+1 >= len(args) {
-				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
 			}
 			opts.Out = args[i+1]
 			i++
+		case "--tag":
+			if i+1 >= len(args) {
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
+			}
+			opts.Tags = append(opts.Tags, args[i+1])
+			i++
 		default:
 			if opts.Path != "" {
-				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
 			}
 			opts.Path = args[i]
 		}
 	}
 	if opts.Path == "" {
-		return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+		return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
 	}
 	return opts, nil
 }
@@ -185,6 +201,32 @@ func normalizeEvalFixtures(path string, fixtures []evalFixture) ([]evalFixture, 
 		out = append(out, fixture)
 	}
 	return out, nil
+}
+
+func filterEvalFixtures(fixtures []evalFixture, tags []string) []evalFixture {
+	if len(tags) == 0 {
+		return fixtures
+	}
+	want := make(map[string]struct{}, len(tags))
+	for _, tag := range tags {
+		if tag == "" {
+			continue
+		}
+		want[tag] = struct{}{}
+	}
+	if len(want) == 0 {
+		return fixtures
+	}
+	out := make([]evalFixture, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		for _, tag := range fixture.Tags {
+			if _, ok := want[tag]; ok {
+				out = append(out, fixture)
+				break
+			}
+		}
+	}
+	return out
 }
 
 func missingContains(output string, want []string) []string {

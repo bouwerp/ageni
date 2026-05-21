@@ -1,0 +1,14 @@
+[
+  {
+    "name": "verification-reminder-after-failed-tests",
+    "tags": ["verification"],
+    "prompt": "What does ageni do if a worker tries to finalize while recent verification results still show failed tests or builds? Answer briefly.",
+    "want_contains": ["reminder"]
+  },
+  {
+    "name": "build-like-run-bash-example",
+    "tags": ["verification"],
+    "prompt": "Name one build-like run_bash command that ageni treats as verification-relevant.",
+    "want_contains": ["go build"]
+  }
+]

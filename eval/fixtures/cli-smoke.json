@@ -1,11 +1,13 @@
 [
   {
     "name": "help-lists-exec",
+    "tags": ["smoke", "cli"],
     "prompt": "List the ageni CLI subcommands mentioned in help output. Include exec if it exists.",
     "want_contains": ["exec"]
   },
   {
     "name": "edit-policy-prefers-apply-diff",
+    "tags": ["smoke", "editing"],
     "prompt": "In this repository, which tool is preferred for multi-line or multi-block edits to an existing file? Answer briefly.",
     "want_contains": ["apply_diff"]
   }

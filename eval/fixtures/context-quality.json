@@ -1,0 +1,20 @@
+[
+  {
+    "name": "inspection-first-editing",
+    "tags": ["editing", "context"],
+    "prompt": "Before mutating files on edit tasks, what first-turn behavior does ageni enforce for workers?",
+    "want_contains": ["inspect"]
+  },
+  {
+    "name": "structured-replay-compaction",
+    "tags": ["context"],
+    "prompt": "Which structured block does ageni preserve when compacting replayed session history?",
+    "want_contains": ["compacted_context"]
+  },
+  {
+    "name": "task-conditioned-hints",
+    "tags": ["context", "editing"],
+    "prompt": "What kind of spawn-time guidance do ageni workers now receive for edit tasks?",
+    "want_contains": ["execution_hints"]
+  }
+]

@@ -72,3 +72,29 @@ func TestParseEvalArgsAcceptsOutFlag(t *testing.T) {
 		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
 	}
 }
+
+func TestParseEvalArgsAcceptsRepeatedTags(t *testing.T) {
+	got, err := parseEvalArgs([]string{"--tag", "editing", "--tag", "verification", "eval/fixtures"})
+	if err != nil {
+		t.Fatalf("parseEvalArgs() error = %v", err)
+	}
+	want := evalOptions{Path: "eval/fixtures", Tags: []string{"editing", "verification"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
+	}
+}
+
+func TestFilterEvalFixturesByTags(t *testing.T) {
+	fixtures := []evalFixture{
+		{Name: "a", Tags: []string{"editing"}},
+		{Name: "b", Tags: []string{"verification"}},
+		{Name: "c", Tags: []string{"context", "editing"}},
+	}
+
+	got := filterEvalFixtures(fixtures, []string{"editing"})
+	gotNames := []string{got[0].Name, got[1].Name}
+	wantNames := []string{"a", "c"}
+	if !reflect.DeepEqual(gotNames, wantNames) {
+		t.Fatalf("filtered names = %v, want %v", gotNames, wantNames)
+	}
+}
