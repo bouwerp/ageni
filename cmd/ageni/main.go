@@ -7,7 +7,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -23,16 +22,11 @@ import (
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/agentsmd"
 	"github.com/bouwerp/ageni/internal/config"
-	"github.com/bouwerp/ageni/internal/homedir"
 	"github.com/bouwerp/ageni/internal/llm"
-	"github.com/bouwerp/ageni/internal/mcp"
-	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/repomap"
-	"github.com/bouwerp/ageni/internal/roles"
 	"github.com/bouwerp/ageni/internal/secrets"
 	"github.com/bouwerp/ageni/internal/session"
-	"github.com/bouwerp/ageni/internal/skills"
 	"github.com/bouwerp/ageni/internal/tools"
 	"github.com/bouwerp/ageni/internal/tui"
 )
@@ -69,6 +63,12 @@ func main() {
 			return
 		case "sessions":
 			if err := runSessions(os.Args[2:]); err != nil {
+				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+				os.Exit(1)
+			}
+			return
+		case "exec":
+			if err := runExec(os.Args[2:]); err != nil {
 				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
 				os.Exit(1)
 			}
@@ -117,6 +117,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  version, -v      print version information")
 	fmt.Fprintln(w, "  init             interactive config wizard")
 	fmt.Fprintln(w, "  doctor           check external CLI dependencies; --install / -y to auto-install")
+	fmt.Fprintln(w, "  exec <prompt>    run one prompt headlessly and print the final answer")
 	fmt.Fprintln(w, "  skills <cmd>     manage skills (list, install <git-url>, path)")
 	fmt.Fprintln(w, "  sessions <cmd>   manage sessions (list, show, resume, rm)")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
@@ -224,121 +225,21 @@ func run() error {
 	// Build a base set of tools used by both master and sub-agents.
 	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect
 	// their tools to add to the registries below.
-	mcpMgr, mcpTools, mcpErr := mcp.LoadAndConnect(ctx)
-	if mcpErr != nil {
-		fmt.Fprintf(os.Stderr, "ageni: mcp setup: %v\n", mcpErr)
-	}
+	mcpMgr, mcpTools := loadMCPTools(ctx)
 	if mcpMgr != nil {
 		defer mcpMgr.Close()
 	}
 
 	// Load skills from ~/.ageni/skills/ and ./.ageni/skills/.
-	skillReg, sErr := skills.Load()
-	if sErr != nil {
-		fmt.Fprintf(os.Stderr, "ageni: skills: %v\n", sErr)
-		skillReg = nil
-	}
+	skillReg := loadSkillRegistry()
 
 	// Load roles from embedded built-ins and ~/.ageni/roles/.
-	rolesUserDir := ""
-	if home, err := homedir.Dir(); err == nil {
-		rolesUserDir = filepath.Join(home, ".ageni", "roles")
-	}
-	roleReg, rErr := roles.Load(rolesUserDir)
-	if rErr != nil {
-		fmt.Fprintf(os.Stderr, "ageni: roles: %v\n", rErr)
-		roleReg = roles.Global // fallback to empty registry
-	} else {
-		roles.Global = roleReg
-	}
+	roleReg := loadRoleRegistry()
 
 	// Load memories from ~/.ageni/memories/ and ./.ageni/memories/. Run with a
 	// timeout so that a slow filesystem or unreachable home directory cannot
 	// hang startup indefinitely.
-	var memReg *memory.Registry
-	{
-		type memResult struct {
-			reg *memory.Registry
-			err error
-		}
-		ch := make(chan memResult, 1)
-		go func() {
-			reg, err := memory.Load()
-			ch <- memResult{reg, err}
-		}()
-		select {
-		case res := <-ch:
-			if res.err != nil {
-				fmt.Fprintf(os.Stderr, "ageni: memories: %v\n", res.err)
-			} else {
-				memReg = res.reg
-			}
-		case <-time.After(3 * time.Second):
-			fmt.Fprintf(os.Stderr, "ageni: memories: load timed out, skipping\n")
-		}
-	}
-
-	registerWorkerBase := func(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker) {
-		r.Register(secrets.NewGuardedReadFile())
-		r.Register(tools.WriteFile{Tracker: tr})
-		r.Register(tools.EditFile{Tracker: tr})
-		r.Register(tools.MultiEdit{Tracker: tr})
-		r.Register(tools.TransactionalEdit{Tracker: tr})
-		r.Register(tools.ApplyDiff{Tracker: tr})
-		r.Register(tools.ListDir{})
-		r.Register(tools.Glob{})
-		r.Register(secrets.NewGuardedGrep())
-		r.Register(tools.SearchSymbols{})
-		r.Register(tools.MakeDir{Tracker: tr})
-		r.Register(tools.MoveFile{Tracker: tr})
-		r.Register(tools.DeleteFile{Tracker: tr})
-		r.Register(tools.RunBash{})
-		r.Register(tools.WebFetch{})
-		r.Register(tools.WebSearch{})
-		r.Register(tools.GitStatus{})
-		r.Register(tools.GitDiff{})
-		r.Register(tools.GitLog{})
-		r.Register(tools.ComputeDiff{})
-		r.Register(tools.RunTests{})
-		r.Register(tools.GitHub{})
-		r.Register(tools.PkgInfo{})
-		r.Register(todo)
-		r.Register(tools.Simulator{})
-		if skillReg != nil {
-			r.Register(skills.ReadSkill{Registry: skillReg})
-		}
-		if memReg != nil {
-			r.Register(memory.RememberTool{Reg: memReg})
-			r.Register(memory.RecallTool{Reg: memReg})
-			r.Register(memory.ForgetTool{Reg: memReg})
-		}
-		for _, t := range mcpTools {
-			r.Register(t)
-		}
-		// Secrets tools: list_secrets, run_with_secret, http_with_auth.
-		// request_secret_store is wired separately once the TUI channel exists.
-		if secretStore != nil {
-			r.Register(secrets.NewListSecretsTool(secretStore))
-			r.Register(secrets.NewRunWithSecretTool(secretStore))
-			r.Register(secrets.NewHTTPWithAuthTool(secretStore))
-			// Backstop: scrub any value that escaped into tool output.
-			r.SetScrubber(secretStore.Redactor().Scrub)
-		}
-	}
-	registerMasterBase := func(r *tools.Registry, todo *tools.TodoWrite) {
-		r.Register(todo)
-		if skillReg != nil {
-			r.Register(skills.ReadSkill{Registry: skillReg})
-		}
-		if memReg != nil {
-			r.Register(memory.RememberTool{Reg: memReg})
-			r.Register(memory.RecallTool{Reg: memReg})
-			r.Register(memory.ForgetTool{Reg: memReg})
-		}
-		if secretStore != nil {
-			r.SetScrubber(secretStore.Redactor().Scrub)
-		}
-	}
+	memReg := loadMemoryRegistry()
 
 	// Open a session — either resume an existing one (--session <id>) or
 	// start fresh. Per-instance state lives under ~/.ageni/sessions/<id>/
@@ -362,7 +263,7 @@ func run() error {
 	changes := tools.NewChangeTracker(sess.Path("changes.jsonl"), sess.Path("snapshots"))
 
 	registry := tools.NewRegistry()
-	registerWorkerBase(registry, todo, changes)
+	registerWorkerBase(registry, todo, changes, skillReg, memReg, mcpTools, secretStore)
 
 	// view_image is subagent-only: the master must always delegate image
 	// analysis to a worker so vision calls don't block the orchestration loop.
@@ -423,7 +324,7 @@ func run() error {
 	registry.Register(agent.ListShellsTool{SM: shellMgr})
 
 	masterReg := tools.NewRegistry()
-	registerMasterBase(masterReg, todo)
+	registerMasterBase(masterReg, todo, skillReg, memReg, secretStore)
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
