@@ -295,15 +295,40 @@ func (m *Master) CriticAdapter() (llm.Adapter, string) {
 	return m.criticAdapter, m.criticModel
 }
 
-// iteration of takeTurns. Iteration 0 → lead (if set); iteration 1+
-// → worker.
+// adapterForIter chooses between the lead and worker adapters. The lead model
+// handles the first iteration of a takeTurns call and later integration turns
+// that immediately follow tool results.
 func (m *Master) adapterForIter(iter int) (llm.Adapter, string) {
 	m.mu.RLock()
 	defer m.mu.RUnlock()
-	if iter == 0 && m.leadAdapter != nil {
+	if m.useLeadAdapterLocked(iter) {
 		return m.leadAdapter, m.leadModel
 	}
 	return m.adapter, m.model
+}
+
+func (m *Master) useLeadAdapter(iter int) bool {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.useLeadAdapterLocked(iter)
+}
+
+func (m *Master) useLeadAdapterLocked(iter int) bool {
+	if m.leadAdapter == nil {
+		return false
+	}
+	if iter == 0 {
+		return true
+	}
+	for i := len(m.messages) - 1; i >= 0; i-- {
+		switch m.messages[i].Role {
+		case llm.RoleTool:
+			return true
+		case llm.RoleAssistant, llm.RoleUser:
+			return false
+		}
+	}
+	return false
 }
 
 // CancelCurrent interrupts any in-flight LLM call. The master loop stays
@@ -656,9 +681,7 @@ func (m *Master) takeTurns(parent context.Context) {
 			return
 		}
 		adapter, model := m.adapterForIter(turn)
-		m.mu.RLock()
-		usingLead := turn == 0 && m.leadAdapter != nil
-		m.mu.RUnlock()
+		usingLead := m.useLeadAdapter(turn)
 		trackerRole := "master"
 		if usingLead {
 			trackerRole = "master/lead"

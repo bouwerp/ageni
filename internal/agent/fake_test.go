@@ -389,6 +389,47 @@ func TestFitPromptBlocksTruncatesTaggedBlockToFitBudget(t *testing.T) {
 	}
 }
 
+func TestMasterAdapterForIterUsesLeadOnIntegrationTurn(t *testing.T) {
+	lead := &fakeAdapter{}
+	worker := &fakeAdapter{}
+	master := &Master{
+		adapter:     worker,
+		model:       "worker-model",
+		leadAdapter: lead,
+		leadModel:   "lead-model",
+		messages: []llm.Message{
+			{Role: llm.RoleUser, Text: "Fix the build"},
+			{Role: llm.RoleAssistant, Text: "Checking"},
+			{Role: llm.RoleTool, ToolResults: []llm.ToolResult{{Content: "test output"}}},
+		},
+	}
+
+	adapter, model := master.adapterForIter(1)
+	if adapter != lead || model != "lead-model" {
+		t.Fatalf("adapterForIter(1) = (%v, %q), want lead adapter", adapter, model)
+	}
+}
+
+func TestMasterAdapterForIterKeepsWorkerForNonIntegrationTurns(t *testing.T) {
+	lead := &fakeAdapter{}
+	worker := &fakeAdapter{}
+	master := &Master{
+		adapter:     worker,
+		model:       "worker-model",
+		leadAdapter: lead,
+		leadModel:   "lead-model",
+		messages: []llm.Message{
+			{Role: llm.RoleUser, Text: "Fix the build"},
+			{Role: llm.RoleAssistant, Text: "Still exploring"},
+		},
+	}
+
+	adapter, model := master.adapterForIter(1)
+	if adapter != worker || model != "worker-model" {
+		t.Fatalf("adapterForIter(1) = (%v, %q), want worker adapter", adapter, model)
+	}
+}
+
 func TestMasterCompactionProducesStructuredContext(t *testing.T) {
 	adapter := &fakeAdapter{
 		scripts: [][]llm.StreamEvent{
