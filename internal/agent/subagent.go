@@ -334,6 +334,9 @@ func (s *Subagent) Run(parent context.Context) {
 
 	toolCallsUsed := 0
 	wrappingUp := false
+	allToolDefs := s.tools.Definitions()
+	inspectionComplete := !requiresInspectionFirst(s.Task, allToolDefs)
+	pendingInspectionAttempts := 0
 	pendingVerificationReminder := ""
 	pendingVerificationAttempts := 0
 	pendingEditRecoveryReminder := ""
@@ -355,7 +358,14 @@ func (s *Subagent) Run(parent context.Context) {
 		// During wrap-up turns we strip tools so the model is forced to
 		// produce its final text. Outside wrap-up, tools are available.
 		if !wrappingUp {
-			req.Tools = s.tools.Definitions()
+			req.Tools = allToolDefs
+			if !inspectionComplete {
+				req.Tools = filterToolDefs(allToolDefs, isInspectionToolName)
+				if len(req.Tools) == 0 {
+					req.Tools = allToolDefs
+					inspectionComplete = true
+				}
+			}
 		}
 
 		assistantText, reasoningContent, toolCalls, err := s.runTurnWithRetry(ctx, req)
@@ -383,6 +393,21 @@ func (s *Subagent) Run(parent context.Context) {
 		messages = append(messages, assistantMsg)
 
 		if len(cleanCalls) == 0 {
+			if !inspectionComplete && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingInspectionAttempts < maxInspectionReminders {
+				pendingInspectionAttempts++
+				msg := buildInspectionReminder(pendingInspectionAttempts, maxInspectionReminders)
+				s.appendTranscript("inspection reminder: inspect before mutating files")
+				s.publish(Event{
+					Kind:       EvSubagentRetry,
+					SubagentID: s.ID,
+					Text:       "inspect current code before mutating files",
+				})
+				messages = append(messages, llm.Message{
+					Role: llm.RoleUser,
+					Text: msg,
+				})
+				continue
+			}
 			if pendingVerificationReminder != "" && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingVerificationAttempts < maxVerificationReminders {
 				pendingVerificationAttempts++
 				msg := buildVerificationReminder(pendingVerificationReminder, pendingVerificationAttempts, maxVerificationReminders)
@@ -447,6 +472,10 @@ func (s *Subagent) Run(parent context.Context) {
 				ToolResults: []llm.ToolResult{result},
 			})
 			toolCallsUsed++
+		}
+		if !inspectionComplete && usedInspectionTool(cleanCalls) {
+			inspectionComplete = true
+			pendingInspectionAttempts = 0
 		}
 		pendingVerificationReminder, pendingVerificationAttempts = updateVerificationState(
 			pendingVerificationReminder,
@@ -531,8 +560,36 @@ func errMark(b bool) string {
 	return ""
 }
 
+const maxInspectionReminders = 2
 const maxVerificationReminders = 2
 const maxEditRecoveryReminders = 2
+
+var inspectionToolNames = map[string]struct{}{
+	"read_file":      {},
+	"list_dir":       {},
+	"glob":           {},
+	"grep":           {},
+	"search_symbols": {},
+	"git_status":     {},
+	"git_diff":       {},
+	"git_log":        {},
+	"pkg_info":       {},
+	"web_fetch":      {},
+	"web_search":     {},
+	"github":         {},
+	"view_image":     {},
+}
+
+var mutationToolNames = map[string]struct{}{
+	"apply_diff":         {},
+	"edit_file":          {},
+	"multi_edit":         {},
+	"transactional_edit": {},
+	"write_file":         {},
+	"make_dir":           {},
+	"move_file":          {},
+	"delete_file":        {},
+}
 
 var verificationEditTools = map[string]struct{}{
 	"apply_diff":         {},
@@ -584,9 +641,79 @@ func isVerificationEditTool(name string) bool {
 	return ok
 }
 
+func isInspectionToolName(name string) bool {
+	_, ok := inspectionToolNames[name]
+	return ok
+}
+
+func isMutationToolName(name string) bool {
+	_, ok := mutationToolNames[name]
+	return ok
+}
+
 func isBrittleExactMatchEditTool(name string) bool {
 	_, ok := brittleExactMatchEditTools[name]
 	return ok
+}
+
+func filterToolDefs(defs []llm.ToolDef, keep func(string) bool) []llm.ToolDef {
+	out := make([]llm.ToolDef, 0, len(defs))
+	for _, def := range defs {
+		if keep(def.Name) {
+			out = append(out, def)
+		}
+	}
+	return out
+}
+
+func requiresInspectionFirst(task SubagentTask, defs []llm.ToolDef) bool {
+	if !taskLikelyNeedsMutation(task) {
+		return false
+	}
+	hasInspection := false
+	hasMutation := false
+	for _, def := range defs {
+		if isInspectionToolName(def.Name) {
+			hasInspection = true
+		}
+		if isMutationToolName(def.Name) {
+			hasMutation = true
+		}
+	}
+	return hasInspection && hasMutation
+}
+
+func taskLikelyNeedsMutation(task SubagentTask) bool {
+	if strings.Contains(strings.ToLower(task.TaskBoundaries), "do not edit") {
+		return false
+	}
+	text := strings.ToLower(strings.Join([]string{task.Objective, task.Context}, " "))
+	switch {
+	case strings.Contains(text, "fix"),
+		strings.Contains(text, "edit"),
+		strings.Contains(text, "modify"),
+		strings.Contains(text, "update"),
+		strings.Contains(text, "refactor"),
+		strings.Contains(text, "rename"),
+		strings.Contains(text, "implement"),
+		strings.Contains(text, "add"),
+		strings.Contains(text, "remove"),
+		strings.Contains(text, "rewrite"),
+		strings.Contains(text, "change"),
+		strings.Contains(text, "patch"):
+		return true
+	default:
+		return false
+	}
+}
+
+func usedInspectionTool(calls []llm.ToolCall) bool {
+	for _, call := range calls {
+		if isInspectionToolName(call.Name) {
+			return true
+		}
+	}
+	return false
 }
 
 func unresolvedLintIssues(content string) []string {
@@ -744,6 +871,14 @@ func buildVerificationReminder(issues string, attempt, max int) string {
 	return fmt.Sprintf(
 		"<system-reminder>\nThe most recent verification-related tool results still show unresolved issues:\n%s\nDo not produce your final <result> yet. Make another relevant tool call to fix the problem or rerun verification, then continue. If you cannot resolve it within the remaining budget, explain the blocker explicitly in your final <result>.\nThis is reminder %d of %d.\n</system-reminder>",
 		issues,
+		attempt,
+		max,
+	)
+}
+
+func buildInspectionReminder(attempt, max int) string {
+	return fmt.Sprintf(
+		"<system-reminder>\nThis task appears to require code changes. Inspect the current code before mutating files: make a read/search tool call first (for example read_file, grep, glob, search_symbols, or git_diff), then continue with edits.\nDo not produce your final <result> yet.\nThis is reminder %d of %d.\n</system-reminder>",
 		attempt,
 		max,
 	)

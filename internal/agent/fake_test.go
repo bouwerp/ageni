@@ -80,6 +80,14 @@ func (t *scriptedErrorTool) Call(context.Context, json.RawMessage) (string, erro
 	return "", errors.New(t.errors[idx])
 }
 
+func toolNames(defs []llm.ToolDef) []string {
+	out := make([]string, 0, len(defs))
+	for _, def := range defs {
+		out = append(out, def.Name)
+	}
+	return out
+}
+
 func TestSubagentRunsToolThenFinalText(t *testing.T) {
 	adapter := &fakeAdapter{
 		scripts: [][]llm.StreamEvent{
@@ -336,6 +344,115 @@ func TestSubagentRemindsToSwitchEditBackendsBeforeFinalText(t *testing.T) {
 	}
 	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
 		t.Fatalf("final text=%q, want final result after backend switch", got)
+	}
+}
+
+func TestSubagentRequiresInspectionBeforeMutationOnEditTasks(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "read_file", Arguments: json.RawMessage(`{"path":"foo.go"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t2", Name: "apply_diff", Arguments: json.RawMessage(`{"path":"foo.go","content":"<<<<<<< SEARCH\nbefore\n=======\nafter\n>>>>>>> REPLACE"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done</result><reasoning>inspected first, then edited</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	reg.Register(&scriptedTool{name: "read_file", outputs: []string{"[foo.go lines 1-1 of 1]\nbefore\n"}})
+	reg.Register(&scriptedTool{name: "apply_diff", outputs: []string{"applied 1 block(s) to foo.go (search_replace)"}})
+
+	task := SubagentTask{
+		Objective:       "refactor foo.go safely",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"read_file", "apply_diff"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if got, want := toolNames(adapter.reqs[0].Tools), []string{"read_file"}; fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("first-turn tools=%v, want %v", got, want)
+	}
+	secondTurnTools := toolNames(adapter.reqs[1].Tools)
+	foundApplyDiff := false
+	for _, name := range secondTurnTools {
+		if name == "apply_diff" {
+			foundApplyDiff = true
+			break
+		}
+	}
+	if !foundApplyDiff {
+		t.Fatalf("second-turn tools=%v, want apply_diff after inspection", secondTurnTools)
+	}
+}
+
+func TestSubagentRemindsToInspectBeforeFinalizingEditTask(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done too early</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "read_file", Arguments: json.RawMessage(`{"path":"foo.go"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>blocked after inspection</result><reasoning>need one more edit step later</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	reg.Register(&scriptedTool{name: "read_file", outputs: []string{"[foo.go lines 1-1 of 1]\nbefore\n"}})
+	reg.Register(&scriptedTool{name: "apply_diff", outputs: []string{"applied 1 block(s) to foo.go (search_replace)"}})
+
+	task := SubagentTask{
+		Objective:       "update foo.go",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"read_file", "apply_diff"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if len(adapter.reqs) != 3 {
+		t.Fatalf("adapter reqs=%d, want 3", len(adapter.reqs))
+	}
+	last := adapter.reqs[1].Messages[len(adapter.reqs[1].Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "Inspect the current code before mutating files") {
+		t.Fatalf("expected inspection reminder, got %+v", last)
 	}
 }
 
