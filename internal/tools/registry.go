@@ -30,7 +30,7 @@ type OutputScrubber func(string) string
 
 // Registry holds tools and produces deterministic ToolDef lists for the LLM.
 type Registry struct {
-	tools   map[string]Tool
+	tools    map[string]Tool
 	scrubber OutputScrubber
 }
 
@@ -167,9 +167,9 @@ func guessAlternative(name string) string {
 	case "find":
 		return "Did you mean glob? Or run_bash with find."
 	case "edit", "patch", "apply_patch":
-		return "Did you mean edit_file (single replacement) or multi_edit (atomic batch)?"
+		return "Did you mean apply_diff (SEARCH/REPLACE blocks or whole-file), edit_file (single replacement), or multi_edit (atomic batch)?"
 	case "edit_file":
-		return "Did you mean multi_edit (atomic batch edits) or write_file? edit_file may not be in your allowed_tools — use multi_edit for the same single-replacement use case."
+		return "Did you mean apply_diff for multi-block edits, multi_edit for atomic batch edits, or write_file for whole-file replacement? edit_file may not be in your allowed_tools."
 	}
 	return ""
 }

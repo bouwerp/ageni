@@ -518,6 +518,21 @@ func TestSubagentUserPromptKeepsSmallContext(t *testing.T) {
 	}
 }
 
+func TestSubagentSystemPromptIncludesEditingPolicy(t *testing.T) {
+	prompt := (&Subagent{}).systemPrompt()
+
+	for _, want := range []string{
+		"<editing_policy>",
+		"Prefer edit_file only for one exact replacement",
+		"Prefer apply_diff for multi-line or multi-block edits",
+		"Prefer transactional_edit for coordinated multi-file changes",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected subagent system prompt to contain %q", want)
+		}
+	}
+}
+
 func TestSubagentPauseResume(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()

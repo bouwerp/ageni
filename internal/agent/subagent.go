@@ -759,6 +759,15 @@ func (s *Subagent) systemPrompt() string {
 - If the master named a specific skill in <use_skill>, call read_skill on it first and apply its procedures.
 </rules>
 
+<editing_policy>
+When multiple edit tools are available, choose the least brittle one for the job:
+- Prefer edit_file only for one exact replacement that should match exactly once.
+- Prefer apply_diff for multi-line or multi-block edits to an existing file; it gives better retry diagnostics when a search block misses.
+- Prefer multi_edit for several deterministic replacements in one file when each old_string should match exactly.
+- Prefer transactional_edit for coordinated multi-file changes, especially when you can verify them with validate_command.
+- Prefer write_file for new files or intentional full rewrites, not casual edits to existing files.
+</editing_policy>
+
 <self_healing>
 When a tool returns an error, do not stop — diagnose and recover autonomously:
 - Bad argument / invalid JSON: fix the argument and retry.
