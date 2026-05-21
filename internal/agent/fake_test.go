@@ -533,6 +533,18 @@ func TestSubagentSystemPromptIncludesEditingPolicy(t *testing.T) {
 	}
 }
 
+func TestLatestMemoryQuerySkipsSyntheticUserMessages(t *testing.T) {
+	msgs := []llm.Message{
+		{Role: llm.RoleUser, Text: "Investigate auth regressions"},
+		{Role: llm.RoleUser, Text: "<active_context>ignore this</active_context>"},
+		{Role: llm.RoleUser, Text: "<system-reminder>ignore this too</system-reminder>"},
+	}
+
+	if got := latestMemoryQuery(msgs); got != "Investigate auth regressions" {
+		t.Fatalf("latestMemoryQuery() = %q, want original user request", got)
+	}
+}
+
 func TestSubagentPauseResume(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()

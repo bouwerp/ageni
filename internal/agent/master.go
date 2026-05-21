@@ -1194,6 +1194,7 @@ func (m *Master) systemPrompt() string {
 	catalog := m.skillCatalog
 	roleCat := m.roleCatalog
 	memReg := m.memReg
+	messages := append([]llm.Message(nil), m.messages...)
 	repoMap := m.repoMap
 	agentsMD := m.agentsMD
 	masterCaps := m.masterCaps
@@ -1211,7 +1212,7 @@ func (m *Master) systemPrompt() string {
 	}
 	memoriesBlock := ""
 	if memReg != nil {
-		if block := memReg.InlineBlock(); block != "" {
+		if block := memReg.InlineBlockForQuery(latestMemoryQuery(messages), 6); block != "" {
 			memoriesBlock = "\n\n" + block
 		}
 	}
@@ -1413,6 +1414,25 @@ You MUST be self-healing. When a tool call or provider request returns an error,
 	// context is capped so dynamic catalogs and repo metadata can't silently
 	// crowd out the orchestration contract.
 	return roleBlock + fitPromptBlocks(optionalBudget, optionalBlocks) + capsBlock + coreBlock
+}
+
+func latestMemoryQuery(messages []llm.Message) string {
+	for i := len(messages) - 1; i >= 0; i-- {
+		msg := messages[i]
+		if msg.Role != llm.RoleUser {
+			continue
+		}
+		text := strings.TrimSpace(msg.Text)
+		if text == "" ||
+			strings.HasPrefix(text, "<active_context>") ||
+			strings.HasPrefix(text, "<system-reminder>") ||
+			strings.HasPrefix(text, "<session-resume>") ||
+			strings.HasPrefix(text, "<compacted_context") {
+			continue
+		}
+		return text
+	}
+	return ""
 }
 
 // buildMasterCapsBlock produces the <model_capabilities> XML block injected

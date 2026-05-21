@@ -25,6 +25,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"unicode"
 
 	"github.com/bouwerp/ageni/internal/homedir"
 )
@@ -234,6 +235,62 @@ func (r *Registry) InlineBlock() string {
 	}
 	r.mu.RUnlock()
 
+	return renderInlineBlock(mems, "")
+}
+
+// InlineBlockForQuery returns a <memories>...</memories> block containing only
+// the most relevant memories for the given query when relevance can be
+// determined. When the query is empty or the simple ranker cannot find any
+// matches, it falls back to InlineBlock() so behavior stays conservative.
+func (r *Registry) InlineBlockForQuery(query string, maxItems int) string {
+	r.mu.RLock()
+	mems := make([]*Memory, 0, len(r.order))
+	for _, k := range r.order {
+		mems = append(mems, r.items[k])
+	}
+	r.mu.RUnlock()
+
+	if len(mems) == 0 || maxItems <= 0 || len(mems) <= maxItems {
+		return renderInlineBlock(mems, "")
+	}
+	terms := queryTerms(query)
+	if len(terms) == 0 {
+		return renderInlineBlock(mems, "")
+	}
+
+	type scoredMemory struct {
+		mem   *Memory
+		score int
+	}
+	scored := make([]scoredMemory, 0, len(mems))
+	for _, m := range mems {
+		score := scoreMemory(m, terms)
+		if score > 0 {
+			scored = append(scored, scoredMemory{mem: m, score: score})
+		}
+	}
+	if len(scored) == 0 {
+		return renderInlineBlock(mems, "")
+	}
+
+	sort.Slice(scored, func(i, j int) bool {
+		if scored[i].score != scored[j].score {
+			return scored[i].score > scored[j].score
+		}
+		return scored[i].mem.Key < scored[j].mem.Key
+	})
+	if len(scored) > maxItems {
+		scored = scored[:maxItems]
+	}
+	selected := make([]*Memory, 0, len(scored))
+	for _, item := range scored {
+		selected = append(selected, item.mem)
+	}
+	note := fmt.Sprintf("Showing %d of %d memories most relevant to the current request.\n\n", len(selected), len(mems))
+	return renderInlineBlock(selected, note)
+}
+
+func renderInlineBlock(mems []*Memory, note string) string {
 	if len(mems) == 0 {
 		return ""
 	}
@@ -241,6 +298,9 @@ func (r *Registry) InlineBlock() string {
 	var sb strings.Builder
 	sb.WriteString("<memories>\n")
 	sb.WriteString("Persistent facts and context snippets stored across sessions. Trust these over your general knowledge when they conflict.\n\n")
+	if note != "" {
+		sb.WriteString(note)
+	}
 	for _, m := range mems {
 		sb.WriteString("**")
 		sb.WriteString(m.Key)
@@ -257,6 +317,43 @@ func (r *Registry) InlineBlock() string {
 	sb.WriteString("Use remember(key=...) to add/update memories, forget(key=...) to remove them.\n")
 	sb.WriteString("</memories>")
 	return sb.String()
+}
+
+func queryTerms(query string) []string {
+	seen := map[string]struct{}{}
+	terms := make([]string, 0, 8)
+	for _, raw := range strings.FieldsFunc(strings.ToLower(query), func(r rune) bool {
+		return !unicode.IsLetter(r) && !unicode.IsDigit(r)
+	}) {
+		if len(raw) < 3 {
+			continue
+		}
+		if _, ok := seen[raw]; ok {
+			continue
+		}
+		seen[raw] = struct{}{}
+		terms = append(terms, raw)
+	}
+	return terms
+}
+
+func scoreMemory(m *Memory, terms []string) int {
+	key := strings.ToLower(m.Key)
+	desc := strings.ToLower(m.Description)
+	body := strings.ToLower(m.Content)
+	score := 0
+	for _, term := range terms {
+		if strings.Contains(key, term) {
+			score += 4
+		}
+		if strings.Contains(desc, term) {
+			score += 3
+		}
+		if strings.Contains(body, term) {
+			score++
+		}
+	}
+	return score
 }
 
 // Names returns all memory keys in alphabetical order.

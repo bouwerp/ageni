@@ -70,6 +70,51 @@ func TestInlineBlock(t *testing.T) {
 	}
 }
 
+func TestInlineBlockForQuerySelectsRelevantMemories(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{items: map[string]*Memory{}, writeAt: dir}
+	r.rebuildOrder()
+
+	if err := r.Set("build", "Build instructions", "Run go build ./..."); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("auth", "Authentication notes", "JWT middleware lives in internal/auth"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("release", "Release process", "Push a v*.*.* tag to trigger the workflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	block := r.InlineBlockForQuery("build the binary and fix build failures", 1)
+	if !strings.Contains(block, "Showing 1 of 3 memories") {
+		t.Fatalf("expected filtered memory notice, got %q", block)
+	}
+	if !strings.Contains(block, "**build**") {
+		t.Fatalf("expected build memory to be selected, got %q", block)
+	}
+	if strings.Contains(block, "**auth**") || strings.Contains(block, "**release**") {
+		t.Fatalf("expected only the relevant memory, got %q", block)
+	}
+}
+
+func TestInlineBlockForQueryFallsBackWhenNoMatches(t *testing.T) {
+	dir := t.TempDir()
+	r := &Registry{items: map[string]*Memory{}, writeAt: dir}
+	r.rebuildOrder()
+
+	if err := r.Set("build", "Build instructions", "Run go build ./..."); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.Set("release", "Release process", "Push a v*.*.* tag to trigger the workflow"); err != nil {
+		t.Fatal(err)
+	}
+
+	block := r.InlineBlockForQuery("calendar widget colors", 1)
+	if !strings.Contains(block, "**build**") || !strings.Contains(block, "**release**") {
+		t.Fatalf("expected fallback to the full memory block when no memories match, got %q", block)
+	}
+}
+
 func TestParseFrontmatter(t *testing.T) {
 	input := "---\ndescription: my description\n---\nmy content\n"
 	desc, body := parseFrontmatter(input)
