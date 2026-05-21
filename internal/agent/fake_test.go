@@ -165,11 +165,77 @@ func TestSubagentRemindsOnUnresolvedLintBeforeFinalText(t *testing.T) {
 	}
 	req := adapter.reqs[2]
 	last := req.Messages[len(req.Messages)-1]
-	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "unresolved lint or formatting issues") {
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "verification-related tool results") {
 		t.Fatalf("expected lint reminder in request, got %+v", last)
 	}
 	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
 		t.Fatalf("final text=%q, want final result after lint fix", got)
+	}
+}
+
+func TestSubagentRemindsOnFailedTestsBeforeFinalText(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "run_tests", Arguments: json.RawMessage(`{}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done too early</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t2", Name: "run_tests", Arguments: json.RawMessage(`{}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done</result><reasoning>tests now pass</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	tool := &scriptedTool{
+		name: "run_tests",
+		outputs: []string{
+			"[exit 1]\nFAIL\tgithub.com/example/project\t0.123s",
+			"[exit 0]\nok\tgithub.com/example/project\t0.123s",
+		},
+	}
+	reg.Register(tool)
+
+	task := SubagentTask{
+		Objective:       "fix and verify tests",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"run_tests"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if tool.calls != 2 {
+		t.Fatalf("tool calls=%d, want 2", tool.calls)
+	}
+	req := adapter.reqs[2]
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "verification-related tool results") {
+		t.Fatalf("expected verification reminder in request, got %+v", last)
+	}
+	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
+		t.Fatalf("final text=%q, want final result after tests pass", got)
 	}
 }
 

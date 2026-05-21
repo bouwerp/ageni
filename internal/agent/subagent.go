@@ -381,14 +381,14 @@ func (s *Subagent) Run(parent context.Context) {
 		messages = append(messages, assistantMsg)
 
 		if len(cleanCalls) == 0 {
-			if pendingVerificationReminder != "" && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingVerificationAttempts < maxPostEditVerificationReminders {
+			if pendingVerificationReminder != "" && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingVerificationAttempts < maxVerificationReminders {
 				pendingVerificationAttempts++
-				msg := buildPostEditVerificationReminder(pendingVerificationReminder, pendingVerificationAttempts, maxPostEditVerificationReminders)
-				s.appendTranscript("verification reminder: unresolved post-edit lint issues")
+				msg := buildVerificationReminder(pendingVerificationReminder, pendingVerificationAttempts, maxVerificationReminders)
+				s.appendTranscript("verification reminder: unresolved lint/test issues")
 				s.publish(Event{
 					Kind:       EvSubagentRetry,
 					SubagentID: s.ID,
-					Text:       "unresolved post-edit lint issues — fix before finalizing",
+					Text:       "unresolved verification issues — fix before finalizing",
 				})
 				messages = append(messages, llm.Message{
 					Role: llm.RoleUser,
@@ -431,7 +431,7 @@ func (s *Subagent) Run(parent context.Context) {
 			})
 			toolCallsUsed++
 		}
-		pendingVerificationReminder, pendingVerificationAttempts = updatePostEditVerificationState(
+		pendingVerificationReminder, pendingVerificationAttempts = updateVerificationState(
 			pendingVerificationReminder,
 			pendingVerificationAttempts,
 			cleanCalls,
@@ -508,9 +508,9 @@ func errMark(b bool) string {
 	return ""
 }
 
-const maxPostEditVerificationReminders = 2
+const maxVerificationReminders = 2
 
-var postEditVerificationTools = map[string]struct{}{
+var verificationEditTools = map[string]struct{}{
 	"apply_diff":         {},
 	"edit_file":          {},
 	"multi_edit":         {},
@@ -518,26 +518,34 @@ var postEditVerificationTools = map[string]struct{}{
 	"write_file":         {},
 }
 
-func updatePostEditVerificationState(previous string, attempts int, calls []llm.ToolCall, results []llm.ToolResult) (string, int) {
+func updateVerificationState(previous string, attempts int, calls []llm.ToolCall, results []llm.ToolResult) (string, int) {
 	sawRelevantTool := false
 	var issues []string
 	for i, call := range calls {
 		if i >= len(results) {
 			break
 		}
-		if _, ok := postEditVerificationTools[call.Name]; !ok {
-			continue
+		switch {
+		case call.Name == "run_tests":
+			sawRelevantTool = true
+			issues = append(issues, unresolvedTestIssues(results[i].Content)...)
+		case isVerificationEditTool(call.Name):
+			sawRelevantTool = true
+			issues = append(issues, unresolvedLintIssues(results[i].Content)...)
 		}
-		sawRelevantTool = true
-		issues = append(issues, unresolvedLintIssues(results[i].Content)...)
 	}
 	if len(issues) > 0 {
-		return formatPostEditVerificationIssues(issues), 0
+		return formatVerificationIssues(issues), 0
 	}
 	if sawRelevantTool {
 		return "", 0
 	}
 	return previous, attempts
+}
+
+func isVerificationEditTool(name string) bool {
+	_, ok := verificationEditTools[name]
+	return ok
 }
 
 func unresolvedLintIssues(content string) []string {
@@ -558,7 +566,21 @@ func unresolvedLintIssues(content string) []string {
 	return issues
 }
 
-func formatPostEditVerificationIssues(issues []string) string {
+func unresolvedTestIssues(content string) []string {
+	firstLine := strings.TrimSpace(strings.SplitN(content, "\n", 2)[0])
+	if firstLine == "" {
+		return nil
+	}
+	if strings.HasPrefix(firstLine, "[exit ") && firstLine != "[exit 0]" {
+		return []string{"[tests] " + firstLine}
+	}
+	if strings.HasPrefix(content, "go test: ") && !strings.Contains(firstLine, "fail=0") {
+		return []string{"[tests] " + firstLine}
+	}
+	return nil
+}
+
+func formatVerificationIssues(issues []string) string {
 	if len(issues) == 0 {
 		return ""
 	}
@@ -571,9 +593,9 @@ func formatPostEditVerificationIssues(issues []string) string {
 	return strings.TrimRight(sb.String(), "\n")
 }
 
-func buildPostEditVerificationReminder(issues string, attempt, max int) string {
+func buildVerificationReminder(issues string, attempt, max int) string {
 	return fmt.Sprintf(
-		"<system-reminder>\nThe most recent edit-related tool results still show unresolved lint or formatting issues:\n%s\nDo not produce your final <result> yet. Make another edit-related tool call to fix the issues, then continue. If you cannot resolve them within the remaining budget, explain the blocker explicitly in your final <result>.\nThis is reminder %d of %d.\n</system-reminder>",
+		"<system-reminder>\nThe most recent verification-related tool results still show unresolved issues:\n%s\nDo not produce your final <result> yet. Make another relevant tool call to fix the problem or rerun verification, then continue. If you cannot resolve it within the remaining budget, explain the blocker explicitly in your final <result>.\nThis is reminder %d of %d.\n</system-reminder>",
 		issues,
 		attempt,
 		max,
