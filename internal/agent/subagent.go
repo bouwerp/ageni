@@ -529,6 +529,9 @@ func updateVerificationState(previous string, attempts int, calls []llm.ToolCall
 		case call.Name == "run_tests":
 			sawRelevantTool = true
 			issues = append(issues, unresolvedTestIssues(results[i].Content)...)
+		case call.Name == "run_bash" && isTestLikeRunBash(call.Arguments):
+			sawRelevantTool = true
+			issues = append(issues, unresolvedTestIssues(results[i].Content)...)
 		case isVerificationEditTool(call.Name):
 			sawRelevantTool = true
 			issues = append(issues, unresolvedLintIssues(results[i].Content)...)
@@ -578,6 +581,30 @@ func unresolvedTestIssues(content string) []string {
 		return []string{"[tests] " + firstLine}
 	}
 	return nil
+}
+
+func isTestLikeRunBash(args json.RawMessage) bool {
+	var p struct {
+		Command string `json:"command"`
+	}
+	if err := json.Unmarshal(args, &p); err != nil {
+		return false
+	}
+	command := strings.ToLower(p.Command)
+	switch {
+	case strings.Contains(command, "go test"),
+		strings.Contains(command, "pytest"),
+		strings.Contains(command, "cargo test"),
+		strings.Contains(command, "npm test"),
+		strings.Contains(command, "pnpm test"),
+		strings.Contains(command, "yarn test"),
+		strings.Contains(command, "bun test"),
+		strings.Contains(command, "mvn test"),
+		strings.Contains(command, "gradlew test"):
+		return true
+	default:
+		return false
+	}
 }
 
 func formatVerificationIssues(issues []string) string {

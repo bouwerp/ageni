@@ -239,6 +239,69 @@ func TestSubagentRemindsOnFailedTestsBeforeFinalText(t *testing.T) {
 	}
 }
 
+func TestSubagentRemindsOnFailedRunBashTestsBeforeFinalText(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "run_bash", Arguments: json.RawMessage(`{"command":"go test ./..."}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done too early</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t2", Name: "run_bash", Arguments: json.RawMessage(`{"command":"go test ./..."}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done</result><reasoning>bash-driven tests now pass</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	tool := &scriptedTool{
+		name: "run_bash",
+		outputs: []string{
+			"[exit 1]\nFAIL\tgithub.com/example/project\t0.123s",
+			"[exit 0]\nok\tgithub.com/example/project\t0.123s",
+		},
+	}
+	reg.Register(tool)
+
+	task := SubagentTask{
+		Objective:       "fix and verify bash-driven tests",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"run_bash"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	req := adapter.reqs[2]
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "verification-related tool results") {
+		t.Fatalf("expected verification reminder in request, got %+v", last)
+	}
+	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
+		t.Fatalf("final text=%q, want final result after bash tests pass", got)
+	}
+}
+
 func TestSubagentRespectsBudget(t *testing.T) {
 	// Adapter that keeps calling list_dir forever — should hit budget.
 	loop := []llm.StreamEvent{
