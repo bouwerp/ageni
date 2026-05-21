@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -57,6 +58,26 @@ func (t *scriptedTool) Call(context.Context, json.RawMessage) (string, error) {
 		idx = len(t.outputs) - 1
 	}
 	return t.outputs[idx], nil
+}
+
+type scriptedErrorTool struct {
+	name   string
+	errors []string
+	calls  int
+}
+
+func (t *scriptedErrorTool) Name() string        { return t.name }
+func (t *scriptedErrorTool) Description() string { return "scripted test error tool" }
+func (t *scriptedErrorTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+}
+func (t *scriptedErrorTool) Call(context.Context, json.RawMessage) (string, error) {
+	idx := t.calls
+	t.calls++
+	if idx >= len(t.errors) {
+		idx = len(t.errors) - 1
+	}
+	return "", errors.New(t.errors[idx])
 }
 
 func TestSubagentRunsToolThenFinalText(t *testing.T) {
@@ -229,13 +250,92 @@ func TestSubagentRemindsOnFailedTestsBeforeFinalText(t *testing.T) {
 	if tool.calls != 2 {
 		t.Fatalf("tool calls=%d, want 2", tool.calls)
 	}
+	if len(adapter.reqs) != 4 {
+		t.Fatalf("adapter reqs=%d, want 4", len(adapter.reqs))
+	}
 	req := adapter.reqs[2]
 	last := req.Messages[len(req.Messages)-1]
 	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "verification-related tool results") {
-		t.Fatalf("expected verification reminder in request, got %+v", last)
+		t.Fatalf("expected test reminder in request, got %+v", last)
 	}
 	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
-		t.Fatalf("final text=%q, want final result after tests pass", got)
+		t.Fatalf("final text=%q, want final result after test fix", got)
+	}
+}
+
+func TestSubagentRemindsToSwitchEditBackendsBeforeFinalText(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"foo.go","old_string":"before","new_string":"after"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done too early</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t2", Name: "apply_diff", Arguments: json.RawMessage(`{"path":"foo.go","content":"<<<<<<< SEARCH\nbefore\n=======\nafter\n>>>>>>> REPLACE"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done</result><reasoning>switched edit backends and finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	editTool := &scriptedErrorTool{
+		name: "edit_file",
+		errors: []string{
+			"old_string not found in foo.go; if this is a multi-line or approximate edit, prefer apply_diff with SEARCH/REPLACE blocks because it returns closest candidate regions when SEARCH misses",
+		},
+	}
+	applyDiffTool := &scriptedTool{
+		name:    "apply_diff",
+		outputs: []string{"applied 1 block(s) to foo.go (search_replace)"},
+	}
+	reg.Register(editTool)
+	reg.Register(applyDiffTool)
+
+	task := SubagentTask{
+		Objective:       "edit foo.go safely",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"edit_file", "apply_diff"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if editTool.calls != 1 {
+		t.Fatalf("edit_file calls=%d, want 1", editTool.calls)
+	}
+	if applyDiffTool.calls != 1 {
+		t.Fatalf("apply_diff calls=%d, want 1", applyDiffTool.calls)
+	}
+	if len(adapter.reqs) != 4 {
+		t.Fatalf("adapter reqs=%d, want 4", len(adapter.reqs))
+	}
+	req := adapter.reqs[2]
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "exact-match edit tool failed") || !strings.Contains(last.Text, "Switch to apply_diff") {
+		t.Fatalf("expected edit recovery reminder in request, got %+v", last)
+	}
+	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
+		t.Fatalf("final text=%q, want final result after backend switch", got)
 	}
 }
 

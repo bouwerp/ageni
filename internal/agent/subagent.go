@@ -336,6 +336,8 @@ func (s *Subagent) Run(parent context.Context) {
 	wrappingUp := false
 	pendingVerificationReminder := ""
 	pendingVerificationAttempts := 0
+	pendingEditRecoveryReminder := ""
+	pendingEditRecoveryAttempts := 0
 
 	for turn := 0; turn < s.hardTurnCap; turn++ {
 		if err := s.waitIfPaused(ctx); err != nil {
@@ -396,6 +398,21 @@ func (s *Subagent) Run(parent context.Context) {
 				})
 				continue
 			}
+			if pendingEditRecoveryReminder != "" && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingEditRecoveryAttempts < maxEditRecoveryReminders {
+				pendingEditRecoveryAttempts++
+				msg := buildEditRecoveryReminder(pendingEditRecoveryReminder, pendingEditRecoveryAttempts, maxEditRecoveryReminders)
+				s.appendTranscript("edit recovery reminder: prefer apply_diff after brittle edit failure")
+				s.publish(Event{
+					Kind:       EvSubagentRetry,
+					SubagentID: s.ID,
+					Text:       "brittle edit failed — switch to apply_diff before finalizing",
+				})
+				messages = append(messages, llm.Message{
+					Role: llm.RoleUser,
+					Text: msg,
+				})
+				continue
+			}
 			// Text-only response. If the master injected a follow-up while we
 			// were generating, keep going instead of finishing.
 			if pending := s.drainInbox(messages); len(pending) > len(messages) {
@@ -434,6 +451,12 @@ func (s *Subagent) Run(parent context.Context) {
 		pendingVerificationReminder, pendingVerificationAttempts = updateVerificationState(
 			pendingVerificationReminder,
 			pendingVerificationAttempts,
+			cleanCalls,
+			turnResults,
+		)
+		pendingEditRecoveryReminder, pendingEditRecoveryAttempts = updateEditRecoveryState(
+			pendingEditRecoveryReminder,
+			pendingEditRecoveryAttempts,
 			cleanCalls,
 			turnResults,
 		)
@@ -509,6 +532,7 @@ func errMark(b bool) string {
 }
 
 const maxVerificationReminders = 2
+const maxEditRecoveryReminders = 2
 
 var verificationEditTools = map[string]struct{}{
 	"apply_diff":         {},
@@ -516,6 +540,12 @@ var verificationEditTools = map[string]struct{}{
 	"multi_edit":         {},
 	"transactional_edit": {},
 	"write_file":         {},
+}
+
+var brittleExactMatchEditTools = map[string]struct{}{
+	"edit_file":          {},
+	"multi_edit":         {},
+	"transactional_edit": {},
 }
 
 func updateVerificationState(previous string, attempts int, calls []llm.ToolCall, results []llm.ToolResult) (string, int) {
@@ -551,6 +581,11 @@ func updateVerificationState(previous string, attempts int, calls []llm.ToolCall
 
 func isVerificationEditTool(name string) bool {
 	_, ok := verificationEditTools[name]
+	return ok
+}
+
+func isBrittleExactMatchEditTool(name string) bool {
+	_, ok := brittleExactMatchEditTools[name]
 	return ok
 }
 
@@ -595,6 +630,41 @@ func unresolvedBuildIssues(content string) []string {
 		return []string{"[build] " + firstLine}
 	}
 	return nil
+}
+
+func updateEditRecoveryState(previous string, attempts int, calls []llm.ToolCall, results []llm.ToolResult) (string, int) {
+	sawRelevantTool := false
+	var issues []string
+	for i, call := range calls {
+		if i >= len(results) {
+			break
+		}
+		if !isVerificationEditTool(call.Name) {
+			continue
+		}
+		sawRelevantTool = true
+		if issue := unresolvedEditRecoveryIssue(call.Name, results[i]); issue != "" {
+			issues = append(issues, issue)
+		}
+	}
+	if len(issues) > 0 {
+		return formatVerificationIssues(issues), 0
+	}
+	if sawRelevantTool {
+		return "", 0
+	}
+	return previous, attempts
+}
+
+func unresolvedEditRecoveryIssue(toolName string, result llm.ToolResult) string {
+	if !result.IsError || !isBrittleExactMatchEditTool(toolName) {
+		return ""
+	}
+	firstLine := strings.TrimSpace(strings.SplitN(result.Content, "\n", 2)[0])
+	if firstLine == "" || !strings.Contains(strings.ToLower(firstLine), "prefer apply_diff") {
+		return ""
+	}
+	return fmt.Sprintf("[edit-recovery] %s failed: %s", toolName, firstLine)
 }
 
 func runBashCommand(args json.RawMessage) string {
@@ -673,6 +743,15 @@ func formatVerificationIssues(issues []string) string {
 func buildVerificationReminder(issues string, attempt, max int) string {
 	return fmt.Sprintf(
 		"<system-reminder>\nThe most recent verification-related tool results still show unresolved issues:\n%s\nDo not produce your final <result> yet. Make another relevant tool call to fix the problem or rerun verification, then continue. If you cannot resolve it within the remaining budget, explain the blocker explicitly in your final <result>.\nThis is reminder %d of %d.\n</system-reminder>",
+		issues,
+		attempt,
+		max,
+	)
+}
+
+func buildEditRecoveryReminder(issues string, attempt, max int) string {
+	return fmt.Sprintf(
+		"<system-reminder>\nThe most recent exact-match edit tool failed in a way that suggests a more robust edit backend:\n%s\nDo not produce your final <result> yet. Switch to apply_diff for the next edit attempt, or explain explicitly in your final <result> why you cannot complete the change with the available tools.\nThis is reminder %d of %d.\n</system-reminder>",
 		issues,
 		attempt,
 		max,
