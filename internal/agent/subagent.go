@@ -1094,6 +1094,10 @@ Never ask the master or the user for help with recoverable errors — handle the
 
 func (s *Subagent) userPrompt() string {
 	var sb strings.Builder
+	var defs []llm.ToolDef
+	if s.tools != nil {
+		defs = s.tools.Definitions()
+	}
 	sb.WriteString("<task>\n")
 	sb.WriteString("<objective>" + s.Task.Objective + "</objective>\n")
 	sb.WriteString("<output_format>" + s.Task.OutputFormat + "</output_format>\n")
@@ -1108,6 +1112,9 @@ func (s *Subagent) userPrompt() string {
 	}
 	if s.Task.UseSkill != "" {
 		sb.WriteString("<use_skill>" + s.Task.UseSkill + "</use_skill>\n")
+	}
+	if hints := buildTaskExecutionHints(s.Task, defs); hints != "" {
+		sb.WriteString(hints)
 	}
 	remaining := subagentContextBudgetTokens
 	var compressed []string
@@ -1137,6 +1144,46 @@ func (s *Subagent) userPrompt() string {
 	}
 	sb.WriteString("</task>\n\nBegin.")
 	return sb.String()
+}
+
+func buildTaskExecutionHints(task SubagentTask, defs []llm.ToolDef) string {
+	if len(defs) == 0 || !taskLikelyNeedsMutation(task) {
+		return ""
+	}
+	hints := make([]string, 0, 4)
+	if requiresInspectionFirst(task, defs) {
+		hints = append(hints, "Inspect current code with a read/search tool before making edits.")
+	}
+	if hasToolDefNamed(defs, "apply_diff") {
+		hints = append(hints, "Prefer apply_diff for multi-line or multi-block edits; reserve edit_file for one exact replacement.")
+	}
+	if hasToolDefNamed(defs, "transactional_edit") {
+		hints = append(hints, "Use transactional_edit for coordinated multi-file changes when validate_command can protect against partial breakage.")
+	}
+	if hasToolDefNamed(defs, "run_tests") || hasToolDefNamed(defs, "run_bash") {
+		hints = append(hints, "After edits, rerun the relevant verification tool before finalizing.")
+	}
+	if len(hints) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	sb.WriteString("<execution_hints>\n")
+	for _, hint := range hints {
+		sb.WriteString("- ")
+		sb.WriteString(hint)
+		sb.WriteByte('\n')
+	}
+	sb.WriteString("</execution_hints>\n")
+	return sb.String()
+}
+
+func hasToolDefNamed(defs []llm.ToolDef, name string) bool {
+	for _, def := range defs {
+		if def.Name == name {
+			return true
+		}
+	}
+	return false
 }
 
 func buildSubagentListSection(tag string, items []string, budget int, trailing string) (string, int, string) {

@@ -991,6 +991,51 @@ func TestSubagentUserPromptKeepsSmallContext(t *testing.T) {
 	}
 }
 
+func TestSubagentUserPromptAddsTaskConditionedExecutionHints(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.ReadFile{})
+	reg.Register(tools.ApplyDiff{})
+	reg.Register(tools.RunTests{})
+
+	prompt := (&Subagent{
+		Task: SubagentTask{
+			Objective:    "refactor auth flow and verify tests",
+			OutputFormat: "<result/>",
+		},
+		tools: reg,
+	}).userPrompt()
+
+	for _, want := range []string{
+		"<execution_hints>",
+		"Inspect current code with a read/search tool before making edits.",
+		"Prefer apply_diff for multi-line or multi-block edits",
+		"After edits, rerun the relevant verification tool before finalizing.",
+	} {
+		if !strings.Contains(prompt, want) {
+			t.Fatalf("expected prompt to contain %q, got %q", want, prompt)
+		}
+	}
+}
+
+func TestSubagentUserPromptSkipsTaskConditionedHintsForReadOnlyTask(t *testing.T) {
+	reg := tools.NewRegistry()
+	reg.Register(tools.ReadFile{})
+	reg.Register(tools.ListDir{})
+
+	prompt := (&Subagent{
+		Task: SubagentTask{
+			Objective:      "inspect auth flow",
+			OutputFormat:   "<result/>",
+			TaskBoundaries: "Do not edit files.",
+		},
+		tools: reg,
+	}).userPrompt()
+
+	if strings.Contains(prompt, "<execution_hints>") {
+		t.Fatalf("did not expect execution hints for read-only task, got %q", prompt)
+	}
+}
+
 func TestSubagentSystemPromptIncludesEditingPolicy(t *testing.T) {
 	prompt := (&Subagent{}).systemPrompt()
 
