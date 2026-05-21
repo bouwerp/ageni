@@ -35,6 +35,26 @@ func (f *fakeAdapter) Stream(ctx context.Context, req llm.Request) (<-chan llm.S
 	return ch, nil
 }
 
+type scriptedTool struct {
+	name    string
+	outputs []string
+	calls   int
+}
+
+func (t *scriptedTool) Name() string        { return t.name }
+func (t *scriptedTool) Description() string { return "scripted test tool" }
+func (t *scriptedTool) Schema() json.RawMessage {
+	return json.RawMessage(`{"type":"object","properties":{},"required":[]}`)
+}
+func (t *scriptedTool) Call(context.Context, json.RawMessage) (string, error) {
+	idx := t.calls
+	t.calls++
+	if idx >= len(t.outputs) {
+		idx = len(t.outputs) - 1
+	}
+	return t.outputs[idx], nil
+}
+
 func TestSubagentRunsToolThenFinalText(t *testing.T) {
 	adapter := &fakeAdapter{
 		scripts: [][]llm.StreamEvent{
@@ -77,6 +97,75 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 	snap := tracker.Snapshot()
 	if snap.Total.InputTokens != 220 || snap.Total.OutputTokens != 50 {
 		t.Fatalf("token tracking wrong: %+v", snap.Total)
+	}
+}
+
+func TestSubagentRemindsOnUnresolvedLintBeforeFinalText(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "edit_file", Arguments: json.RawMessage(`{"path":"foo.go","old_string":"a","new_string":"b"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done too early</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t2", Name: "edit_file", Arguments: json.RawMessage(`{"path":"foo.go","old_string":"b","new_string":"b"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done</result><reasoning>fixed lint and finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	tool := &scriptedTool{
+		name: "edit_file",
+		outputs: []string{
+			"replaced 1 occurrence in foo.go\n[lint] gofmt: file needs reformat (run `gofmt -w foo.go`):\n--- before",
+			"replaced 1 occurrence in foo.go\n[lint] gofmt: ok",
+		},
+	}
+	reg.Register(tool)
+
+	task := SubagentTask{
+		Objective:       "edit foo.go",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"edit_file"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if tool.calls != 2 {
+		t.Fatalf("tool calls=%d, want 2", tool.calls)
+	}
+	if len(adapter.reqs) != 4 {
+		t.Fatalf("adapter reqs=%d, want 4", len(adapter.reqs))
+	}
+	req := adapter.reqs[2]
+	last := req.Messages[len(req.Messages)-1]
+	if last.Role != llm.RoleUser || !strings.Contains(last.Text, "unresolved lint or formatting issues") {
+		t.Fatalf("expected lint reminder in request, got %+v", last)
+	}
+	if got := sub.FinalText(); !strings.Contains(got, "<result>done</result>") {
+		t.Fatalf("final text=%q, want final result after lint fix", got)
 	}
 }
 

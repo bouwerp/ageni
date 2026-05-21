@@ -334,6 +334,8 @@ func (s *Subagent) Run(parent context.Context) {
 
 	toolCallsUsed := 0
 	wrappingUp := false
+	pendingVerificationReminder := ""
+	pendingVerificationAttempts := 0
 
 	for turn := 0; turn < s.hardTurnCap; turn++ {
 		if err := s.waitIfPaused(ctx); err != nil {
@@ -379,6 +381,21 @@ func (s *Subagent) Run(parent context.Context) {
 		messages = append(messages, assistantMsg)
 
 		if len(cleanCalls) == 0 {
+			if pendingVerificationReminder != "" && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingVerificationAttempts < maxPostEditVerificationReminders {
+				pendingVerificationAttempts++
+				msg := buildPostEditVerificationReminder(pendingVerificationReminder, pendingVerificationAttempts, maxPostEditVerificationReminders)
+				s.appendTranscript("verification reminder: unresolved post-edit lint issues")
+				s.publish(Event{
+					Kind:       EvSubagentRetry,
+					SubagentID: s.ID,
+					Text:       "unresolved post-edit lint issues — fix before finalizing",
+				})
+				messages = append(messages, llm.Message{
+					Role: llm.RoleUser,
+					Text: msg,
+				})
+				continue
+			}
 			// Text-only response. If the master injected a follow-up while we
 			// were generating, keep going instead of finishing.
 			if pending := s.drainInbox(messages); len(pending) > len(messages) {
@@ -395,6 +412,7 @@ func (s *Subagent) Run(parent context.Context) {
 		}
 
 		// Execute each tool call, one tool-result Message per call.
+		turnResults := make([]llm.ToolResult, 0, len(cleanCalls))
 		for _, tc := range cleanCalls {
 			if ctx.Err() != nil {
 				break
@@ -406,12 +424,19 @@ func (s *Subagent) Run(parent context.Context) {
 			result := s.tools.Execute(ctx, tc)
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
 			s.publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})
+			turnResults = append(turnResults, result)
 			messages = append(messages, llm.Message{
 				Role:        llm.RoleTool,
 				ToolResults: []llm.ToolResult{result},
 			})
 			toolCallsUsed++
 		}
+		pendingVerificationReminder, pendingVerificationAttempts = updatePostEditVerificationState(
+			pendingVerificationReminder,
+			pendingVerificationAttempts,
+			cleanCalls,
+			turnResults,
+		)
 
 		// Soft budget: when we've hit the cap, request a wrap-up turn next
 		// instead of erroring out. The master gets a real <result>/<reasoning>
@@ -481,6 +506,78 @@ func errMark(b bool) string {
 		return " [error]"
 	}
 	return ""
+}
+
+const maxPostEditVerificationReminders = 2
+
+var postEditVerificationTools = map[string]struct{}{
+	"apply_diff":         {},
+	"edit_file":          {},
+	"multi_edit":         {},
+	"transactional_edit": {},
+	"write_file":         {},
+}
+
+func updatePostEditVerificationState(previous string, attempts int, calls []llm.ToolCall, results []llm.ToolResult) (string, int) {
+	sawRelevantTool := false
+	var issues []string
+	for i, call := range calls {
+		if i >= len(results) {
+			break
+		}
+		if _, ok := postEditVerificationTools[call.Name]; !ok {
+			continue
+		}
+		sawRelevantTool = true
+		issues = append(issues, unresolvedLintIssues(results[i].Content)...)
+	}
+	if len(issues) > 0 {
+		return formatPostEditVerificationIssues(issues), 0
+	}
+	if sawRelevantTool {
+		return "", 0
+	}
+	return previous, attempts
+}
+
+func unresolvedLintIssues(content string) []string {
+	lines := strings.Split(content, "\n")
+	seen := make(map[string]struct{}, len(lines))
+	issues := make([]string, 0, len(lines))
+	for _, line := range lines {
+		trimmed := strings.TrimSpace(line)
+		if !strings.Contains(trimmed, "[lint]") || strings.Contains(trimmed, ": ok") {
+			continue
+		}
+		if _, ok := seen[trimmed]; ok {
+			continue
+		}
+		seen[trimmed] = struct{}{}
+		issues = append(issues, trimmed)
+	}
+	return issues
+}
+
+func formatPostEditVerificationIssues(issues []string) string {
+	if len(issues) == 0 {
+		return ""
+	}
+	var sb strings.Builder
+	for _, issue := range issues {
+		sb.WriteString("- ")
+		sb.WriteString(issue)
+		sb.WriteString("\n")
+	}
+	return strings.TrimRight(sb.String(), "\n")
+}
+
+func buildPostEditVerificationReminder(issues string, attempt, max int) string {
+	return fmt.Sprintf(
+		"<system-reminder>\nThe most recent edit-related tool results still show unresolved lint or formatting issues:\n%s\nDo not produce your final <result> yet. Make another edit-related tool call to fix the issues, then continue. If you cannot resolve them within the remaining budget, explain the blocker explicitly in your final <result>.\nThis is reminder %d of %d.\n</system-reminder>",
+		issues,
+		attempt,
+		max,
+	)
 }
 
 // maxIdleRetries is the number of times a sub-agent will retry a turn after
