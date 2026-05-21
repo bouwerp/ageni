@@ -370,6 +370,25 @@ func TestMasterSystemPromptKeepsSmallOptionalBlocks(t *testing.T) {
 	}
 }
 
+func TestFitPromptBlocksTruncatesTaggedBlockToFitBudget(t *testing.T) {
+	block := promptContextBlock{
+		name: "repository map",
+		text: "<repo_map>\n" + strings.Repeat("internal/very/long/path/file.go: symbol\n", 400) + "</repo_map>",
+	}
+
+	out := fitPromptBlocks(120, []promptContextBlock{block})
+
+	if got := models.EstimateTokens(out); got > 120 {
+		t.Fatalf("fitPromptBlocks output estimated at %d tokens, want <= 120", got)
+	}
+	if !strings.Contains(out, "<repo_map>") || !strings.Contains(out, "</repo_map>") {
+		t.Fatalf("expected truncated tagged block to remain well-formed, got %q", out)
+	}
+	if !strings.Contains(out, "truncated to fit prompt budget") {
+		t.Fatalf("expected truncated block marker, got %q", out)
+	}
+}
+
 func TestMasterCompactionProducesStructuredContext(t *testing.T) {
 	adapter := &fakeAdapter{
 		scripts: [][]llm.StreamEvent{

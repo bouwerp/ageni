@@ -1163,30 +1163,91 @@ func fitPromptBlocks(budget int, blocks []promptContextBlock) string {
 	if budget <= 0 {
 		return ""
 	}
+	if budget > 8 {
+		budget -= 8 // leave a little headroom for estimator drift
+	}
+	noticeReserve := models.EstimateTokens("\n\n<prompt_budget_notice>\nAuxiliary context omitted to stay within the system prompt budget. Fetch anything missing on demand instead of assuming it was included.\n</prompt_budget_notice>")
+	workingBudget := budget
+	if noticeReserve < workingBudget {
+		workingBudget -= noticeReserve
+	}
 	var sb strings.Builder
 	var omitted []string
+	var truncated []string
 	for _, block := range blocks {
 		text := strings.TrimSpace(block.text)
 		if text == "" {
 			continue
 		}
-		if est := models.EstimateTokens(block.text); est <= budget {
-			sb.WriteString(block.text)
-			budget -= est
+		rendered := "\n\n" + text
+		if est := models.EstimateTokens(rendered); est <= workingBudget {
+			sb.WriteString(rendered)
+			workingBudget -= est
+			continue
+		}
+		if partial := truncatePromptContextBlock(text, workingBudget); partial != "" {
+			sb.WriteString(partial)
+			workingBudget -= models.EstimateTokens(partial)
+			truncated = append(truncated, block.name)
 			continue
 		}
 		omitted = append(omitted, block.name)
 	}
-	if len(omitted) == 0 {
+	if len(omitted) == 0 && len(truncated) == 0 {
 		return sb.String()
 	}
-	notice := "\n\n<prompt_budget_notice>\nAuxiliary context omitted to stay within the system prompt budget: " +
-		strings.Join(omitted, ", ") +
+	var status []string
+	if len(truncated) > 0 {
+		status = append(status, "truncated to fit the system prompt budget: "+strings.Join(truncated, ", "))
+	}
+	if len(omitted) > 0 {
+		status = append(status, "omitted to stay within the system prompt budget: "+strings.Join(omitted, ", "))
+	}
+	notice := "\n\n<prompt_budget_notice>\nAuxiliary context " +
+		strings.Join(status, ". Also ") +
 		". Fetch anything missing on demand instead of assuming it was included.\n</prompt_budget_notice>"
-	if models.EstimateTokens(notice) <= budget {
+	if models.EstimateTokens(notice) <= budget-workingBudget {
 		sb.WriteString(notice)
 	}
 	return sb.String()
+}
+
+func truncatePromptContextBlock(text string, budget int) string {
+	if budget <= 0 {
+		return ""
+	}
+	const marker = "... (truncated to fit prompt budget)"
+	openEnd := strings.Index(text, ">")
+	closeStart := strings.LastIndex(text, "</")
+	if openEnd < 0 || closeStart <= openEnd {
+		return ""
+	}
+	prefix := text[:openEnd+1]
+	suffix := text[closeStart:]
+	body := strings.TrimSpace(text[openEnd+1 : closeStart])
+	render := func(content string) string {
+		if content == "" {
+			return "\n\n" + prefix + "\n" + marker + "\n" + suffix
+		}
+		return "\n\n" + prefix + "\n" + strings.TrimSpace(content) + "\n" + marker + "\n" + suffix
+	}
+	minimum := render("")
+	if models.EstimateTokens(minimum) > budget {
+		return ""
+	}
+	best := minimum
+	low, high := 0, len(body)
+	for low <= high {
+		mid := (low + high) / 2
+		candidate := render(body[:mid])
+		if models.EstimateTokens(candidate) <= budget {
+			best = candidate
+			low = mid + 1
+			continue
+		}
+		high = mid - 1
+	}
+	return best
 }
 
 func (m *Master) systemPrompt() string {
@@ -1406,6 +1467,7 @@ You MUST be self-healing. When a tool call or provider request returns an error,
 </self_healing>`
 
 	optionalBudget := systemPromptBudgetTokens - models.EstimateTokens(roleBlock) - models.EstimateTokens(capsBlock) - models.EstimateTokens(coreBlock)
+	optionalBudget -= 32 // small safety margin for prompt-estimation drift
 	if optionalBudget < 0 {
 		optionalBudget = 0
 	}
