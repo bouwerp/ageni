@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 	"time"
 
@@ -15,16 +16,44 @@ import (
 
 // Logger appends every Bus event to a JSONL file in ~/.ageni/sessions/.
 type Logger struct {
-	mu   sync.Mutex
-	file *os.File
-	enc  *json.Encoder
-	path string
+	mu    sync.Mutex
+	file  *os.File
+	enc   *json.Encoder
+	path  string
+	mode  string
+	scrub func(string) string
+}
+
+type LoggerOptions struct {
+	Mode  string
+	Scrub func(string) string
+}
+
+const (
+	LogModePrivate = "private"
+	LogModeFull    = "full"
+)
+
+var (
+	privateKeyBlockRE = regexp.MustCompile(`(?s)-----BEGIN [A-Z0-9 ]*PRIVATE KEY-----.*?-----END [A-Z0-9 ]*PRIVATE KEY-----`)
+	bearerTokenRE     = regexp.MustCompile(`(?i)\bBearer\s+[A-Za-z0-9._\-+/=]+`)
+	kvSecretRE        = regexp.MustCompile(`(?i)\b(authorization|api[_-]?key|token|secret|password)\b\s*[:=]\s*([^\s,;]+)`)
+	openAITokenRE     = regexp.MustCompile(`\bsk-[A-Za-z0-9]{12,}\b`)
+)
+
+func NormalizeLogMode(mode string) string {
+	switch mode {
+	case LogModeFull:
+		return LogModeFull
+	default:
+		return LogModePrivate
+	}
 }
 
 // NewLogger creates a JSONL log file inside the given session's directory.
 // Pass nil to fall back to the legacy ~/.ageni/sessions/<timestamp>.jsonl
 // shape — only used by code paths that haven't been ported yet.
-func NewLogger(s *Session) (*Logger, error) {
+func NewLogger(s *Session, opts LoggerOptions) (*Logger, error) {
 	var path string
 	if s != nil {
 		path = s.Path("log.jsonl")
@@ -45,7 +74,13 @@ func NewLogger(s *Session) (*Logger, error) {
 	if err != nil {
 		return nil, err
 	}
-	return &Logger{file: f, enc: json.NewEncoder(f), path: path}, nil
+	return &Logger{
+		file:  f,
+		enc:   json.NewEncoder(f),
+		path:  path,
+		mode:  NormalizeLogMode(opts.Mode),
+		scrub: opts.Scrub,
+	}, nil
 }
 
 func (l *Logger) Path() string { return l.path }
@@ -95,18 +130,18 @@ func (l *Logger) WriteEvent(ev agent.Event) {
 		At:            ev.At.Format(time.RFC3339Nano),
 		CorrelationID: ev.CorrelationID,
 		SubagentID:    ev.SubagentID,
-		Text:          ev.Text,
-		SubagentTask:  ev.SubagentTask,
+		Text:          l.scrubText(ev.Kind, ev.Text),
+		SubagentTask:  l.scrubText(ev.Kind, ev.SubagentTask),
 		SubagentModel: ev.SubagentModel,
 		ShellKind:     string(ev.ShellKind),
 		Bytes:         ev.Bytes,
 	}
 	if ev.ToolCall != nil {
 		e.ToolName = ev.ToolCall.Name
-		e.ToolArgs = string(ev.ToolCall.Arguments)
+		e.ToolArgs = l.scrubToolPayload("tool_args", ev.ToolCall.Name, string(ev.ToolCall.Arguments))
 	}
 	if ev.ToolResult != nil {
-		e.ToolResult = ev.ToolResult.Content
+		e.ToolResult = l.scrubToolPayload("tool_result", e.ToolName, ev.ToolResult.Content)
 		e.ToolError = ev.ToolResult.IsError
 	}
 	if ev.Usage != nil {
@@ -116,10 +151,55 @@ func (l *Logger) WriteEvent(ev agent.Event) {
 		e.CacheCreation = ev.Usage.CacheCreationTokens
 	}
 	if ev.Err != nil {
-		e.Err = ev.Err.Error()
+		e.Err = l.applyScrubbers(ev.Err.Error())
 	}
 	l.mu.Lock()
 	_ = l.enc.Encode(&e)
 	_ = l.file.Sync()
 	l.mu.Unlock()
+}
+
+func (l *Logger) scrubToolPayload(kind, toolName, value string) string {
+	value = l.applyScrubbers(value)
+	if value == "" {
+		return value
+	}
+	if l.mode == LogModeFull {
+		return value
+	}
+	label := toolName
+	if label == "" {
+		label = "tool"
+	}
+	return fmt.Sprintf("[redacted %s for %s; %d byte(s) omitted]", kind, label, len(value))
+}
+
+func (l *Logger) scrubText(kind agent.EventKind, value string) string {
+	value = l.applyScrubbers(value)
+	if value == "" {
+		return value
+	}
+	if l.mode == LogModeFull {
+		return value
+	}
+	switch kind {
+	case agent.EvShellOutput:
+		return fmt.Sprintf("[redacted shell output; %d byte(s) omitted]", len(value))
+	default:
+		return value
+	}
+}
+
+func (l *Logger) applyScrubbers(value string) string {
+	if value == "" {
+		return value
+	}
+	value = privateKeyBlockRE.ReplaceAllString(value, "[REDACTED:private-key]")
+	value = bearerTokenRE.ReplaceAllString(value, "Bearer [REDACTED]")
+	value = kvSecretRE.ReplaceAllString(value, `$1=[REDACTED]`)
+	value = openAITokenRE.ReplaceAllString(value, "[REDACTED:api-key]")
+	if l.scrub != nil {
+		value = l.scrub(value)
+	}
+	return value
 }

@@ -73,6 +73,7 @@ func registerWorkerBase(r *tools.Registry, todo *tools.TodoWrite, tr *tools.Chan
 	r.Register(tools.Glob{})
 	r.Register(secrets.NewGuardedGrep())
 	r.Register(tools.SearchSymbols{})
+	r.Register(tools.FindReferences{})
 	r.Register(tools.MakeDir{Tracker: tr})
 	r.Register(tools.MoveFile{Tracker: tr})
 	r.Register(tools.DeleteFile{Tracker: tr})
@@ -128,4 +129,11 @@ func loadMCPTools(ctx context.Context) (*mcp.Manager, []tools.Tool) {
 		fmt.Fprintf(os.Stderr, "ageni: mcp setup: %v\n", mcpErr)
 	}
 	return mcpMgr, mcpTools
+}
+
+func sessionLogScrubber(secretStore *secrets.Store) func(string) string {
+	if secretStore == nil {
+		return nil
+	}
+	return secretStore.Redactor().Scrub
 }

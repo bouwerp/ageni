@@ -31,6 +31,7 @@ type Session struct {
 	MasterModel      string `json:",omitempty"`
 	SubagentProvider string `json:",omitempty"`
 	SubagentModel    string `json:",omitempty"`
+	LogMode          string `json:",omitempty"`
 }
 
 // SessionsRoot returns the directory all sessions live under
@@ -170,6 +171,14 @@ func (s *Session) SetModels(masterProvider, masterModel, subProvider, subModel s
 	s.MasterModel = masterModel
 	s.SubagentProvider = subProvider
 	s.SubagentModel = subModel
+	_ = s.saveMeta()
+}
+
+// SetLogMode records the session log privacy mode so session inspection tools
+// can explain how much content was persisted.
+func (s *Session) SetLogMode(mode string) {
+	mode = NormalizeLogMode(mode)
+	s.LogMode = mode
 	_ = s.saveMeta()
 }
 

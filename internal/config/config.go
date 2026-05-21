@@ -119,6 +119,10 @@ type Config struct {
 	// Empty string means the local fleet is inactive even if LocalFleet
 	// is populated (safe default).
 	LocalFleetMode string
+
+	// SessionLogMode controls how much raw session content is persisted to
+	// disk. Supported values: "private" (default) and "full".
+	SessionLogMode string
 }
 
 // LocalEndpoint is one locally-hosted model server in the fleet.
@@ -164,6 +168,7 @@ func Load() (*Config, error) {
 		Subagent:       sub,
 		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
 		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 200),
+		SessionLogMode: defaultSessionLogMode(os.Getenv("AGENI_SESSION_LOG_MODE")),
 	}
 
 	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.
@@ -306,6 +311,15 @@ func FormatLocalFleet(fleet []LocalEndpoint) string {
 }
 
 var ErrNotConfigured = fmt.Errorf("ageni is not configured; run `ageni init`")
+
+func defaultSessionLogMode(raw string) string {
+	switch strings.ToLower(strings.TrimSpace(raw)) {
+	case "full":
+		return "full"
+	default:
+		return "private"
+	}
+}
 
 func resolveRole(prefix, providerName string) (RoleConfig, error) {
 	spec, ok := llm.LookupProvider(providerName)

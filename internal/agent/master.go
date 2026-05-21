@@ -451,12 +451,17 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
 		return true
 	case ev.Kind == EvTick:
-		if !m.hasRunningSubagents() {
+		running := m.runningSubagentCount()
+		if running == 0 {
 			return false
 		}
 		if len(m.pendingEvs) == 0 && !m.lastMonitorTurn.IsZero() && time.Since(m.lastMonitorTurn) < monitorTurnMinGap {
 			return false
 		}
+		m.pendingEvs = append(m.pendingEvs, Event{
+			Kind: EvTick,
+			Text: fmt.Sprintf("%d worker(s) still running — perform a supervision self-check", running),
+		})
 		return true
 	case isMonitoringEvent(ev.Kind):
 		m.pendingEvs = append(m.pendingEvs, ev)
@@ -466,19 +471,25 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 }
 
 func (m *Master) hasRunningSubagents() bool {
+	return m.runningSubagentCount() > 0
+}
+
+func (m *Master) runningSubagentCount() int {
+	count := 0
 	for _, s := range m.manager.List() {
 		if s.Status() == StatusRunning {
-			return true
+			count++
 		}
 	}
-	return false
+	return count
 }
 
 func isMonitoringEvent(k EventKind) bool {
 	switch k {
-	case EvSubagentSpawn, EvSubagentText, EvSubagentToolCall, EvSubagentToolDone,
+	case EvSubagentSpawn, EvSubagentTurnStart, EvSubagentText, EvSubagentToolCall, EvSubagentToolDone,
 		EvSubagentDone, EvSubagentError, EvSubagentUsage, EvSubagentRetry,
-		EvSubagentInbox, EvShellOpened, EvShellExited:
+		EvSubagentInbox, EvSubagentPaused, EvSubagentResumed,
+		EvShellOpened, EvShellExited, EvShellOutputLoss:
 		return true
 	}
 	return false
@@ -582,8 +593,12 @@ func (m *Master) buildActiveContext() *llm.Message {
 		}
 		for _, ev := range evs {
 			switch ev.Kind {
+			case EvTick:
+				sb.WriteString("- supervision tick: " + clipText(ev.Text, 180) + "\n")
 			case EvSubagentSpawn:
 				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
+			case EvSubagentTurnStart:
+				sb.WriteString(fmt.Sprintf("- %s started a new model turn\n", ev.SubagentID))
 			case EvSubagentToolCall:
 				if ev.ToolCall != nil {
 					sb.WriteString(fmt.Sprintf("- %s calling tool %s\n", ev.SubagentID, ev.ToolCall.Name))
@@ -602,6 +617,10 @@ func (m *Master) buildActiveContext() *llm.Message {
 				if ev.Usage != nil {
 					sb.WriteString(fmt.Sprintf("- %s usage: in=%d out=%d\n", ev.SubagentID, ev.Usage.InputTokens, ev.Usage.OutputTokens))
 				}
+			case EvSubagentPaused:
+				sb.WriteString(fmt.Sprintf("- %s paused\n", ev.SubagentID))
+			case EvSubagentResumed:
+				sb.WriteString(fmt.Sprintf("- %s resumed\n", ev.SubagentID))
 			case EvSubagentDone:
 				if m.todo != nil {
 					m.todo.AutoRelease(ev.SubagentID)
@@ -627,6 +646,8 @@ func (m *Master) buildActiveContext() *llm.Message {
 				sb.WriteString(fmt.Sprintf("- shell %s opened (%s)\n", ev.SubagentID, ev.ShellKind))
 			case EvShellExited:
 				sb.WriteString(fmt.Sprintf("- shell %s exited\n", ev.SubagentID))
+			case EvShellOutputLoss:
+				sb.WriteString(fmt.Sprintf("- shell %s dropped %d byte(s) of output\n", ev.SubagentID, ev.Bytes))
 			}
 		}
 		sb.WriteString("React: process outputs above, correct via send_to_subagent, or proceed.\n")

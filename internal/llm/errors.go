@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -27,7 +28,126 @@ const (
 	ErrorClassNetwork          ErrorClass = "network"
 )
 
+// ProviderError adds stable provider/model/class metadata to an underlying LLM
+// error so retry and fallback policy can avoid depending on fragile strings.
+type ProviderError struct {
+	Provider  string
+	Model     string
+	Operation string
+	Class     ErrorClass
+	Err       error
+}
+
+func (e *ProviderError) Error() string {
+	if e == nil {
+		return "<nil>"
+	}
+	label := FormatLabel(e.Provider, e.Model)
+	if label == "" {
+		label = "provider"
+	}
+	if e.Operation != "" {
+		label += " " + e.Operation
+	}
+	if class := e.errorClass(); class != ErrorClassUnknown {
+		return fmt.Sprintf("%s [%s]: %v", label, class, e.Err)
+	}
+	return fmt.Sprintf("%s: %v", label, e.Err)
+}
+
+func (e *ProviderError) Unwrap() error {
+	if e == nil {
+		return nil
+	}
+	return e.Err
+}
+
+func (e *ProviderError) errorClass() ErrorClass {
+	if e == nil {
+		return ErrorClassUnknown
+	}
+	if e.Class != "" && e.Class != ErrorClassUnknown {
+		return e.Class
+	}
+	return classifyUnderlyingError(e.Err)
+}
+
+func WrapProviderError(provider, model, operation string, err error) error {
+	if err == nil {
+		return nil
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		if pe.Provider == "" {
+			pe.Provider = provider
+		}
+		if pe.Model == "" {
+			pe.Model = model
+		}
+		if pe.Operation == "" {
+			pe.Operation = operation
+		}
+		if pe.Class == "" || pe.Class == ErrorClassUnknown {
+			pe.Class = classifyUnderlyingError(pe.Err)
+		}
+		return pe
+	}
+	return &ProviderError{
+		Provider:  provider,
+		Model:     model,
+		Operation: operation,
+		Class:     classifyUnderlyingError(err),
+		Err:       err,
+	}
+}
+
+func ProviderLabel(err error) string {
+	var pe *ProviderError
+	if !errors.As(err, &pe) {
+		return ""
+	}
+	return FormatLabel(pe.Provider, pe.Model)
+}
+
+func ErrorSummary(err error) string {
+	if err == nil {
+		return "unknown"
+	}
+	msg := err.Error()
+	if i := strings.Index(msg, "\n"); i > 0 {
+		msg = msg[:i]
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		label := FormatLabel(pe.Provider, pe.Model)
+		class := pe.errorClass()
+		switch {
+		case label != "" && class != ErrorClassUnknown:
+			msg = fmt.Sprintf("%s [%s]: %s", label, class, trimProviderPrefix(msg, label))
+		case label != "":
+			msg = fmt.Sprintf("%s: %s", label, trimProviderPrefix(msg, label))
+		case class != ErrorClassUnknown:
+			msg = fmt.Sprintf("[%s] %s", class, msg)
+		}
+	}
+	if len(msg) > 160 {
+		msg = msg[:160] + "…"
+	}
+	return msg
+}
+
 func ClassifyError(err error) ErrorClass {
+	if err == nil {
+		return ErrorClassUnknown
+	}
+	var pe *ProviderError
+	if errors.As(err, &pe) {
+		return pe.errorClass()
+	}
+	return classifyUnderlyingError(err)
+}
+
+func classifyUnderlyingError(err error) ErrorClass {
 	if err == nil {
 		return ErrorClassUnknown
 	}
@@ -193,4 +313,16 @@ func containsAny(s string, needles ...string) bool {
 		}
 	}
 	return false
+}
+
+func trimProviderPrefix(msg, label string) string {
+	msg = strings.TrimSpace(msg)
+	if label == "" {
+		return msg
+	}
+	prefix := label + ": "
+	if strings.HasPrefix(msg, prefix) {
+		return strings.TrimSpace(strings.TrimPrefix(msg, prefix))
+	}
+	return msg
 }

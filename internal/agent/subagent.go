@@ -541,7 +541,7 @@ func (s *Subagent) fail(err error) {
 	// different to the user.
 	tag := classifyErr(err)
 	wrapped := fmt.Errorf("[%s] %w", tag, err)
-	s.appendTranscript("error(" + tag + "): " + err.Error())
+	s.appendTranscript("error(" + tag + "): " + llm.ErrorSummary(err))
 	s.publish(Event{Kind: EvSubagentError, SubagentID: s.ID, Err: wrapped})
 }
 
@@ -570,6 +570,7 @@ var inspectionToolNames = map[string]struct{}{
 	"glob":           {},
 	"grep":           {},
 	"search_symbols": {},
+	"find_references": {},
 	"git_status":     {},
 	"git_diff":       {},
 	"git_log":        {},

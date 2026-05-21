@@ -123,6 +123,9 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	if task.ModelTier == "" {
 		task.ModelTier = "sonnet"
 	}
+	if missing := m.tools.Missing(task.AllowedTools); len(missing) > 0 {
+		return "", fmt.Errorf("allowed_tools contains tool(s) unavailable to sub-agents: %s", strings.Join(missing, ", "))
+	}
 
 	m.mu.Lock()
 	if task.BudgetToolCalls <= 0 && m.defaultBudget > 0 {

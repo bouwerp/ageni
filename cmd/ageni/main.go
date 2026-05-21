@@ -257,6 +257,7 @@ func run() error {
 	}
 	sess.SetModels(cfg.Master.Provider.Name, cfg.Master.Model,
 		cfg.Subagent.Provider.Name, cfg.Subagent.Model)
+	sess.SetLogMode(cfg.SessionLogMode)
 
 	// One TodoWrite instance shared between master and sub-agents so the
 	// session todo list is a single source of truth — now scoped to the
@@ -320,7 +321,8 @@ func run() error {
 	// AllowedTools whitelist (in find_tool.go) excludes find_in_codebase.
 	registry.Register(agent.FindInCodebase{M: manager, Bus: bus})
 
-	// Shell session tools are available to both master and sub-agents.
+	// Shell session tools are worker-only. The master supervises shells via
+	// worker events and the TUI instead of running shell commands directly.
 	registry.Register(agent.OpenShellTool{SM: shellMgr})
 	registry.Register(agent.ShellExecTool{SM: shellMgr})
 	registry.Register(agent.ShellReadTool{SM: shellMgr})
@@ -341,14 +343,6 @@ func run() error {
 	masterReg.Register(agent.PauseTool{M: manager})
 	masterReg.Register(agent.ResumeTool{M: manager})
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
-	masterReg.Register(agent.OpenShellTool{SM: shellMgr})
-	masterReg.Register(agent.ShellExecTool{SM: shellMgr})
-	masterReg.Register(agent.ShellReadTool{SM: shellMgr})
-	masterReg.Register(agent.ShellWaitTool{SM: shellMgr})
-	masterReg.Register(agent.ShellSendInputTool{SM: shellMgr})
-	masterReg.Register(agent.InterruptShellTool{SM: shellMgr})
-	masterReg.Register(agent.CloseShellTool{SM: shellMgr})
-	masterReg.Register(agent.ListShellsTool{SM: shellMgr})
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
@@ -465,15 +459,19 @@ func run() error {
 		for ev := range subFwd {
 			switch ev.Kind {
 			case agent.EvSubagentSpawn,
+				agent.EvSubagentTurnStart,
 				agent.EvSubagentToolCall,
 				agent.EvSubagentToolDone,
 				agent.EvSubagentRetry,
 				agent.EvSubagentInbox,
 				agent.EvSubagentUsage,
+				agent.EvSubagentPaused,
+				agent.EvSubagentResumed,
 				agent.EvSubagentDone,
 				agent.EvSubagentError,
 				agent.EvShellOpened,
-				agent.EvShellExited:
+				agent.EvShellExited,
+				agent.EvShellOutputLoss:
 				select {
 				case masterIn <- ev:
 				default:
@@ -533,7 +531,10 @@ func run() error {
 	go master.Run(ctx, masterIn)
 
 	// Session log
-	logger, err := session.NewLogger(sess)
+	logger, err := session.NewLogger(sess, session.LoggerOptions{
+		Mode:  cfg.SessionLogMode,
+		Scrub: sessionLogScrubber(secretStore),
+	})
 	if err != nil {
 		return fmt.Errorf("session log: %w", err)
 	}

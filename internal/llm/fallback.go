@@ -337,17 +337,7 @@ func extractAffordableTokens(errMsg string) int {
 // fallback notification line. Avoids dumping a full stack trace into
 // the user's flash bar.
 func summariseErr(err error) string {
-	if err == nil {
-		return "unknown"
-	}
-	msg := err.Error()
-	if i := strings.Index(msg, "\n"); i > 0 {
-		msg = msg[:i]
-	}
-	if len(msg) > 120 {
-		msg = msg[:120] + "…"
-	}
-	return msg
+	return ErrorSummary(err)
 }
 
 // Compile-time check.

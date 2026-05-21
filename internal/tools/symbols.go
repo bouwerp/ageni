@@ -41,6 +41,19 @@ func (SearchSymbols) Call(ctx context.Context, args json.RawMessage) (string, er
 	if err != nil {
 		return "", err
 	}
+	if goMatches, err := searchGoSymbols(ctx, root, p.Query, p.Limit); err != nil {
+		return "", err
+	} else if len(goMatches) > 0 {
+		var sb strings.Builder
+		for _, m := range goMatches {
+			kind := m.Kind
+			if kind == "" {
+				kind = "symbol"
+			}
+			fmt.Fprintf(&sb, "%s:%d  %s %s\n", m.Path, m.Line, kind, m.Name)
+		}
+		return strings.TrimRight(sb.String(), "\n"), nil
+	}
 	matches, err := repomap.SearchSymbols(ctx, root, p.Query, p.Limit)
 	if err != nil {
 		return "", err

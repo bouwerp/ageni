@@ -104,6 +104,7 @@ func runHeadlessPrompt(prompt string) (string, error) {
 		return "", fmt.Errorf("session init: %w", err)
 	}
 	sess.SetModels(cfg.Master.Provider.Name, cfg.Master.Model, cfg.Subagent.Provider.Name, cfg.Subagent.Model)
+	sess.SetLogMode(cfg.SessionLogMode)
 
 	todo := tools.NewTodoWrite(sess.Path("todo.json"))
 	changes := tools.NewChangeTracker(sess.Path("changes.jsonl"), sess.Path("snapshots"))
@@ -162,14 +163,6 @@ func runHeadlessPrompt(prompt string) (string, error) {
 	masterReg.Register(agent.PauseTool{M: manager})
 	masterReg.Register(agent.ResumeTool{M: manager})
 	masterReg.Register(agent.FindInCodebase{M: manager, Bus: bus})
-	masterReg.Register(agent.OpenShellTool{SM: shellMgr})
-	masterReg.Register(agent.ShellExecTool{SM: shellMgr})
-	masterReg.Register(agent.ShellReadTool{SM: shellMgr})
-	masterReg.Register(agent.ShellWaitTool{SM: shellMgr})
-	masterReg.Register(agent.ShellSendInputTool{SM: shellMgr})
-	masterReg.Register(agent.InterruptShellTool{SM: shellMgr})
-	masterReg.Register(agent.CloseShellTool{SM: shellMgr})
-	masterReg.Register(agent.ListShellsTool{SM: shellMgr})
 
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	master.SetTodo(todo)
@@ -245,15 +238,19 @@ func runHeadlessPrompt(prompt string) (string, error) {
 		for ev := range subFwd {
 			switch ev.Kind {
 			case agent.EvSubagentSpawn,
+				agent.EvSubagentTurnStart,
 				agent.EvSubagentToolCall,
 				agent.EvSubagentToolDone,
 				agent.EvSubagentRetry,
 				agent.EvSubagentInbox,
 				agent.EvSubagentUsage,
+				agent.EvSubagentPaused,
+				agent.EvSubagentResumed,
 				agent.EvSubagentDone,
 				agent.EvSubagentError,
 				agent.EvShellOpened,
-				agent.EvShellExited:
+				agent.EvShellExited,
+				agent.EvShellOutputLoss:
 				select {
 				case masterIn <- ev:
 				default:
@@ -263,7 +260,10 @@ func runHeadlessPrompt(prompt string) (string, error) {
 	}()
 	go master.Run(ctx, masterIn)
 
-	logger, err := session.NewLogger(sess)
+	logger, err := session.NewLogger(sess, session.LoggerOptions{
+		Mode:  cfg.SessionLogMode,
+		Scrub: sessionLogScrubber(secretStore),
+	})
 	if err != nil {
 		return "", fmt.Errorf("session log: %w", err)
 	}

@@ -119,7 +119,7 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 			}
 		}
 		if err := stream.Err(); err != nil {
-			out <- StreamEvent{Type: StreamEventError, Err: err}
+			out <- StreamEvent{Type: StreamEventError, Err: WrapProviderError(o.Provider(), req.Model, "stream", err)}
 			return
 		}
 		// Drain any remaining tool calls (in case finish_reason wasn't on a chunk we saw).

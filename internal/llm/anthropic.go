@@ -116,7 +116,7 @@ func (a *AnthropicAdapter) Stream(ctx context.Context, req Request) (<-chan Stre
 			}
 		}
 		if err := stream.Err(); err != nil {
-			out <- StreamEvent{Type: StreamEventError, Err: err}
+			out <- StreamEvent{Type: StreamEventError, Err: WrapProviderError(a.Provider(), req.Model, "stream", err)}
 			return
 		}
 		u := usage

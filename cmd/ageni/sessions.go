@@ -206,6 +206,7 @@ func sessionsShow(prefix string) error {
 	fmt.Printf("Repo:      %s\n", or(s.RepoPath, "—"))
 	fmt.Printf("Master:    %s\n", joinSlash(s.MasterProvider, s.MasterModel))
 	fmt.Printf("Sub-agent: %s\n", joinSlash(s.SubagentProvider, s.SubagentModel))
+	fmt.Printf("Log mode:  %s\n", or(s.LogMode, session.LogModePrivate))
 	fmt.Printf("Dir:       %s\n", s.Dir)
 	if entries, err := os.ReadDir(s.Dir); err == nil {
 		fmt.Println("Files:")

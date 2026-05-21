@@ -4,6 +4,7 @@ import (
 	"context"
 	"net/http"
 	"net/url"
+	"strings"
 	"testing"
 
 	anthropic "github.com/anthropics/anthropic-sdk-go"
@@ -59,5 +60,27 @@ func TestClassifyErrorModelUnsupported(t *testing.T) {
 func TestClassifyErrorContextCancellation(t *testing.T) {
 	if got := ClassifyError(context.DeadlineExceeded); got != ErrorClassDeadlineExceeded {
 		t.Fatalf("ClassifyError(context deadline) = %q, want %q", got, ErrorClassDeadlineExceeded)
+	}
+}
+
+func TestWrapProviderErrorPreservesProviderMetadata(t *testing.T) {
+	req := &http.Request{Method: http.MethodPost, URL: &url.URL{Scheme: "https", Host: "api.openai.com", Path: "/v1/responses"}}
+	res := &http.Response{StatusCode: http.StatusTooManyRequests}
+	base := &openai.Error{
+		StatusCode: res.StatusCode,
+		Request:    req,
+		Response:   res,
+		Message:    "rate limit exceeded",
+		Code:       "rate_limit_exceeded",
+	}
+	err := WrapProviderError("openai", "gpt-5", "stream", base)
+	if got := ClassifyError(err); got != ErrorClassRateLimit {
+		t.Fatalf("ClassifyError(wrapped) = %q, want %q", got, ErrorClassRateLimit)
+	}
+	if label := ProviderLabel(err); label != "openai/gpt-5" {
+		t.Fatalf("ProviderLabel = %q, want %q", label, "openai/gpt-5")
+	}
+	if summary := ErrorSummary(err); !strings.Contains(summary, "openai/gpt-5") || !strings.Contains(summary, "rate-limit") {
+		t.Fatalf("ErrorSummary = %q, want provider + class", summary)
 	}
 }

@@ -620,6 +620,7 @@ func TestSpawnRequiresContract(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
+	reg.Register(tools.ListDir{})
 	factory := func(tier string, _ []string) (llm.Adapter, string) {
 		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m"
 	}
@@ -633,6 +634,13 @@ func TestSpawnRequiresContract(t *testing.T) {
 	}
 	if _, err := mgr.Spawn(context.Background(), SubagentTask{Objective: "x", OutputFormat: "y"}); err != nil {
 		t.Fatalf("expected ok spawn, got %v", err)
+	}
+	if _, err := mgr.Spawn(context.Background(), SubagentTask{
+		Objective:    "x",
+		OutputFormat: "y",
+		AllowedTools: []string{"pause_subagent", "list_dir"},
+	}); err == nil || !strings.Contains(err.Error(), "unavailable to sub-agents") {
+		t.Fatalf("expected unavailable tool error, got %v", err)
 	}
 }
 
@@ -729,6 +737,33 @@ func TestMasterActiveContextIsEphemeral(t *testing.T) {
 	}
 	if len(master.messages) != 2 {
 		t.Fatalf("durable message count = %d, want 2", len(master.messages))
+	}
+}
+
+func TestMasterActiveContextIncludesSupervisionSignals(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+	master.pendingEvs = []Event{
+		{Kind: EvTick, Text: "1 worker still running"},
+		{Kind: EvSubagentPaused, SubagentID: "s1"},
+		{Kind: EvShellOutputLoss, SubagentID: "sh1", Bytes: 512},
+	}
+
+	msg := master.buildActiveContext()
+	if msg == nil {
+		t.Fatal("buildActiveContext() = nil, want active context message")
+	}
+	if !strings.Contains(msg.Text, "supervision tick") {
+		t.Fatalf("active context missing supervision tick: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "s1 paused") {
+		t.Fatalf("active context missing paused worker: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "shell sh1 dropped 512 byte(s) of output") {
+		t.Fatalf("active context missing shell loss warning: %s", msg.Text)
 	}
 }
 

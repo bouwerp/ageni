@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/bouwerp/ageni/internal/agent"
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 func writeLogEntries(t *testing.T, dir string, entries []logEntry) {
@@ -91,5 +92,56 @@ func TestLoadWorkerSnapshots(t *testing.T) {
 	}
 	if snaps[1].Status != agent.StatusCancelled || !strings.Contains(snaps[1].Buffer, "no longer attached") {
 		t.Fatalf("worker 2 = %+v", snaps[1])
+	}
+}
+
+func TestLoggerPrivateModeScrubsSensitivePayloads(t *testing.T) {
+	dir := t.TempDir()
+	logger, err := NewLogger(&Session{Dir: dir}, LoggerOptions{Mode: LogModePrivate})
+	if err != nil {
+		t.Fatalf("NewLogger: %v", err)
+	}
+	defer logger.Close()
+
+	logger.WriteEvent(agent.Event{
+		Kind: agent.EvMasterToolDone,
+		ToolCall: &llm.ToolCall{
+			Name:      "read_file",
+			Arguments: json.RawMessage(`{"path":"secrets.txt","token":"sk-super-secret-token"}`),
+		},
+		ToolResult: &llm.ToolResult{Content: "Authorization=Bearer abc123secret"},
+	})
+	logger.WriteEvent(agent.Event{
+		Kind:       agent.EvShellOutput,
+		SubagentID: "sh1",
+		Text:       "Bearer abc123secret\n",
+	})
+
+	f, err := os.Open(filepath.Join(dir, "log.jsonl")) //nolint:gosec
+	if err != nil {
+		t.Fatalf("Open log: %v", err)
+	}
+	defer f.Close()
+
+	dec := json.NewDecoder(f)
+	var entries []logEntry
+	for dec.More() {
+		var e logEntry
+		if err := dec.Decode(&e); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		entries = append(entries, e)
+	}
+	if len(entries) != 2 {
+		t.Fatalf("len(entries) = %d, want 2", len(entries))
+	}
+	if strings.Contains(entries[0].ToolArgs, "sk-super-secret-token") || !strings.Contains(entries[0].ToolArgs, "[redacted tool_args") {
+		t.Fatalf("tool args not scrubbed: %q", entries[0].ToolArgs)
+	}
+	if strings.Contains(entries[0].ToolResult, "abc123secret") || !strings.Contains(entries[0].ToolResult, "[redacted tool_result") {
+		t.Fatalf("tool result not scrubbed: %q", entries[0].ToolResult)
+	}
+	if strings.Contains(entries[1].Text, "abc123secret") || !strings.Contains(entries[1].Text, "[redacted shell output") {
+		t.Fatalf("shell output not scrubbed: %q", entries[1].Text)
 	}
 }

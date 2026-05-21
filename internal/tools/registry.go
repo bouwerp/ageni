@@ -53,6 +53,35 @@ func (r *Registry) Get(name string) (Tool, bool) {
 	return t, ok
 }
 
+// Missing returns the requested tool names that are not present in the
+// registry after normalizing tool-name suffix noise.
+func (r *Registry) Missing(names []string) []string {
+	if len(names) == 0 {
+		return nil
+	}
+	missing := make([]string, 0, len(names))
+	seen := make(map[string]struct{}, len(names))
+	for _, raw := range names {
+		name := sanitizeToolName(strings.TrimSpace(raw))
+		if name == "" {
+			name = strings.TrimSpace(raw)
+		}
+		if name == "" {
+			continue
+		}
+		if _, ok := r.tools[name]; ok {
+			continue
+		}
+		if _, ok := seen[name]; ok {
+			continue
+		}
+		seen[name] = struct{}{}
+		missing = append(missing, name)
+	}
+	sort.Strings(missing)
+	return missing
+}
+
 // Definitions returns ToolDefs sorted by name (deterministic for cache hits).
 func (r *Registry) Definitions() []llm.ToolDef {
 	names := make([]string, 0, len(r.tools))

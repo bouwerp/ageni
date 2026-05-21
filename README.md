@@ -451,10 +451,10 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 
 #### Runtime architecture / orchestration
 
-- [ ] Enforce hard master-vs-worker tool boundaries at the registry/tool layer instead of relying on prompt instructions alone.
-- [ ] Make live monitoring real: forward mid-flight worker events to the master, add periodic tick/self-check events, and support interruptible supervision.
+- [x] Enforce hard master-vs-worker tool boundaries at the registry/tool layer instead of relying on prompt instructions alone.
+- [x] Make live monitoring real: forward mid-flight worker events to the master, add periodic tick/self-check events, and support interruptible supervision.
 - [ ] Add durable, append-only event journaling with correlation IDs so replay/debugging does not depend on lossy bus subscribers.
-- [ ] Replace string-matched error recovery with typed/provider-aware error classes and clearer retry / escalation policy.
+- [x] Replace string-matched error recovery with typed/provider-aware error classes and clearer retry / escalation policy.
 - [ ] Add substantially more race/integration coverage around the master loop, resume flow, shells, logging, and safety boundaries.
 
 #### Safety / permissions
@@ -463,7 +463,7 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 - [ ] Implement sandbox tiers (`read-only` / `workspace-write` / `danger-full-access`) with explicit writable roots and network policy.
 - [ ] Add risky-command detection and stricter permission scopes for bash, file deletion, and other high-blast-radius actions.
 - [ ] Default sub-agents to narrower capabilities/allowed-tools by role instead of broad full-access unless explicitly widened.
-- [ ] Make session/event logs private-by-default and scrub tool args/results before persistence.
+- [x] Make session/event logs private-by-default and scrub tool args/results before persistence.
 
 #### Durability / long-running work
 
@@ -473,7 +473,7 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 
 #### Code intelligence / editing ergonomics
 
-- [ ] Add semantic code intelligence (LSP / AST-backed symbol search, find references, rename, move, etc.) instead of relying mostly on text search and string replacement.
+- [x] Add semantic code intelligence (LSP / AST-backed symbol search, find references, rename, move, etc.) instead of relying mostly on text search and string replacement.
 - [ ] Add transactional multi-file edit support so coordinated refactors can validate first and apply atomically.
 - [ ] Improve repo mapping/navigation beyond the current simple optional ctags-based map and ranking.
 - [ ] Expand post-edit validation beyond Go/Python and add stronger ecosystem-aware verification for TS/JS, Rust, Java, etc.
