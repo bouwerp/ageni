@@ -67,7 +67,7 @@ func TestParseEvalArgsAcceptsOutFlag(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseEvalArgs() error = %v", err)
 	}
-	want := evalOptions{Path: "eval/fixtures", Out: "results/run.json"}
+	want := evalOptions{Path: "eval/fixtures", Out: "results/run.json", Repeat: 1}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
 	}
@@ -78,7 +78,18 @@ func TestParseEvalArgsAcceptsRepeatedTags(t *testing.T) {
 	if err != nil {
 		t.Fatalf("parseEvalArgs() error = %v", err)
 	}
-	want := evalOptions{Path: "eval/fixtures", Tags: []string{"editing", "verification"}}
+	want := evalOptions{Path: "eval/fixtures", Tags: []string{"editing", "verification"}, Repeat: 1}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
+	}
+}
+
+func TestParseEvalArgsAcceptsRepeat(t *testing.T) {
+	got, err := parseEvalArgs([]string{"--repeat", "3", "eval/fixtures"})
+	if err != nil {
+		t.Fatalf("parseEvalArgs() error = %v", err)
+	}
+	want := evalOptions{Path: "eval/fixtures", Repeat: 3}
 	if !reflect.DeepEqual(got, want) {
 		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
 	}

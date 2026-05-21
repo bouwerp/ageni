@@ -6,8 +6,11 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/config"
 )
 
 type evalFixture struct {
@@ -20,6 +23,7 @@ type evalFixture struct {
 
 type evalResult struct {
 	Name               string   `json:"name"`
+	Iteration          int      `json:"iteration"`
 	Prompt             string   `json:"prompt"`
 	Tags               []string `json:"tags,omitempty"`
 	OK                 bool     `json:"ok"`
@@ -31,21 +35,27 @@ type evalResult struct {
 }
 
 type evalReport struct {
-	AgeniVersion string       `json:"ageni_version"`
-	FixturePath  string       `json:"fixture_path"`
-	SelectedTags []string     `json:"selected_tags,omitempty"`
-	StartedAt    time.Time    `json:"started_at"`
-	FinishedAt   time.Time    `json:"finished_at"`
-	Total        int          `json:"total"`
-	Passed       int          `json:"passed"`
-	Failed       int          `json:"failed"`
-	Results      []evalResult `json:"results"`
+	AgeniVersion     string       `json:"ageni_version"`
+	FixturePath      string       `json:"fixture_path"`
+	SelectedTags     []string     `json:"selected_tags,omitempty"`
+	Repeat           int          `json:"repeat"`
+	MasterProvider   string       `json:"master_provider,omitempty"`
+	MasterModel      string       `json:"master_model,omitempty"`
+	SubagentProvider string       `json:"subagent_provider,omitempty"`
+	SubagentModel    string       `json:"subagent_model,omitempty"`
+	StartedAt        time.Time    `json:"started_at"`
+	FinishedAt       time.Time    `json:"finished_at"`
+	Total            int          `json:"total"`
+	Passed           int          `json:"passed"`
+	Failed           int          `json:"failed"`
+	Results          []evalResult `json:"results"`
 }
 
 type evalOptions struct {
-	Path string
-	Out  string
-	Tags []string
+	Path   string
+	Out    string
+	Tags   []string
+	Repeat int
 }
 
 func runEval(args []string) error {
@@ -65,32 +75,42 @@ func runEval(args []string) error {
 		AgeniVersion: version,
 		FixturePath:  opts.Path,
 		SelectedTags: append([]string(nil), opts.Tags...),
+		Repeat:       opts.Repeat,
 		StartedAt:    time.Now().UTC(),
-		Results:      make([]evalResult, 0, len(fixtures)),
+		Results:      make([]evalResult, 0, len(fixtures)*opts.Repeat),
+	}
+	if cfg, err := config.Load(); err == nil {
+		report.MasterProvider = cfg.Master.Provider.Name
+		report.MasterModel = cfg.Master.Model
+		report.SubagentProvider = cfg.Subagent.Provider.Name
+		report.SubagentModel = cfg.Subagent.Model
 	}
 	failed := false
-	for _, fixture := range fixtures {
-		start := time.Now()
-		output, runErr := runHeadlessPrompt(fixture.Prompt)
-		result := evalResult{
-			Name:       fixture.Name,
-			Prompt:     fixture.Prompt,
-			Tags:       append([]string(nil), fixture.Tags...),
-			DurationMS: time.Since(start).Milliseconds(),
-			Output:     output,
+	for iteration := 1; iteration <= opts.Repeat; iteration++ {
+		for _, fixture := range fixtures {
+			start := time.Now()
+			output, runErr := runHeadlessPrompt(fixture.Prompt)
+			result := evalResult{
+				Name:       fixture.Name,
+				Iteration:  iteration,
+				Prompt:     fixture.Prompt,
+				Tags:       append([]string(nil), fixture.Tags...),
+				DurationMS: time.Since(start).Milliseconds(),
+				Output:     output,
+			}
+			if runErr != nil {
+				result.Error = runErr.Error()
+			}
+			result.MissingContains = missingContains(output, fixture.WantContains)
+			result.UnexpectedContains = unexpectedContains(output, fixture.WantNotContains)
+			result.OK = result.Error == "" && len(result.MissingContains) == 0 && len(result.UnexpectedContains) == 0
+			if !result.OK {
+				failed = true
+			} else {
+				report.Passed++
+			}
+			report.Results = append(report.Results, result)
 		}
-		if runErr != nil {
-			result.Error = runErr.Error()
-		}
-		result.MissingContains = missingContains(output, fixture.WantContains)
-		result.UnexpectedContains = unexpectedContains(output, fixture.WantNotContains)
-		result.OK = result.Error == "" && len(result.MissingContains) == 0 && len(result.UnexpectedContains) == 0
-		if !result.OK {
-			failed = true
-		} else {
-			report.Passed++
-		}
-		report.Results = append(report.Results, result)
 	}
 	report.Total = len(report.Results)
 	report.Failed = report.Total - report.Passed
@@ -105,30 +125,40 @@ func runEval(args []string) error {
 }
 
 func parseEvalArgs(args []string) (evalOptions, error) {
-	var opts evalOptions
+	opts := evalOptions{Repeat: 1}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
 		case "--out":
 			if i+1 >= len(args) {
-				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] [--repeat n] <fixture.json|dir>")
 			}
 			opts.Out = args[i+1]
 			i++
 		case "--tag":
 			if i+1 >= len(args) {
-				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] [--repeat n] <fixture.json|dir>")
 			}
 			opts.Tags = append(opts.Tags, args[i+1])
 			i++
+		case "--repeat":
+			if i+1 >= len(args) {
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] [--repeat n] <fixture.json|dir>")
+			}
+			n, err := strconv.Atoi(args[i+1])
+			if err != nil || n <= 0 {
+				return evalOptions{}, fmt.Errorf("--repeat must be a positive integer")
+			}
+			opts.Repeat = n
+			i++
 		default:
 			if opts.Path != "" {
-				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] [--repeat n] <fixture.json|dir>")
 			}
 			opts.Path = args[i]
 		}
 	}
 	if opts.Path == "" {
-		return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] <fixture.json|dir>")
+		return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] [--tag name] [--repeat n] <fixture.json|dir>")
 	}
 	return opts, nil
 }
