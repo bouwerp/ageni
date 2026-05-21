@@ -11,35 +11,61 @@ import (
 )
 
 type evalFixture struct {
-	Name         string   `json:"name"`
-	Prompt       string   `json:"prompt"`
-	WantContains []string `json:"want_contains,omitempty"`
+	Name            string   `json:"name"`
+	Prompt          string   `json:"prompt"`
+	WantContains    []string `json:"want_contains,omitempty"`
+	WantNotContains []string `json:"want_not_contains,omitempty"`
 }
 
 type evalResult struct {
-	Name            string   `json:"name"`
-	OK              bool     `json:"ok"`
-	DurationMS      int64    `json:"duration_ms"`
-	MissingContains []string `json:"missing_contains,omitempty"`
-	Error           string   `json:"error,omitempty"`
-	Output          string   `json:"output,omitempty"`
+	Name               string   `json:"name"`
+	Prompt             string   `json:"prompt"`
+	OK                 bool     `json:"ok"`
+	DurationMS         int64    `json:"duration_ms"`
+	MissingContains    []string `json:"missing_contains,omitempty"`
+	UnexpectedContains []string `json:"unexpected_contains,omitempty"`
+	Error              string   `json:"error,omitempty"`
+	Output             string   `json:"output,omitempty"`
+}
+
+type evalReport struct {
+	AgeniVersion string       `json:"ageni_version"`
+	FixturePath  string       `json:"fixture_path"`
+	StartedAt    time.Time    `json:"started_at"`
+	FinishedAt   time.Time    `json:"finished_at"`
+	Total        int          `json:"total"`
+	Passed       int          `json:"passed"`
+	Failed       int          `json:"failed"`
+	Results      []evalResult `json:"results"`
+}
+
+type evalOptions struct {
+	Path string
+	Out  string
 }
 
 func runEval(args []string) error {
-	if len(args) != 1 {
-		return fmt.Errorf("usage: ageni eval <fixture.json|dir>")
-	}
-	fixtures, err := loadEvalFixtures(args[0])
+	opts, err := parseEvalArgs(args)
 	if err != nil {
 		return err
 	}
-	results := make([]evalResult, 0, len(fixtures))
+	fixtures, err := loadEvalFixtures(opts.Path)
+	if err != nil {
+		return err
+	}
+	report := evalReport{
+		AgeniVersion: version,
+		FixturePath:  opts.Path,
+		StartedAt:    time.Now().UTC(),
+		Results:      make([]evalResult, 0, len(fixtures)),
+	}
 	failed := false
 	for _, fixture := range fixtures {
 		start := time.Now()
 		output, runErr := runHeadlessPrompt(fixture.Prompt)
 		result := evalResult{
 			Name:       fixture.Name,
+			Prompt:     fixture.Prompt,
 			DurationMS: time.Since(start).Milliseconds(),
 			Output:     output,
 		}
@@ -47,21 +73,48 @@ func runEval(args []string) error {
 			result.Error = runErr.Error()
 		}
 		result.MissingContains = missingContains(output, fixture.WantContains)
-		result.OK = result.Error == "" && len(result.MissingContains) == 0
+		result.UnexpectedContains = unexpectedContains(output, fixture.WantNotContains)
+		result.OK = result.Error == "" && len(result.MissingContains) == 0 && len(result.UnexpectedContains) == 0
 		if !result.OK {
 			failed = true
+		} else {
+			report.Passed++
 		}
-		results = append(results, result)
+		report.Results = append(report.Results, result)
 	}
-	enc := json.NewEncoder(os.Stdout)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(results); err != nil {
+	report.Total = len(report.Results)
+	report.Failed = report.Total - report.Passed
+	report.FinishedAt = time.Now().UTC()
+	if err := writeEvalReport(report, opts.Out); err != nil {
 		return err
 	}
 	if failed {
 		return fmt.Errorf("one or more eval fixtures failed")
 	}
 	return nil
+}
+
+func parseEvalArgs(args []string) (evalOptions, error) {
+	var opts evalOptions
+	for i := 0; i < len(args); i++ {
+		switch args[i] {
+		case "--out":
+			if i+1 >= len(args) {
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+			}
+			opts.Out = args[i+1]
+			i++
+		default:
+			if opts.Path != "" {
+				return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+			}
+			opts.Path = args[i]
+		}
+	}
+	if opts.Path == "" {
+		return evalOptions{}, fmt.Errorf("usage: ageni eval [--out file.json] <fixture.json|dir>")
+	}
+	return opts, nil
 }
 
 func loadEvalFixtures(path string) ([]evalFixture, error) {
@@ -145,4 +198,37 @@ func missingContains(output string, want []string) []string {
 		}
 	}
 	return missing
+}
+
+func unexpectedContains(output string, blocked []string) []string {
+	unexpected := make([]string, 0, len(blocked))
+	for _, needle := range blocked {
+		if needle == "" {
+			continue
+		}
+		if strings.Contains(output, needle) {
+			unexpected = append(unexpected, needle)
+		}
+	}
+	return unexpected
+}
+
+func writeEvalReport(report evalReport, outPath string) error {
+	body, err := json.MarshalIndent(report, "", "  ")
+	if err != nil {
+		return err
+	}
+	body = append(body, '\n')
+	if outPath != "" {
+		if dir := filepath.Dir(outPath); dir != "" && dir != "." {
+			if err := os.MkdirAll(dir, 0o755); err != nil {
+				return err
+			}
+		}
+		if err := os.WriteFile(outPath, body, 0o644); err != nil {
+			return err
+		}
+	}
+	_, err = os.Stdout.Write(body)
+	return err
 }

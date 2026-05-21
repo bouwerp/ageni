@@ -124,7 +124,7 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  init             interactive config wizard")
 	fmt.Fprintln(w, "  doctor           check external CLI dependencies; --install / -y to auto-install")
 	fmt.Fprintln(w, "  exec <prompt>    run one prompt headlessly and print the final answer")
-	fmt.Fprintln(w, "  eval <path>      run JSON eval fixture(s) via headless exec and print JSON results")
+	fmt.Fprintln(w, "  eval <path>      run JSON eval fixture(s) via headless exec; use --out to save a JSON report")
 	fmt.Fprintln(w, "  skills <cmd>     manage skills (list, install <git-url>, path)")
 	fmt.Fprintln(w, "  sessions <cmd>   manage sessions (list, show, resume, rm)")
 	fmt.Fprintln(w, "  update           update ageni to the latest release")

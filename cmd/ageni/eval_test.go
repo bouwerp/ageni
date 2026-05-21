@@ -53,3 +53,22 @@ func TestMissingContainsReportsMissingNeedles(t *testing.T) {
 		t.Fatalf("missingContains() = %v, want %v", got, want)
 	}
 }
+
+func TestUnexpectedContainsReportsBlockedNeedles(t *testing.T) {
+	got := unexpectedContains("apply_diff is preferred", []string{"edit_file", "apply_diff"})
+	want := []string{"apply_diff"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("unexpectedContains() = %v, want %v", got, want)
+	}
+}
+
+func TestParseEvalArgsAcceptsOutFlag(t *testing.T) {
+	got, err := parseEvalArgs([]string{"--out", "results/run.json", "eval/fixtures"})
+	if err != nil {
+		t.Fatalf("parseEvalArgs() error = %v", err)
+	}
+	want := evalOptions{Path: "eval/fixtures", Out: "results/run.json"}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("parseEvalArgs() = %+v, want %+v", got, want)
+	}
+}
