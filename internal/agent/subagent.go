@@ -532,6 +532,9 @@ func updateVerificationState(previous string, attempts int, calls []llm.ToolCall
 		case call.Name == "run_bash" && isTestLikeRunBash(call.Arguments):
 			sawRelevantTool = true
 			issues = append(issues, unresolvedTestIssues(results[i].Content)...)
+		case call.Name == "run_bash" && isBuildLikeRunBash(call.Arguments):
+			sawRelevantTool = true
+			issues = append(issues, unresolvedBuildIssues(results[i].Content)...)
 		case isVerificationEditTool(call.Name):
 			sawRelevantTool = true
 			issues = append(issues, unresolvedLintIssues(results[i].Content)...)
@@ -583,14 +586,32 @@ func unresolvedTestIssues(content string) []string {
 	return nil
 }
 
-func isTestLikeRunBash(args json.RawMessage) bool {
+func unresolvedBuildIssues(content string) []string {
+	firstLine := strings.TrimSpace(strings.SplitN(content, "\n", 2)[0])
+	if firstLine == "" {
+		return nil
+	}
+	if strings.HasPrefix(firstLine, "[exit ") && firstLine != "[exit 0]" {
+		return []string{"[build] " + firstLine}
+	}
+	return nil
+}
+
+func runBashCommand(args json.RawMessage) string {
 	var p struct {
 		Command string `json:"command"`
 	}
 	if err := json.Unmarshal(args, &p); err != nil {
+		return ""
+	}
+	return strings.ToLower(p.Command)
+}
+
+func isTestLikeRunBash(args json.RawMessage) bool {
+	command := runBashCommand(args)
+	if command == "" {
 		return false
 	}
-	command := strings.ToLower(p.Command)
 	switch {
 	case strings.Contains(command, "go test"),
 		strings.Contains(command, "pytest"),
@@ -601,6 +622,35 @@ func isTestLikeRunBash(args json.RawMessage) bool {
 		strings.Contains(command, "bun test"),
 		strings.Contains(command, "mvn test"),
 		strings.Contains(command, "gradlew test"):
+		return true
+	default:
+		return false
+	}
+}
+
+func isBuildLikeRunBash(args json.RawMessage) bool {
+	command := runBashCommand(args)
+	if command == "" {
+		return false
+	}
+	switch {
+	case strings.Contains(command, "go build"),
+		strings.Contains(command, "go install"),
+		strings.Contains(command, "tsc"),
+		strings.Contains(command, "cargo check"),
+		strings.Contains(command, "cargo build"),
+		strings.Contains(command, "npm run build"),
+		strings.Contains(command, "pnpm build"),
+		strings.Contains(command, "pnpm run build"),
+		strings.Contains(command, "yarn build"),
+		strings.Contains(command, "bun build"),
+		strings.Contains(command, "bun run build"),
+		strings.Contains(command, "mvn compile"),
+		strings.Contains(command, "mvn package"),
+		strings.Contains(command, "mvn test-compile"),
+		strings.Contains(command, "gradlew build"),
+		strings.Contains(command, "gradlew classes"),
+		strings.Contains(command, "gradlew assemble"):
 		return true
 	default:
 		return false
