@@ -1,0 +1,12 @@
+[
+  {
+    "name": "help-lists-exec",
+    "prompt": "List the ageni CLI subcommands mentioned in help output. Include exec if it exists.",
+    "want_contains": ["exec"]
+  },
+  {
+    "name": "edit-policy-prefers-apply-diff",
+    "prompt": "In this repository, which tool is preferred for multi-line or multi-block edits to an existing file? Answer briefly.",
+    "want_contains": ["apply_diff"]
+  }
+]

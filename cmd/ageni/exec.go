@@ -26,7 +26,20 @@ func runExec(args []string) error {
 	if err != nil {
 		return err
 	}
+	result, err := runHeadlessPrompt(prompt)
+	if err != nil {
+		return err
+	}
+	if result != "" {
+		fmt.Print(result)
+		if !strings.HasSuffix(result, "\n") {
+			fmt.Println()
+		}
+	}
+	return nil
+}
 
+func runHeadlessPrompt(prompt string) (string, error) {
 	memguard.CatchInterrupt()
 	defer memguard.Purge()
 
@@ -38,9 +51,9 @@ func runExec(args []string) error {
 	cfg, err := config.Load()
 	if err != nil {
 		if errors.Is(err, config.ErrNotConfigured) {
-			return fmt.Errorf("no ageni config found — run `ageni init` first")
+			return "", fmt.Errorf("no ageni config found — run `ageni init` first")
 		}
-		return err
+		return "", err
 	}
 	if secretStore != nil {
 		secretStore.SeedFromEnv()
@@ -88,7 +101,7 @@ func runExec(args []string) error {
 
 	sess, err := session.New(detectRepoRoot())
 	if err != nil {
-		return fmt.Errorf("session init: %w", err)
+		return "", fmt.Errorf("session init: %w", err)
 	}
 	sess.SetModels(cfg.Master.Provider.Name, cfg.Master.Model, cfg.Subagent.Provider.Name, cfg.Subagent.Model)
 
@@ -252,7 +265,7 @@ func runExec(args []string) error {
 
 	logger, err := session.NewLogger(sess)
 	if err != nil {
-		return fmt.Errorf("session log: %w", err)
+		return "", fmt.Errorf("session log: %w", err)
 	}
 	defer logger.Close()
 	bus.AddSink(logger)
@@ -261,19 +274,13 @@ func runExec(args []string) error {
 	select {
 	case masterIn <- agent.Event{Kind: agent.EvUserMessage, Text: prompt}:
 	case <-ctx.Done():
-		return ctx.Err()
+		return "", ctx.Err()
 	}
 	result, err := waitForHeadlessResult(ctx, resultSub)
 	if err != nil {
-		return err
+		return "", err
 	}
-	if result != "" {
-		fmt.Print(result)
-		if !strings.HasSuffix(result, "\n") {
-			fmt.Println()
-		}
-	}
-	return nil
+	return result, nil
 }
 
 func parseExecPrompt(args []string, stdin io.Reader, stdinIsTTY bool) (string, error) {
