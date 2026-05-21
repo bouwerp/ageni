@@ -61,3 +61,52 @@ func TestLoadHistoryLeavesShortReplayUnchanged(t *testing.T) {
 		t.Fatalf("did not expect replay compaction for short history: %+v", msgs)
 	}
 }
+
+func TestBuildReplayCompactedContextExtractsAssistantResult(t *testing.T) {
+	out := buildReplayCompactedContext(
+		[]llm.Message{
+			{Role: llm.RoleUser, Text: "fix auth bug"},
+			{Role: llm.RoleAssistant, Text: "<result>Fixed auth bug in internal/auth/jwt.go</result><reasoning>done</reasoning>"},
+		},
+		nil,
+	)
+
+	if !strings.Contains(out, "Assistant result: Fixed auth bug in internal/auth/jwt.go") {
+		t.Fatalf("expected structured assistant result to be preserved, got %q", out)
+	}
+}
+
+func TestBuildReplayCompactedContextMergesPriorCompactedSections(t *testing.T) {
+	out := buildReplayCompactedContext(
+		[]llm.Message{
+			{Role: llm.RoleUser, Text: `<compacted_context source="replay">
+<summary>Earlier work fixed auth.</summary>
+<decisions>
+- keep JWT expiry at 15m
+</decisions>
+<completed>
+- updated internal/auth/jwt.go
+</completed>
+<pending>
+- rerun integration tests
+</pending>
+<artifacts>
+- internal/auth/jwt.go
+</artifacts>
+</compacted_context>`},
+		},
+		nil,
+	)
+
+	for _, want := range []string{
+		"Earlier summary: Earlier work fixed auth.",
+		"keep JWT expiry at 15m",
+		"updated internal/auth/jwt.go",
+		"rerun integration tests",
+		"internal/auth/jwt.go",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("expected replay compacted context to contain %q, got %q", want, out)
+		}
+	}
+}

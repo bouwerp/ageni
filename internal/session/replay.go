@@ -206,6 +206,9 @@ func buildReplayCompactedContext(older, recent []llm.Message) string {
 			if trimmed == "" || strings.HasPrefix(trimmed, "<system-reminder>") || strings.HasPrefix(trimmed, "<session-resume>") {
 				continue
 			}
+			if mergeReplayStructuredContext(trimmed, &decisions, &completed, &pending, &artifacts, seenArtifacts, addUnique) {
+				continue
+			}
 			addUnique(&decisions, "User asked: "+replayClip(trimmed, 180))
 			for _, match := range replayArtifactRE.FindAllString(trimmed, -1) {
 				if !seenArtifacts[match] {
@@ -219,9 +222,13 @@ func buildReplayCompactedContext(older, recent []llm.Message) string {
 		case llm.RoleAssistant:
 			trimmed := strings.TrimSpace(msg.Text)
 			if trimmed != "" {
-				addUnique(&decisions, "Assistant concluded: "+replayClip(trimmed, 180))
+				if result := replayTagText(trimmed, "result"); result != "" {
+					addUnique(&completed, "Assistant result: "+replayClip(result, 180))
+				} else {
+					addUnique(&decisions, "Assistant concluded: "+replayClip(stripReplayTags(trimmed), 180))
+				}
 				if replayLooksPending(trimmed) {
-					addUnique(&pending, replayClip(trimmed, 180))
+					addUnique(&pending, replayClip(stripReplayTags(trimmed), 180))
 				}
 			}
 			for _, tc := range msg.ToolCalls {
@@ -229,11 +236,18 @@ func buildReplayCompactedContext(older, recent []llm.Message) string {
 			}
 		case llm.RoleTool:
 			for _, tr := range msg.ToolResults {
+				if mergeReplayStructuredContext(tr.Content, &decisions, &completed, &pending, &artifacts, seenArtifacts, addUnique) {
+					continue
+				}
 				label := "Tool result: "
 				if tr.IsError {
 					label = "Tool error: "
 				}
-				addUnique(&completed, label+replayClip(tr.Content, 180))
+				if result := replayTagText(tr.Content, "result"); result != "" {
+					addUnique(&completed, label+replayClip(result, 180))
+				} else {
+					addUnique(&completed, label+replayClip(stripReplayTags(tr.Content), 180))
+				}
 				for _, match := range replayArtifactRE.FindAllString(tr.Content, -1) {
 					if !seenArtifacts[match] {
 						seenArtifacts[match] = true
@@ -271,6 +285,7 @@ func buildReplayCompactedContext(older, recent []llm.Message) string {
 }
 
 var replayArtifactRE = regexp.MustCompile(`(?:[A-Za-z0-9_.\-/]+\.[A-Za-z0-9_]+(?::\d+)?)|(?:s\d+|sh\d+|replay-\d+|v\d+\.\d+\.\d+)`)
+var replayTagStripRE = regexp.MustCompile(`(?s)<[^>]+>`)
 
 func writeReplaySection(sb *strings.Builder, tag string, items []string) {
 	sb.WriteString("<")
@@ -306,6 +321,90 @@ func replayLooksPending(s string) bool {
 		strings.Contains(s, "next step") ||
 		strings.Contains(s, "follow-up") ||
 		strings.Contains(s, "open question")
+}
+
+func mergeReplayStructuredContext(
+	text string,
+	decisions, completed, pending, artifacts *[]string,
+	seenArtifacts map[string]bool,
+	addUnique func(dst *[]string, value string),
+) bool {
+	trimmed := strings.TrimSpace(text)
+	if !strings.HasPrefix(trimmed, "<compacted_context") {
+		return false
+	}
+	if summary := replayTagText(trimmed, "summary"); summary != "" {
+		addUnique(decisions, "Earlier summary: "+replayClip(summary, 180))
+	}
+	for _, item := range replayTagItems(trimmed, "decisions") {
+		addUnique(decisions, replayClip(item, 180))
+	}
+	for _, item := range replayTagItems(trimmed, "completed") {
+		addUnique(completed, replayClip(item, 180))
+	}
+	for _, item := range replayTagItems(trimmed, "pending") {
+		addUnique(pending, replayClip(item, 180))
+	}
+	for _, item := range replayTagItems(trimmed, "artifacts") {
+		addUnique(artifacts, replayClip(item, 180))
+		for _, match := range replayArtifactRE.FindAllString(item, -1) {
+			if !seenArtifacts[match] {
+				seenArtifacts[match] = true
+			}
+		}
+	}
+	return true
+}
+
+func replayTagText(text, tag string) string {
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(text[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(html.UnescapeString(stripReplayTags(text[start : start+end])))
+}
+
+func replayTagItems(text, tag string) []string {
+	body := replayTagTextRaw(text, tag)
+	if body == "" {
+		return nil
+	}
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		line = strings.TrimSpace(strings.TrimPrefix(strings.TrimSpace(line), "- "))
+		if line == "" || line == "none recorded" {
+			continue
+		}
+		out = append(out, html.UnescapeString(stripReplayTags(line)))
+	}
+	return out
+}
+
+func replayTagTextRaw(text, tag string) string {
+	open := "<" + tag + ">"
+	close := "</" + tag + ">"
+	start := strings.Index(text, open)
+	if start < 0 {
+		return ""
+	}
+	start += len(open)
+	end := strings.Index(text[start:], close)
+	if end < 0 {
+		return ""
+	}
+	return strings.TrimSpace(text[start : start+end])
+}
+
+func stripReplayTags(text string) string {
+	cleaned := replayTagStripRE.ReplaceAllString(text, " ")
+	return strings.Join(strings.Fields(cleaned), " ")
 }
 
 // spawnedSubagentRE finds sub-agent IDs in spawn_subagent tool results.
