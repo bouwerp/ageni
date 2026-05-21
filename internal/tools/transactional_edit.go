@@ -178,13 +178,13 @@ func applyMultiEdits(body, path string, edits []multiEditOp) (string, error) {
 		count := strings.Count(body, e.OldString)
 		switch {
 		case count == 0:
-			return "", fmt.Errorf("edit %d: old_string not found in %s", i+1, path)
+			return "", fmt.Errorf("edit %d: %s", i+1, suggestApplyDiffForNoMatch(path))
 		case e.ReplaceAll:
 			body = strings.ReplaceAll(body, e.OldString, e.NewString)
 		case count == 1:
 			body = strings.Replace(body, e.OldString, e.NewString, 1)
 		default:
-			return "", fmt.Errorf("edit %d: old_string occurs %d times; provide more context or set replace_all", i+1, count)
+			return "", fmt.Errorf("edit %d: %s", i+1, suggestApplyDiffForMultipleMatches(count, path))
 		}
 	}
 	return body, nil

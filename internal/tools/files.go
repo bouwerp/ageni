@@ -90,7 +90,7 @@ func (WriteFile) Name() string { return "write_file" }
 func (WriteFile) Description() string {
 	return `Write the full contents of a file. Use this for NEW files, or when you want to overwrite an existing file from scratch. Parent directories are created as needed.
 
-For partial changes to an existing file, prefer edit_file (single replacement) or multi_edit (batch). Don't use write_file to "edit" — you'll lose any content you don't include.`
+For partial changes to an existing file, prefer apply_diff for complex edits, or edit_file / multi_edit for exact-match replacements. Don't use write_file to "edit" — you'll lose any content you don't include.`
 }
 func (WriteFile) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"path":{"type":"string"},"content":{"type":"string"}},"required":["path","content"]}`)
@@ -136,7 +136,9 @@ type EditFile struct{ Tracker *ChangeTracker }
 
 func (EditFile) Name() string { return "edit_file" }
 func (EditFile) Description() string {
-	return `Replace exactly one occurrence of old_string with new_string in an EXISTING file. Fails if old_string is missing or appears more than once. Use this for targeted edits instead of rewriting the whole file.
+	return `Replace exactly one occurrence of old_string with new_string in an EXISTING file. Fails if old_string is missing or appears more than once. Use this only for exact one-off replacements.
+
+For multi-line, multi-block, or approximate edits, prefer apply_diff.
 
 Cannot create new files — use write_file for that.`
 }
@@ -162,10 +164,10 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	body := string(b)
 	count := strings.Count(body, p.OldString)
 	if count == 0 {
-		return "", fmt.Errorf("old_string not found in %s", p.Path)
+		return "", errors.New(suggestApplyDiffForNoMatch(p.Path))
 	}
 	if count > 1 {
-		return "", fmt.Errorf("old_string occurs %d times in %s; provide more context to make it unique", count, p.Path)
+		return "", errors.New(suggestApplyDiffForMultipleMatches(count, p.Path))
 	}
 	abs, _ := filepath.Abs(p.Path)
 	step := e.Tracker.BeginMutation(abs)

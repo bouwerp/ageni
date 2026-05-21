@@ -19,6 +19,8 @@ func (MultiEdit) Name() string { return "multi_edit" }
 func (MultiEdit) Description() string {
 	return `Apply multiple edits to an EXISTING file atomically. Each edit replaces one occurrence of old_string with new_string. Edits are applied in order; later edits see earlier edits' results. Set replace_all=true on an edit to replace every occurrence (otherwise old_string must occur exactly once). The file is only written if ALL edits succeed.
 
+Use this for deterministic exact-match batches. For larger code reshapes or fuzzy multi-line edits, prefer apply_diff.
+
 Cannot create new files — for new files use write_file. To prepend to a file, read the current contents and pass the whole new body to write_file.`
 }
 func (MultiEdit) Schema() json.RawMessage {
@@ -78,13 +80,13 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 		count := strings.Count(body, e.OldString)
 		switch {
 		case count == 0:
-			return "", fmt.Errorf("edit %d: old_string not found in %s", i+1, p.Path)
+			return "", fmt.Errorf("edit %d: %s", i+1, suggestApplyDiffForNoMatch(p.Path))
 		case e.ReplaceAll:
 			body = strings.ReplaceAll(body, e.OldString, e.NewString)
 		case count == 1:
 			body = strings.Replace(body, e.OldString, e.NewString, 1)
 		default:
-			return "", fmt.Errorf("edit %d: old_string occurs %d times; provide more context or set replace_all", i+1, count)
+			return "", fmt.Errorf("edit %d: %s", i+1, suggestApplyDiffForMultipleMatches(count, p.Path))
 		}
 		applied++
 	}
