@@ -3,11 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/bouwerp/ageni/internal/llm"
+	"github.com/bouwerp/ageni/internal/memory"
 	"github.com/bouwerp/ageni/internal/models"
 	"github.com/bouwerp/ageni/internal/tools"
 )
@@ -542,6 +546,72 @@ func TestLatestMemoryQuerySkipsSyntheticUserMessages(t *testing.T) {
 
 	if got := latestMemoryQuery(msgs); got != "Investigate auth regressions" {
 		t.Fatalf("latestMemoryQuery() = %q, want original user request", got)
+	}
+}
+
+func TestManagerSpawnFiltersMemoryBlockForTask(t *testing.T) {
+	dir := t.TempDir()
+	home := filepath.Join(dir, "home")
+	t.Setenv("HOME", home)
+
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("Getwd: %v", err)
+	}
+	defer func() {
+		_ = os.Chdir(cwd)
+	}()
+	if err := os.Chdir(dir); err != nil {
+		t.Fatalf("Chdir: %v", err)
+	}
+	memDir := filepath.Join(dir, ".ageni", "memories")
+	if err := os.MkdirAll(memDir, 0o755); err != nil {
+		t.Fatalf("MkdirAll: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "build.md"), []byte("---\ndescription: Build help\n---\nRun go build ./...\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile build.md: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(memDir, "auth.md"), []byte("---\ndescription: Auth help\n---\nJWT middleware lives in internal/auth\n"), 0o644); err != nil {
+		t.Fatalf("WriteFile auth.md: %v", err)
+	}
+	for i := 0; i < 5; i++ {
+		name := filepath.Join(memDir, fmt.Sprintf("misc-%d.md", i))
+		body := fmt.Sprintf("---\ndescription: Misc %d\n---\nThis memory is unrelated to builds.\n", i)
+		if err := os.WriteFile(name, []byte(body), 0o644); err != nil {
+			t.Fatalf("WriteFile %s: %v", name, err)
+		}
+	}
+
+	memReg, err := memory.Load()
+	if err != nil {
+		t.Fatalf("memory.Load: %v", err)
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	factory := func(string, []string) (llm.Adapter, string) {
+		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m"
+	}
+	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 1)
+	mgr.SetMemoryRegistry(memReg)
+
+	id, err := mgr.Spawn(context.Background(), SubagentTask{
+		Objective:    "fix the build pipeline",
+		OutputFormat: "<result/>",
+	})
+	if err != nil {
+		t.Fatalf("Spawn: %v", err)
+	}
+	sub, ok := mgr.Get(id)
+	if !ok {
+		t.Fatalf("Get(%q) returned no subagent", id)
+	}
+	if !strings.Contains(sub.memBlock, "**build**") {
+		t.Fatalf("expected build memory in subagent block, got %q", sub.memBlock)
+	}
+	if strings.Contains(sub.memBlock, "**auth**") {
+		t.Fatalf("expected irrelevant auth memory to be filtered out, got %q", sub.memBlock)
 	}
 }
 

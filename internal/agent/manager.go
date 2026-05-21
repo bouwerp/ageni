@@ -3,6 +3,7 @@ package agent
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 
 	"github.com/bouwerp/ageni/internal/llm"
@@ -153,7 +154,7 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	caps := models.Global.CapabilitiesForModel(model)
 	memBlock := ""
 	if m.memReg != nil {
-		memBlock = m.memReg.InlineBlock()
+		memBlock = m.memReg.InlineBlockForQuery(memoryQueryForTask(task), 6)
 	}
 	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps, correlationID)
 	if m.scrubber != nil {
@@ -169,6 +170,13 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 	// with it. Sub-agents must outlive the spawning turn.
 	go sub.Run(rootCtx)
 	return id, nil
+}
+
+func memoryQueryForTask(task SubagentTask) string {
+	parts := []string{task.Objective, task.Context, task.TaskBoundaries, task.UseSkill}
+	parts = append(parts, task.RepoFacts...)
+	parts = append(parts, task.PriorFindings...)
+	return strings.TrimSpace(strings.Join(parts, " "))
 }
 
 func (m *Manager) Get(id string) (*Subagent, bool) {
