@@ -157,7 +157,6 @@ func runHeadlessPrompt(prompt string) (string, error) {
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
-	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
 	masterReg.Register(agent.PauseTool{M: manager})
@@ -166,6 +165,7 @@ func runHeadlessPrompt(prompt string) (string, error) {
 
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	master.SetTodo(todo)
+	masterReg.Register(agent.CheckTool{M: manager, Supervisor: master.SupervisorState()})
 	{
 		masterCaps := models.Global.CapabilitiesForModel(cfg.Master.Model)
 		subCapsSet := map[string]struct{}{}

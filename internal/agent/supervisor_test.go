@@ -4,6 +4,8 @@ import (
 	"errors"
 	"testing"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 func TestSupervisorTracksWorkerLifecycle(t *testing.T) {
@@ -64,8 +66,8 @@ func TestSupervisorEscalatesErrorsAndStalls(t *testing.T) {
 	now = now.Add(31 * time.Second)
 
 	decision, stalled := supervisor.Tick()
-	if decision != SupervisorDecisionEscalateStall {
-		t.Fatalf("stall decision = %q, want %q", decision, SupervisorDecisionEscalateStall)
+	if decision != SupervisorDecisionNudgeStalledWorker {
+		t.Fatalf("first stall decision = %q, want %q", decision, SupervisorDecisionNudgeStalledWorker)
 	}
 	if stalled != "s1" {
 		t.Fatalf("stalled worker = %q, want s1", stalled)
@@ -76,6 +78,25 @@ func TestSupervisorEscalatesErrorsAndStalls(t *testing.T) {
 	}
 	if snap.State != SupervisorWorkerStalled {
 		t.Fatalf("stalled state = %q, want %q", snap.State, SupervisorWorkerStalled)
+	}
+	if snap.StallCount != 1 || snap.RecoveryAction != SupervisorRecoveryNudgeWorker {
+		t.Fatalf("first stall snapshot = %+v, want nudge action", snap)
+	}
+
+	now = now.Add(31 * time.Second)
+	decision, stalled = supervisor.Tick()
+	if decision != SupervisorDecisionEscalateStall {
+		t.Fatalf("second stall decision = %q, want %q", decision, SupervisorDecisionEscalateStall)
+	}
+	if stalled != "s1" {
+		t.Fatalf("stalled worker on escalation = %q, want s1", stalled)
+	}
+	snap, ok = supervisor.Worker("s1")
+	if !ok {
+		t.Fatal("expected worker snapshot for escalated stall")
+	}
+	if snap.StallCount != 2 || snap.RecoveryAction != SupervisorRecoveryRespawnWorker {
+		t.Fatalf("escalated stall snapshot = %+v, want respawn action", snap)
 	}
 
 	if got := supervisor.Observe(Event{Kind: EvSubagentError, SubagentID: "s1", Err: errors.New("boom")}); got != SupervisorDecisionEscalateError {
@@ -90,5 +111,38 @@ func TestSupervisorEscalatesErrorsAndStalls(t *testing.T) {
 	}
 	if snap.LastError != "boom" {
 		t.Fatalf("last error = %q, want boom", snap.LastError)
+	}
+	if snap.RecoveryAction != SupervisorRecoveryInvestigate {
+		t.Fatalf("generic error recovery action = %q, want %q", snap.RecoveryAction, SupervisorRecoveryInvestigate)
+	}
+}
+
+func TestSupervisorClassifiesProviderErrorsIntoRecoveryActions(t *testing.T) {
+	supervisor := NewSupervisorState(func() time.Time {
+		return time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+	})
+	supervisor.Observe(Event{Kind: EvSubagentSpawn, SubagentID: "s1", SubagentTask: "run tests", SubagentModel: "gpt-5"})
+
+	rateLimitErr := llm.WrapProviderError("openai", "gpt-5", "stream", errors.New("429 rate limit exceeded"))
+	if got := supervisor.Observe(Event{Kind: EvSubagentError, SubagentID: "s1", Err: rateLimitErr}); got != SupervisorDecisionEscalateError {
+		t.Fatalf("rate limit decision = %q, want %q", got, SupervisorDecisionEscalateError)
+	}
+	snap, ok := supervisor.Worker("s1")
+	if !ok {
+		t.Fatal("expected worker snapshot for s1")
+	}
+	if snap.ErrorClass != llm.ErrorClassRateLimit || snap.RecoveryAction != SupervisorRecoveryRespawnWorker {
+		t.Fatalf("rate limit snapshot = %+v, want respawn worker", snap)
+	}
+
+	supervisor.Observe(Event{Kind: EvSubagentSpawn, SubagentID: "s2", SubagentTask: "run tests", SubagentModel: "gpt-5"})
+	modelErr := llm.WrapProviderError("openai", "gpt-5", "stream", errors.New("model not found"))
+	supervisor.Observe(Event{Kind: EvSubagentError, SubagentID: "s2", Err: modelErr})
+	snap, ok = supervisor.Worker("s2")
+	if !ok {
+		t.Fatal("expected worker snapshot for s2")
+	}
+	if snap.ErrorClass != llm.ErrorClassModelUnsupported || snap.RecoveryAction != SupervisorRecoveryUpgradeModel {
+		t.Fatalf("model error snapshot = %+v, want upgrade model action", snap)
 	}
 }

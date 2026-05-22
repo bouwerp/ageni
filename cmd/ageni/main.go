@@ -337,7 +337,6 @@ func run() error {
 	corrections := tools.NewRecordCorrection(sess.Path("corrections.jsonl"))
 	masterReg.Register(corrections)
 	masterReg.Register(agent.SpawnTool{M: manager})
-	masterReg.Register(agent.CheckTool{M: manager})
 	masterReg.Register(agent.SendTool{M: manager})
 	masterReg.Register(agent.KillTool{M: manager})
 	masterReg.Register(agent.PauseTool{M: manager})
@@ -347,6 +346,7 @@ func run() error {
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
 	master.SetTodo(todo)
+	masterReg.Register(agent.CheckTool{M: manager, Supervisor: master.SupervisorState()})
 
 	// Wire runtime capability awareness: tell master what it can do natively vs via subagents.
 	{

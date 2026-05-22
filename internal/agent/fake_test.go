@@ -834,14 +834,14 @@ func TestMasterDoneAndErrorEventsStillTriggerTurns(t *testing.T) {
 	}
 }
 
-func TestMasterTickTriggersTurnForStalledWorker(t *testing.T) {
+func TestMasterTickNudgesThenEscalatesStalledWorker(t *testing.T) {
 	base := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
 	now := base
 	bus := NewBus()
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
 	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
-	mgr.subs["s1"] = &Subagent{ID: "s1", status: StatusRunning}
+	mgr.subs["s1"] = &Subagent{ID: "s1", status: StatusRunning, inbox: make(chan string, 1)}
 	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
 	master.supervisor = NewSupervisorState(func() time.Time { return now })
 	master.supervisor.stalledAfter = 30 * time.Second
@@ -849,18 +849,62 @@ func TestMasterTickTriggersTurnForStalledWorker(t *testing.T) {
 	master.handleInboxEvent(Event{Kind: EvSubagentSpawn, SubagentID: "s1", SubagentTask: "run tests"})
 	now = base.Add(31 * time.Second)
 
-	if got := master.handleInboxEvent(Event{Kind: EvTick}); !got {
-		t.Fatal("EvTick should trigger a master turn for a stalled worker")
+	if got := master.handleInboxEvent(Event{Kind: EvTick}); got {
+		t.Fatal("first stalled EvTick should nudge the worker without triggering a master turn")
 	}
 	if got := len(master.pendingEvs); got != 2 {
-		t.Fatalf("pending events = %+v, want spawn plus one synthetic stall tick", master.pendingEvs)
+		t.Fatalf("pending events = %+v, want spawn plus one deterministic inbox nudge", master.pendingEvs)
+	}
+	nudge := master.pendingEvs[len(master.pendingEvs)-1]
+	if nudge.Kind != EvSubagentInbox {
+		t.Fatalf("last pending event = %+v, want synthetic inbox nudge", nudge)
+	}
+	select {
+	case msg := <-mgr.subs["s1"].inbox:
+		if !strings.Contains(msg, "No progress has been observed") {
+			t.Fatalf("unexpected stall nudge: %q", msg)
+		}
+	default:
+		t.Fatal("expected stalled worker to receive a deterministic nudge")
+	}
+
+	now = now.Add(31 * time.Second)
+	if got := master.handleInboxEvent(Event{Kind: EvTick}); !got {
+		t.Fatal("second stalled EvTick should trigger a master turn")
 	}
 	last := master.pendingEvs[len(master.pendingEvs)-1]
 	if last.Kind != EvTick {
 		t.Fatalf("last pending event = %+v, want synthetic stall tick", last)
 	}
-	if !strings.Contains(last.Text, "stalled") {
-		t.Fatalf("expected stall reason in tick text, got %+v", last)
+	if !strings.Contains(last.Text, "recovery=respawn_worker") {
+		t.Fatalf("expected deterministic recovery hint in tick text, got %+v", last)
+	}
+}
+
+func TestCheckToolIncludesSupervisorRecoveryState(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	mgr.subs["s1"] = &Subagent{ID: "s1", Task: SubagentTask{Objective: "run tests"}, status: StatusError}
+	supervisor := NewSupervisorState(func() time.Time {
+		return time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+	})
+	supervisor.Observe(Event{Kind: EvSubagentSpawn, SubagentID: "s1", SubagentTask: "run tests", SubagentModel: "gpt-5"})
+	supervisor.Observe(Event{Kind: EvSubagentError, SubagentID: "s1", Err: llm.WrapProviderError("openai", "gpt-5", "stream", errors.New("429 rate limit exceeded"))})
+
+	out, err := (CheckTool{M: mgr, Supervisor: supervisor}).Call(context.Background(), json.RawMessage(`{"id":"s1"}`))
+	if err != nil {
+		t.Fatalf("CheckTool.Call: %v", err)
+	}
+	if !strings.Contains(out, "supervisor_state: error_terminal") {
+		t.Fatalf("missing supervisor state in check_subagent output: %s", out)
+	}
+	if !strings.Contains(out, "error_class: rate-limit") {
+		t.Fatalf("missing error class in check_subagent output: %s", out)
+	}
+	if !strings.Contains(out, "recovery_action: respawn_worker") {
+		t.Fatalf("missing recovery action in check_subagent output: %s", out)
 	}
 }
 

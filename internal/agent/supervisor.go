@@ -4,6 +4,8 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 type SupervisorWorkerState string
@@ -23,23 +25,39 @@ const (
 type SupervisorDecision string
 
 const (
-	SupervisorDecisionNone            SupervisorDecision = ""
-	SupervisorDecisionIntegrateResult SupervisorDecision = "integrate_result"
-	SupervisorDecisionEscalateError   SupervisorDecision = "escalate_error"
-	SupervisorDecisionEscalateStall   SupervisorDecision = "escalate_stall"
+	SupervisorDecisionNone               SupervisorDecision = ""
+	SupervisorDecisionIntegrateResult    SupervisorDecision = "integrate_result"
+	SupervisorDecisionNudgeStalledWorker SupervisorDecision = "nudge_stalled_worker"
+	SupervisorDecisionEscalateError      SupervisorDecision = "escalate_error"
+	SupervisorDecisionEscalateStall      SupervisorDecision = "escalate_stall"
+)
+
+type SupervisorRecoveryAction string
+
+const (
+	SupervisorRecoveryNone          SupervisorRecoveryAction = ""
+	SupervisorRecoveryNudgeWorker   SupervisorRecoveryAction = "nudge_worker"
+	SupervisorRecoveryRespawnWorker SupervisorRecoveryAction = "respawn_worker"
+	SupervisorRecoveryUpgradeModel  SupervisorRecoveryAction = "upgrade_model"
+	SupervisorRecoveryFixProvider   SupervisorRecoveryAction = "fix_provider"
+	SupervisorRecoveryReplanTask    SupervisorRecoveryAction = "replan_task"
+	SupervisorRecoveryInvestigate   SupervisorRecoveryAction = "investigate"
 )
 
 type SupervisorWorkerSnapshot struct {
-	ID            string
-	Objective     string
-	Model         string
-	State         SupervisorWorkerState
-	LastEventKind EventKind
-	LastEventAt   time.Time
-	LastProgress  time.Time
-	RetryCount    int
-	LastError     string
-	ResultSnippet string
+	ID             string
+	Objective      string
+	Model          string
+	State          SupervisorWorkerState
+	LastEventKind  EventKind
+	LastEventAt    time.Time
+	LastProgress   time.Time
+	RetryCount     int
+	StallCount     int
+	LastError      string
+	ErrorClass     llm.ErrorClass
+	RecoveryAction SupervisorRecoveryAction
+	ResultSnippet  string
 }
 
 type SupervisorState struct {
@@ -98,6 +116,10 @@ func (s *SupervisorState) observeAt(now time.Time, ev Event) SupervisorDecision 
 		snap.Objective = ev.SubagentTask
 		snap.Model = ev.SubagentModel
 		snap.State = SupervisorWorkerRunning
+		snap.StallCount = 0
+		snap.LastError = ""
+		snap.ErrorClass = llm.ErrorClassUnknown
+		snap.RecoveryAction = SupervisorRecoveryNone
 		progress = true
 	case EvSubagentTurnStart:
 		snap.State = SupervisorWorkerThinking
@@ -123,6 +145,7 @@ func (s *SupervisorState) observeAt(now time.Time, ev Event) SupervisorDecision 
 	case EvSubagentDone:
 		snap.State = SupervisorWorkerDoneUnintegrated
 		snap.ResultSnippet = clipSupervisorText(ev.Text, 240)
+		snap.RecoveryAction = SupervisorRecoveryNone
 		progress = true
 		decision = SupervisorDecisionIntegrateResult
 	case EvSubagentError:
@@ -130,12 +153,17 @@ func (s *SupervisorState) observeAt(now time.Time, ev Event) SupervisorDecision 
 		if ev.Err != nil {
 			snap.LastError = ev.Err.Error()
 		}
+		snap.ErrorClass, snap.RecoveryAction = classifySupervisorRecovery(ev.Err)
 		decision = SupervisorDecisionEscalateError
 	case EvCancelAll:
 		snap.State = SupervisorWorkerCancelled
+		snap.RecoveryAction = SupervisorRecoveryNone
 	}
 	if progress {
 		snap.LastProgress = now
+		snap.StallCount = 0
+		snap.ErrorClass = llm.ErrorClassUnknown
+		snap.RecoveryAction = SupervisorRecoveryNone
 	}
 	s.workers[ev.SubagentID] = snap
 	return decision
@@ -164,6 +192,21 @@ func (s *SupervisorState) TickAt(now time.Time) (SupervisorDecision, string) {
 			if !snap.LastProgress.IsZero() && now.Sub(snap.LastProgress) >= s.stalledAfter {
 				snap.State = SupervisorWorkerStalled
 				snap.LastEventAt = now
+				snap.StallCount++
+				if snap.StallCount == 1 {
+					snap.RecoveryAction = SupervisorRecoveryNudgeWorker
+					s.workers[id] = snap
+					return SupervisorDecisionNudgeStalledWorker, id
+				}
+				snap.RecoveryAction = SupervisorRecoveryRespawnWorker
+				s.workers[id] = snap
+				return SupervisorDecisionEscalateStall, id
+			}
+		case SupervisorWorkerStalled:
+			if !snap.LastProgress.IsZero() && now.Sub(snap.LastProgress) >= s.stalledAfter {
+				snap.LastEventAt = now
+				snap.StallCount++
+				snap.RecoveryAction = SupervisorRecoveryRespawnWorker
 				s.workers[id] = snap
 				return SupervisorDecisionEscalateStall, id
 			}
@@ -197,4 +240,29 @@ func clipSupervisorText(text string, max int) string {
 		return text[:max] + "…"
 	}
 	return text
+}
+
+func classifySupervisorRecovery(err error) (llm.ErrorClass, SupervisorRecoveryAction) {
+	class := llm.ClassifyError(err)
+	switch class {
+	case llm.ErrorClassDeadlineExceeded,
+		llm.ErrorClassRateLimit,
+		llm.ErrorClassServer,
+		llm.ErrorClassNetwork:
+		return class, SupervisorRecoveryRespawnWorker
+	case llm.ErrorClassContextLimit,
+		llm.ErrorClassModelUnsupported:
+		return class, SupervisorRecoveryUpgradeModel
+	case llm.ErrorClassAuth,
+		llm.ErrorClassPermission,
+		llm.ErrorClassPayment:
+		return class, SupervisorRecoveryFixProvider
+	case llm.ErrorClassInvalidRequest,
+		llm.ErrorClassNotFound:
+		return class, SupervisorRecoveryReplanTask
+	case llm.ErrorClassCancelled:
+		return class, SupervisorRecoveryNone
+	default:
+		return class, SupervisorRecoveryInvestigate
+	}
 }

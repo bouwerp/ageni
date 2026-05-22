@@ -107,20 +107,20 @@ type Master struct {
 
 func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, manager *Manager) *Master {
 	return &Master{
-		adapter:  adapter,
-		model:    model,
-		tools:    registry,
-		bus:      bus,
-		tracker:  tracker,
-		manager:  manager,
-		maxTurns: 30,
+		adapter:    adapter,
+		model:      model,
+		tools:      registry,
+		bus:        bus,
+		tracker:    tracker,
+		manager:    manager,
+		maxTurns:   30,
 		supervisor: NewSupervisorState(nil),
 	}
 }
 
 const (
-	monitorTickInterval  = 5 * time.Second
-	monitorTurnMinGap    = 15 * time.Second
+	monitorTickInterval = 5 * time.Second
+	monitorTurnMinGap   = 15 * time.Second
 )
 
 // SetSkillCatalog injects a "<available_skills>...</available_skills>" block
@@ -137,6 +137,12 @@ func (m *Master) SetRoleCatalog(catalog string) {
 	m.mu.Lock()
 	m.roleCatalog = catalog
 	m.mu.Unlock()
+}
+
+func (m *Master) SupervisorState() *SupervisorState {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+	return m.supervisor
 }
 
 // SetMemoryRegistry wires a live memory registry into the master. The block
@@ -463,13 +469,26 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 			return false
 		}
 		decision, workerID := m.supervisor.Tick()
-		if decision != SupervisorDecisionEscalateStall || workerID == "" {
+		if workerID == "" {
 			return false
+		}
+		if decision == SupervisorDecisionNudgeStalledWorker {
+			if m.sendStallNudge(workerID) {
+				return false
+			}
+			decision = SupervisorDecisionEscalateStall
+		}
+		if decision != SupervisorDecisionEscalateStall {
+			return false
+		}
+		recovery := string(SupervisorRecoveryRespawnWorker)
+		if snap, ok := m.supervisor.Worker(workerID); ok && snap.RecoveryAction != "" {
+			recovery = string(snap.RecoveryAction)
 		}
 		m.pendingEvs = append(m.pendingEvs, Event{
 			Kind:       EvTick,
 			SubagentID: workerID,
-			Text:       fmt.Sprintf("%s stalled waiting for progress", workerID),
+			Text:       fmt.Sprintf("%s stalled waiting for progress (recovery=%s)", workerID, recovery),
 		})
 		return true
 	case isMonitoringEvent(ev.Kind):
@@ -652,6 +671,15 @@ func (m *Master) buildSupervisionSummary(subs []*Subagent) string {
 		if snap.RetryCount > 0 {
 			line += fmt.Sprintf(" | retries=%d", snap.RetryCount)
 		}
+		if snap.StallCount > 0 {
+			line += fmt.Sprintf(" | stalls=%d", snap.StallCount)
+		}
+		if snap.ErrorClass != "" && snap.ErrorClass != llm.ErrorClassUnknown {
+			line += " | error_class=" + string(snap.ErrorClass)
+		}
+		if snap.RecoveryAction != "" {
+			line += " | recovery=" + string(snap.RecoveryAction)
+		}
 		if snap.LastError != "" {
 			line += " | error=" + clipText(snap.LastError, 120)
 		}
@@ -702,20 +730,40 @@ func mapSubagentStatusToSupervisorState(status SubagentStatus) SupervisorWorkerS
 	}
 }
 
+func (m *Master) sendStallNudge(workerID string) bool {
+	sub, ok := m.manager.Get(workerID)
+	if !ok || sub == nil {
+		return false
+	}
+	msg := `<system-reminder>
+No progress has been observed for a while. Do not finalize yet.
+Either make the next concrete tool/model action now, or explicitly summarize the blocker and remaining work in your eventual <result>.
+</system-reminder>`
+	if !sub.Send(msg) {
+		return false
+	}
+	m.pendingEvs = append(m.pendingEvs, Event{
+		Kind:       EvSubagentInbox,
+		SubagentID: workerID,
+		Text:       "supervisor stall nudge delivered",
+	})
+	return true
+}
+
 type workerEventDelta struct {
-	spawned       bool
-	model         string
-	retryCount    int
-	lastRetry     string
-	inboxCount    int
-	toolName      string
-	toolError     string
-	paused        bool
-	resumed       bool
-	doneSnippet   string
-	errorText     string
-	usageSummary  string
-	turnStarted   bool
+	spawned      bool
+	model        string
+	retryCount   int
+	lastRetry    string
+	inboxCount   int
+	toolName     string
+	toolError    string
+	paused       bool
+	resumed      bool
+	doneSnippet  string
+	errorText    string
+	usageSummary string
+	turnStarted  bool
 }
 
 func (m *Master) buildPendingEventDelta() string {

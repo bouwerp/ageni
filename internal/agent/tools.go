@@ -118,11 +118,14 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 }
 
 // CheckTool returns the sub-agent's current status and recent transcript.
-type CheckTool struct{ M *Manager }
+type CheckTool struct {
+	M          *Manager
+	Supervisor *SupervisorState
+}
 
 func (CheckTool) Name() string { return "check_subagent" }
 func (CheckTool) Description() string {
-	return "Inspect a sub-agent's current status and recent activity (last ~50 events). Returns status (running/paused/idle/done/error/cancelled) and a compact log."
+	return "Inspect a sub-agent's current status, supervisor-derived recovery state, and recent activity (last ~50 events)."
 }
 func (CheckTool) Schema() json.RawMessage {
 	return json.RawMessage(`{"type":"object","properties":{"id":{"type":"string"}},"required":["id"]}`)
@@ -142,6 +145,23 @@ func (t CheckTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		tail = tail[len(tail)-50:]
 	}
 	out := fmt.Sprintf("status: %s\nobjective: %s\n", s.Status(), s.Task.Objective)
+	if t.Supervisor != nil {
+		if snap, ok := t.Supervisor.Worker(p.ID); ok {
+			out += fmt.Sprintf("supervisor_state: %s\n", snap.State)
+			if snap.ErrorClass != "" && snap.ErrorClass != llm.ErrorClassUnknown {
+				out += fmt.Sprintf("error_class: %s\n", snap.ErrorClass)
+			}
+			if snap.RecoveryAction != "" {
+				out += fmt.Sprintf("recovery_action: %s\n", snap.RecoveryAction)
+			}
+			if snap.RetryCount > 0 {
+				out += fmt.Sprintf("retry_count: %d\n", snap.RetryCount)
+			}
+			if snap.StallCount > 0 {
+				out += fmt.Sprintf("stall_count: %d\n", snap.StallCount)
+			}
+		}
+	}
 	if final := s.FinalText(); final != "" {
 		out += "final_output:\n" + final + "\n"
 	}
