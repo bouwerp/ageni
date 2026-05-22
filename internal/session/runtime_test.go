@@ -97,6 +97,29 @@ func TestLoadWorkerSnapshots(t *testing.T) {
 	}
 }
 
+func TestLoadWorkerSnapshotsIncludesRecoveryHintsOnResume(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	writeLogEntries(t, dir, []logEntry{
+		{Sequence: 1, Kind: "subagent_spawn", At: now, SubagentID: "s1", SubagentTask: "run tests", SubagentModel: "gpt-5"},
+		{Sequence: 2, Kind: "subagent_error", At: now, SubagentID: "s1", Err: "429 rate limit exceeded"},
+	})
+
+	snaps, _, err := LoadWorkerSnapshots(&Session{Dir: dir})
+	if err != nil {
+		t.Fatalf("LoadWorkerSnapshots: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("len(snaps) = %d, want 1", len(snaps))
+	}
+	if !strings.Contains(snaps[0].Buffer, "[error_class] rate-limit") {
+		t.Fatalf("missing error class in resumed worker snapshot: %+v", snaps[0])
+	}
+	if !strings.Contains(snaps[0].Buffer, "[recovery_action] respawn_worker") {
+		t.Fatalf("missing recovery action in resumed worker snapshot: %+v", snaps[0])
+	}
+}
+
 func TestLoadSupervisorStateReplaysSequenceAndStatus(t *testing.T) {
 	dir := t.TempDir()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -125,6 +148,30 @@ func TestLoadSupervisorStateReplaysSequenceAndStatus(t *testing.T) {
 	}
 }
 
+func TestLoadSupervisorStateReplaysRecoveryMetadata(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	writeLogEntries(t, dir, []logEntry{
+		{Sequence: 9, Kind: "subagent_spawn", At: now, SubagentID: "s3", SubagentTask: "run tests", SubagentModel: "gpt-5"},
+		{Sequence: 10, Kind: "subagent_error", At: now, SubagentID: "s3", Err: "model not found"},
+	})
+
+	replay, err := LoadSupervisorState(&Session{Dir: dir})
+	if err != nil {
+		t.Fatalf("LoadSupervisorState: %v", err)
+	}
+	snap, ok := replay.State.Worker("s3")
+	if !ok {
+		t.Fatal("expected worker snapshot for s3")
+	}
+	if snap.ErrorClass != llm.ErrorClassModelUnsupported {
+		t.Fatalf("error class = %q, want model-unsupported", snap.ErrorClass)
+	}
+	if snap.RecoveryAction != agent.SupervisorRecoveryUpgradeModel {
+		t.Fatalf("recovery action = %q, want %q", snap.RecoveryAction, agent.SupervisorRecoveryUpgradeModel)
+	}
+}
+
 func TestLoggerSequencePersistsAcrossReopen(t *testing.T) {
 	dir := t.TempDir()
 	sess := &Session{Dir: dir}
@@ -132,6 +179,7 @@ func TestLoggerSequencePersistsAcrossReopen(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewLogger first: %v", err)
 	}
+
 	logger.WriteEvent(agent.Event{Kind: agent.EvFlash, Text: "one"})
 	logger.WriteEvent(agent.Event{Kind: agent.EvFlash, Text: "two"})
 	if err := logger.Close(); err != nil {

@@ -453,7 +453,7 @@ The token-efficiency and prompt-strategy decisions above are sourced from:
 
 - [x] Enforce hard master-vs-worker tool boundaries at the registry/tool layer instead of relying on prompt instructions alone.
 - [x] Make live monitoring real: forward mid-flight worker events to the master, add periodic tick/self-check events, and support interruptible supervision.
-- [ ] Add durable, append-only event journaling with correlation IDs so replay/debugging does not depend on lossy bus subscribers.
+- [x] Add durable, append-only event journaling with correlation IDs so replay/debugging does not depend on lossy bus subscribers.
 - [x] Replace string-matched error recovery with typed/provider-aware error classes and clearer retry / escalation policy.
 - [ ] Add substantially more race/integration coverage around the master loop, resume flow, shells, logging, and safety boundaries.
 

@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/bouwerp/ageni/internal/agent"
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 type ShellSnapshot struct {
@@ -148,6 +149,12 @@ func LoadWorkerSnapshots(s *Session) ([]WorkerSnapshot, int, error) {
 		}
 		if snap.LastError != "" {
 			outSnap.Buffer += "\n[error] " + snap.LastError + "\n"
+		}
+		if snap.ErrorClass != "" && snap.ErrorClass != llm.ErrorClassUnknown {
+			outSnap.Buffer += fmt.Sprintf("\n[error_class] %s\n", snap.ErrorClass)
+		}
+		if snap.RecoveryAction != "" {
+			outSnap.Buffer += fmt.Sprintf("\n[recovery_action] %s\n", snap.RecoveryAction)
 		}
 		if snap.RetryCount > 0 {
 			outSnap.Buffer += fmt.Sprintf("\n[retry-count] %d\n", snap.RetryCount)
