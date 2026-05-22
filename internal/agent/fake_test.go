@@ -746,9 +746,12 @@ func TestMasterActiveContextIncludesSupervisionSignals(t *testing.T) {
 	reg := tools.NewRegistry()
 	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
 	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+	master.handleInboxEvent(Event{Kind: EvSubagentSpawn, SubagentID: "s1", SubagentTask: "inspect auth", SubagentModel: "claude-sonnet"})
+	master.handleInboxEvent(Event{Kind: EvSubagentPaused, SubagentID: "s1"})
 	master.pendingEvs = []Event{
-		{Kind: EvTick, Text: "1 worker still running"},
-		{Kind: EvSubagentPaused, SubagentID: "s1"},
+		{Kind: EvTick, Text: "worker s1 stalled"},
+		{Kind: EvSubagentRetry, SubagentID: "s1", Text: "retrying tool"},
+		{Kind: EvSubagentRetry, SubagentID: "s1", Text: "retrying tool again"},
 		{Kind: EvShellOutputLoss, SubagentID: "sh1", Bytes: 512},
 	}
 
@@ -756,14 +759,26 @@ func TestMasterActiveContextIncludesSupervisionSignals(t *testing.T) {
 	if msg == nil {
 		t.Fatal("buildActiveContext() = nil, want active context message")
 	}
-	if !strings.Contains(msg.Text, "supervision tick") {
-		t.Fatalf("active context missing supervision tick: %s", msg.Text)
+	if !strings.Contains(msg.Text, "<supervision_summary>") {
+		t.Fatalf("active context missing supervision summary block: %s", msg.Text)
 	}
-	if !strings.Contains(msg.Text, "s1 paused") {
-		t.Fatalf("active context missing paused worker: %s", msg.Text)
+	if !strings.Contains(msg.Text, "states: paused=1") {
+		t.Fatalf("active context missing compact state counts: %s", msg.Text)
 	}
-	if !strings.Contains(msg.Text, "shell sh1 dropped 512 byte(s) of output") {
+	if !strings.Contains(msg.Text, "s1 [paused") {
+		t.Fatalf("active context missing compact worker summary: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "retry x2") {
+		t.Fatalf("active context missing aggregated retry summary: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "supervision tick: worker s1 stalled") {
+		t.Fatalf("active context missing supervision tick delta: %s", msg.Text)
+	}
+	if !strings.Contains(msg.Text, "shell sh1 output loss: 512 byte(s)") {
 		t.Fatalf("active context missing shell loss warning: %s", msg.Text)
+	}
+	if strings.Contains(msg.Text, "Sub-agents (current state):") || strings.Contains(msg.Text, "New events since your last turn:") {
+		t.Fatalf("active context still uses verbose legacy headings: %s", msg.Text)
 	}
 }
 

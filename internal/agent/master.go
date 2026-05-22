@@ -121,7 +121,6 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 const (
 	monitorTickInterval  = 5 * time.Second
 	monitorTurnMinGap    = 15 * time.Second
-	maxPendingEventLines = 12
 )
 
 // SetSkillCatalog injects a "<available_skills>...</available_skills>" block
@@ -590,86 +589,314 @@ func (m *Master) buildActiveContext() *llm.Message {
 		sb.WriteString("\n")
 	}
 
-	if len(subs) > 0 {
-		sb.WriteString("Sub-agents (current state):\n")
-		for _, s := range subs {
-			elapsed := s.Elapsed()
-			sb.WriteString(fmt.Sprintf("- %s [%s, running %s] %s\n", s.ID, s.Status(), fmtDuration(elapsed), s.Task.Objective))
-		}
+	if summary := m.buildSupervisionSummary(subs); summary != "" {
+		sb.WriteString(summary)
 	}
 
 	if len(m.pendingEvs) > 0 {
-		sb.WriteString("\nNew events since your last turn:\n")
-		evs := m.pendingEvs
-		if len(evs) > maxPendingEventLines {
-			sb.WriteString(fmt.Sprintf("- %d earlier event(s) omitted for brevity\n", len(evs)-maxPendingEventLines))
-			evs = evs[len(evs)-maxPendingEventLines:]
+		if delta := m.buildPendingEventDelta(); delta != "" {
+			sb.WriteString(delta)
 		}
-		for _, ev := range evs {
-			switch ev.Kind {
-			case EvTick:
-				sb.WriteString("- supervision tick: " + clipText(ev.Text, 180) + "\n")
-			case EvSubagentSpawn:
-				sb.WriteString(fmt.Sprintf("- %s spawned (model=%s)\n", ev.SubagentID, ev.SubagentModel))
-			case EvSubagentTurnStart:
-				sb.WriteString(fmt.Sprintf("- %s started a new model turn\n", ev.SubagentID))
-			case EvSubagentToolCall:
-				if ev.ToolCall != nil {
-					sb.WriteString(fmt.Sprintf("- %s calling tool %s\n", ev.SubagentID, ev.ToolCall.Name))
-				}
-			case EvSubagentToolDone:
-				if ev.ToolResult != nil && ev.ToolResult.IsError {
-					sb.WriteString(fmt.Sprintf("- %s tool error: %s\n", ev.SubagentID, clipText(ev.ToolResult.Content, 240)))
-				} else if ev.ToolResult != nil {
-					sb.WriteString(fmt.Sprintf("- %s tool finished successfully\n", ev.SubagentID))
-				}
-			case EvSubagentRetry:
-				sb.WriteString(fmt.Sprintf("- %s retrying: %s\n", ev.SubagentID, clipText(ev.Text, 180)))
-			case EvSubagentInbox:
-				sb.WriteString(fmt.Sprintf("- %s received a correction/follow-up from the master\n", ev.SubagentID))
-			case EvSubagentUsage:
-				if ev.Usage != nil {
-					sb.WriteString(fmt.Sprintf("- %s usage: in=%d out=%d\n", ev.SubagentID, ev.Usage.InputTokens, ev.Usage.OutputTokens))
-				}
-			case EvSubagentPaused:
-				sb.WriteString(fmt.Sprintf("- %s paused\n", ev.SubagentID))
-			case EvSubagentResumed:
-				sb.WriteString(fmt.Sprintf("- %s resumed\n", ev.SubagentID))
-			case EvSubagentDone:
-				if m.todo != nil {
-					m.todo.AutoRelease(ev.SubagentID)
-				}
-				if ev.Text != "" {
-					// Inline a snippet of the final output so the master can
-					// act immediately without a check_subagent round-trip.
-					snippet := ev.Text
-					const maxSnippet = 800
-					if len(snippet) > maxSnippet {
-						snippet = snippet[:maxSnippet] + "\n… (truncated — call check_subagent for full output)"
-					}
-					sb.WriteString(fmt.Sprintf("- %s DONE. Final output:\n<subagent_output id=%q>\n%s\n</subagent_output>\n", ev.SubagentID, ev.SubagentID, snippet))
-				} else {
-					sb.WriteString(fmt.Sprintf("- %s finished (no output) — call check_subagent(%q) if needed\n", ev.SubagentID, ev.SubagentID))
-				}
-			case EvSubagentError:
-				sb.WriteString(fmt.Sprintf("- %s ERROR: %v\n", ev.SubagentID, ev.Err))
-				if m.todo != nil {
-					m.todo.AutoRelease(ev.SubagentID)
-				}
-			case EvShellOpened:
-				sb.WriteString(fmt.Sprintf("- shell %s opened (%s)\n", ev.SubagentID, ev.ShellKind))
-			case EvShellExited:
-				sb.WriteString(fmt.Sprintf("- shell %s exited\n", ev.SubagentID))
-			case EvShellOutputLoss:
-				sb.WriteString(fmt.Sprintf("- shell %s dropped %d byte(s) of output\n", ev.SubagentID, ev.Bytes))
-			}
-		}
-		sb.WriteString("React: process outputs above, correct via send_to_subagent, or proceed.\n")
 		m.pendingEvs = nil
 	}
 
 	sb.WriteString("</active_context>")
 	return &llm.Message{Role: llm.RoleUser, Text: sb.String()}
+}
+
+func (m *Master) buildSupervisionSummary(subs []*Subagent) string {
+	snaps := m.supervisionSnapshots(subs)
+	if len(snaps) == 0 {
+		return ""
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<supervision_summary>\n")
+	sb.WriteString(fmt.Sprintf("workers: %d\n", len(snaps)))
+
+	stateOrder := []SupervisorWorkerState{
+		SupervisorWorkerRunning,
+		SupervisorWorkerThinking,
+		SupervisorWorkerWaitingOnTool,
+		SupervisorWorkerPaused,
+		SupervisorWorkerDoneUnintegrated,
+		SupervisorWorkerErrorTerminal,
+		SupervisorWorkerStalled,
+		SupervisorWorkerCancelled,
+	}
+	var states []string
+	for _, state := range stateOrder {
+		count := 0
+		for _, snap := range snaps {
+			if snap.State == state {
+				count++
+			}
+		}
+		if count > 0 {
+			states = append(states, fmt.Sprintf("%s=%d", state, count))
+		}
+	}
+	if len(states) > 0 {
+		sb.WriteString("states: " + strings.Join(states, ", ") + "\n")
+	}
+	sb.WriteString("workers:\n")
+	for _, snap := range snaps {
+		line := fmt.Sprintf("- %s [%s", snap.ID, snap.State)
+		if snap.Model != "" {
+			line += ", model=" + snap.Model
+		}
+		line += "]"
+		if snap.Objective != "" {
+			line += " " + clipText(snap.Objective, 120)
+		}
+		if snap.RetryCount > 0 {
+			line += fmt.Sprintf(" | retries=%d", snap.RetryCount)
+		}
+		if snap.LastError != "" {
+			line += " | error=" + clipText(snap.LastError, 120)
+		}
+		if snap.ResultSnippet != "" && snap.State == SupervisorWorkerDoneUnintegrated {
+			line += " | result ready"
+		}
+		sb.WriteString(line + "\n")
+	}
+	sb.WriteString("</supervision_summary>\n\n")
+	return sb.String()
+}
+
+func (m *Master) supervisionSnapshots(subs []*Subagent) []SupervisorWorkerSnapshot {
+	if m.supervisor != nil {
+		snaps := m.supervisor.Snapshots()
+		if len(snaps) > 0 {
+			return snaps
+		}
+	}
+
+	out := make([]SupervisorWorkerSnapshot, 0, len(subs))
+	for _, s := range subs {
+		if s == nil {
+			continue
+		}
+		out = append(out, SupervisorWorkerSnapshot{
+			ID:        s.ID,
+			Objective: s.Task.Objective,
+			Model:     s.Model,
+			State:     mapSubagentStatusToSupervisorState(s.Status()),
+		})
+	}
+	return out
+}
+
+func mapSubagentStatusToSupervisorState(status SubagentStatus) SupervisorWorkerState {
+	switch status {
+	case StatusPaused:
+		return SupervisorWorkerPaused
+	case StatusDone:
+		return SupervisorWorkerDoneUnintegrated
+	case StatusError:
+		return SupervisorWorkerErrorTerminal
+	case StatusCancelled:
+		return SupervisorWorkerCancelled
+	default:
+		return SupervisorWorkerRunning
+	}
+}
+
+type workerEventDelta struct {
+	spawned       bool
+	model         string
+	retryCount    int
+	lastRetry     string
+	inboxCount    int
+	toolName      string
+	toolError     string
+	paused        bool
+	resumed       bool
+	doneSnippet   string
+	errorText     string
+	usageSummary  string
+	turnStarted   bool
+}
+
+func (m *Master) buildPendingEventDelta() string {
+	if len(m.pendingEvs) == 0 {
+		return ""
+	}
+
+	type shellDelta struct {
+		openKind   ShellKind
+		opened     bool
+		exited     bool
+		outputLoss int64
+	}
+
+	workerIDs := make([]string, 0, len(m.pendingEvs))
+	workers := map[string]*workerEventDelta{}
+	shellIDs := make([]string, 0, 4)
+	shells := map[string]*shellDelta{}
+	var ticks []string
+
+	ensureWorker := func(id string) *workerEventDelta {
+		if d, ok := workers[id]; ok {
+			return d
+		}
+		d := &workerEventDelta{}
+		workers[id] = d
+		workerIDs = append(workerIDs, id)
+		return d
+	}
+	ensureShell := func(id string) *shellDelta {
+		if d, ok := shells[id]; ok {
+			return d
+		}
+		d := &shellDelta{}
+		shells[id] = d
+		shellIDs = append(shellIDs, id)
+		return d
+	}
+
+	for _, ev := range m.pendingEvs {
+		switch ev.Kind {
+		case EvTick:
+			ticks = append(ticks, clipText(ev.Text, 180))
+		case EvSubagentSpawn:
+			d := ensureWorker(ev.SubagentID)
+			d.spawned = true
+			d.model = ev.SubagentModel
+		case EvSubagentTurnStart:
+			ensureWorker(ev.SubagentID).turnStarted = true
+		case EvSubagentToolCall:
+			if ev.ToolCall != nil {
+				ensureWorker(ev.SubagentID).toolName = ev.ToolCall.Name
+			}
+		case EvSubagentToolDone:
+			if ev.ToolResult != nil && ev.ToolResult.IsError {
+				ensureWorker(ev.SubagentID).toolError = clipText(ev.ToolResult.Content, 180)
+			}
+		case EvSubagentRetry:
+			d := ensureWorker(ev.SubagentID)
+			d.retryCount++
+			d.lastRetry = clipText(ev.Text, 180)
+		case EvSubagentInbox:
+			ensureWorker(ev.SubagentID).inboxCount++
+		case EvSubagentUsage:
+			if ev.Usage != nil {
+				ensureWorker(ev.SubagentID).usageSummary = fmt.Sprintf("usage in=%d out=%d", ev.Usage.InputTokens, ev.Usage.OutputTokens)
+			}
+		case EvSubagentPaused:
+			ensureWorker(ev.SubagentID).paused = true
+		case EvSubagentResumed:
+			ensureWorker(ev.SubagentID).resumed = true
+		case EvSubagentDone:
+			if m.todo != nil {
+				m.todo.AutoRelease(ev.SubagentID)
+			}
+			d := ensureWorker(ev.SubagentID)
+			if ev.Text != "" {
+				snippet := ev.Text
+				const maxSnippet = 800
+				if len(snippet) > maxSnippet {
+					snippet = snippet[:maxSnippet] + "\n… (truncated — call check_subagent for full output)"
+				}
+				d.doneSnippet = snippet
+			}
+		case EvSubagentError:
+			if m.todo != nil {
+				m.todo.AutoRelease(ev.SubagentID)
+			}
+			if ev.Err != nil {
+				ensureWorker(ev.SubagentID).errorText = clipText(ev.Err.Error(), 240)
+			} else {
+				ensureWorker(ev.SubagentID).errorText = "unknown error"
+			}
+		case EvShellOpened:
+			d := ensureShell(ev.SubagentID)
+			d.opened = true
+			d.openKind = ev.ShellKind
+		case EvShellExited:
+			ensureShell(ev.SubagentID).exited = true
+		case EvShellOutputLoss:
+			ensureShell(ev.SubagentID).outputLoss += ev.Bytes
+		}
+	}
+
+	var sb strings.Builder
+	sb.WriteString("<supervision_delta>\n")
+	for _, text := range ticks {
+		sb.WriteString("- supervision tick: " + text + "\n")
+	}
+	for _, id := range workerIDs {
+		d := workers[id]
+		if d == nil {
+			continue
+		}
+		if d.doneSnippet != "" {
+			sb.WriteString(fmt.Sprintf("- %s DONE. Final output:\n<subagent_output id=%q>\n%s\n</subagent_output>\n", id, id, d.doneSnippet))
+			continue
+		}
+		if d.errorText != "" {
+			sb.WriteString(fmt.Sprintf("- %s ERROR: %s\n", id, d.errorText))
+			continue
+		}
+
+		parts := make([]string, 0, 6)
+		if d.spawned {
+			part := "spawned"
+			if d.model != "" {
+				part += " (model=" + d.model + ")"
+			}
+			parts = append(parts, part)
+		}
+		if d.turnStarted {
+			parts = append(parts, "started a new model turn")
+		}
+		if d.retryCount > 0 {
+			part := fmt.Sprintf("retry x%d", d.retryCount)
+			if d.lastRetry != "" {
+				part += ": " + d.lastRetry
+			}
+			parts = append(parts, part)
+		}
+		if d.toolName != "" {
+			parts = append(parts, "tool "+d.toolName)
+		}
+		if d.toolError != "" {
+			parts = append(parts, "tool error: "+d.toolError)
+		}
+		if d.inboxCount > 0 {
+			parts = append(parts, fmt.Sprintf("received %d master follow-up(s)", d.inboxCount))
+		}
+		if d.paused {
+			parts = append(parts, "paused")
+		}
+		if d.resumed {
+			parts = append(parts, "resumed")
+		}
+		if d.usageSummary != "" {
+			parts = append(parts, d.usageSummary)
+		}
+		if len(parts) > 0 {
+			sb.WriteString(fmt.Sprintf("- %s %s\n", id, strings.Join(parts, "; ")))
+		}
+	}
+	for _, id := range shellIDs {
+		d := shells[id]
+		if d == nil {
+			continue
+		}
+		if d.opened {
+			sb.WriteString(fmt.Sprintf("- shell %s opened (%s)\n", id, d.openKind))
+		}
+		if d.exited {
+			sb.WriteString(fmt.Sprintf("- shell %s exited\n", id))
+		}
+		if d.outputLoss > 0 {
+			sb.WriteString(fmt.Sprintf("- shell %s output loss: %d byte(s)\n", id, d.outputLoss))
+		}
+	}
+	sb.WriteString("React: process outputs above, correct via send_to_subagent, or proceed.\n")
+	sb.WriteString("</supervision_delta>\n")
+	return sb.String()
 }
 
 func (m *Master) takeTurns(parent context.Context) {
