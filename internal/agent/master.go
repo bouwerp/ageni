@@ -451,18 +451,19 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 		m.messages = append(m.messages, llm.Message{Role: llm.RoleUser, Text: ev.Text})
 		return true
 	case ev.Kind == EvTick:
-		running := m.runningSubagentCount()
-		if running == 0 {
+		if !m.hasRunningSubagents() {
 			return false
 		}
-		if len(m.pendingEvs) == 0 && !m.lastMonitorTurn.IsZero() && time.Since(m.lastMonitorTurn) < monitorTurnMinGap {
+		if !m.lastMonitorTurn.IsZero() && time.Since(m.lastMonitorTurn) < monitorTurnMinGap {
 			return false
 		}
-		m.pendingEvs = append(m.pendingEvs, Event{
-			Kind: EvTick,
-			Text: fmt.Sprintf("%d worker(s) still running — perform a supervision self-check", running),
-		})
-		return true
+		// Phase 0 hotfix: do not wake the master LLM just because workers are
+		// still running. Periodic self-check turns create noisy active-context
+		// loops without adding actionable state. Later phases replace this with a
+		// deterministic supervisor reducer that only escalates ticks when it has
+		// derived an actual attention condition (stall, timeout, retry exhaustion,
+		// etc.).
+		return false
 	case isMonitoringEvent(ev.Kind):
 		m.pendingEvs = append(m.pendingEvs, ev)
 		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError

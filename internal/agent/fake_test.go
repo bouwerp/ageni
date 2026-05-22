@@ -767,6 +767,58 @@ func TestMasterActiveContextIncludesSupervisionSignals(t *testing.T) {
 	}
 }
 
+func TestMasterTickDoesNotTriggerTurnForHealthyWorkers(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	mgr.subs["s1"] = &Subagent{ID: "s1", status: StatusRunning}
+	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+
+	if got := master.handleInboxEvent(Event{Kind: EvTick}); got {
+		t.Fatal("EvTick triggered a master turn for a healthy running worker")
+	}
+	if got := len(master.pendingEvs); got != 0 {
+		t.Fatalf("pending events = %d, want 0", got)
+	}
+}
+
+func TestMasterTickDoesNotEscalatePendingNonActionableEvents(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	mgr.subs["s1"] = &Subagent{ID: "s1", status: StatusRunning}
+	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+	master.pendingEvs = []Event{{Kind: EvSubagentRetry, SubagentID: "s1", Text: "retrying tool"}}
+
+	if got := master.handleInboxEvent(Event{Kind: EvTick}); got {
+		t.Fatal("EvTick escalated non-actionable pending events into a master turn")
+	}
+	if got := len(master.pendingEvs); got != 1 {
+		t.Fatalf("pending events = %d, want 1", got)
+	}
+	if master.pendingEvs[0].Kind != EvSubagentRetry {
+		t.Fatalf("pending event mutated to %s, want retry event preserved", master.pendingEvs[0].Kind)
+	}
+}
+
+func TestMasterDoneAndErrorEventsStillTriggerTurns(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+
+	if got := master.handleInboxEvent(Event{Kind: EvSubagentDone, SubagentID: "s1", Text: "<result>done</result>"}); !got {
+		t.Fatal("EvSubagentDone should trigger a master turn")
+	}
+	master.pendingEvs = nil
+	if got := master.handleInboxEvent(Event{Kind: EvSubagentError, SubagentID: "s1", Err: errors.New("boom")}); !got {
+		t.Fatal("EvSubagentError should trigger a master turn")
+	}
+}
+
 func TestMasterSystemPromptRespectsBudget(t *testing.T) {
 	master := &Master{}
 	master.SetAgentsMD(strings.Repeat("project rule\n", 500))
