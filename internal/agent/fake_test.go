@@ -819,6 +819,36 @@ func TestMasterDoneAndErrorEventsStillTriggerTurns(t *testing.T) {
 	}
 }
 
+func TestMasterTickTriggersTurnForStalledWorker(t *testing.T) {
+	base := time.Date(2026, 5, 22, 10, 0, 0, 0, time.UTC)
+	now := base
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	mgr := NewManager(context.Background(), bus, reg, tracker, nil, 1)
+	mgr.subs["s1"] = &Subagent{ID: "s1", status: StatusRunning}
+	master := NewMaster(&fakeAdapter{}, "m", reg, bus, tracker, mgr)
+	master.supervisor = NewSupervisorState(func() time.Time { return now })
+	master.supervisor.stalledAfter = 30 * time.Second
+
+	master.handleInboxEvent(Event{Kind: EvSubagentSpawn, SubagentID: "s1", SubagentTask: "run tests"})
+	now = base.Add(31 * time.Second)
+
+	if got := master.handleInboxEvent(Event{Kind: EvTick}); !got {
+		t.Fatal("EvTick should trigger a master turn for a stalled worker")
+	}
+	if got := len(master.pendingEvs); got != 2 {
+		t.Fatalf("pending events = %+v, want spawn plus one synthetic stall tick", master.pendingEvs)
+	}
+	last := master.pendingEvs[len(master.pendingEvs)-1]
+	if last.Kind != EvTick {
+		t.Fatalf("last pending event = %+v, want synthetic stall tick", last)
+	}
+	if !strings.Contains(last.Text, "stalled") {
+		t.Fatalf("expected stall reason in tick text, got %+v", last)
+	}
+}
+
 func TestMasterSystemPromptRespectsBudget(t *testing.T) {
 	master := &Master{}
 	master.SetAgentsMD(strings.Repeat("project rule\n", 500))

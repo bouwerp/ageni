@@ -101,6 +101,8 @@ type Master struct {
 	// pool plus any dedicated providers like VISION_PROVIDER). Injected into the
 	// system prompt so the master knows when to delegate capability-gated tasks.
 	subagentCaps []string
+
+	supervisor *SupervisorState
 }
 
 func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, manager *Manager) *Master {
@@ -112,6 +114,7 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 		tracker:  tracker,
 		manager:  manager,
 		maxTurns: 30,
+		supervisor: NewSupervisorState(nil),
 	}
 }
 
@@ -457,16 +460,26 @@ func (m *Master) handleInboxEvent(ev Event) bool {
 		if !m.lastMonitorTurn.IsZero() && time.Since(m.lastMonitorTurn) < monitorTurnMinGap {
 			return false
 		}
-		// Phase 0 hotfix: do not wake the master LLM just because workers are
-		// still running. Periodic self-check turns create noisy active-context
-		// loops without adding actionable state. Later phases replace this with a
-		// deterministic supervisor reducer that only escalates ticks when it has
-		// derived an actual attention condition (stall, timeout, retry exhaustion,
-		// etc.).
-		return false
+		if m.supervisor == nil {
+			return false
+		}
+		decision, workerID := m.supervisor.Tick()
+		if decision != SupervisorDecisionEscalateStall || workerID == "" {
+			return false
+		}
+		m.pendingEvs = append(m.pendingEvs, Event{
+			Kind:       EvTick,
+			SubagentID: workerID,
+			Text:       fmt.Sprintf("%s stalled waiting for progress", workerID),
+		})
+		return true
 	case isMonitoringEvent(ev.Kind):
+		decision := SupervisorDecisionNone
+		if m.supervisor != nil {
+			decision = m.supervisor.Observe(ev)
+		}
 		m.pendingEvs = append(m.pendingEvs, ev)
-		return ev.Kind == EvSubagentDone || ev.Kind == EvSubagentError
+		return decision == SupervisorDecisionIntegrateResult || decision == SupervisorDecisionEscalateError
 	}
 	return false
 }
