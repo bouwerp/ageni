@@ -565,20 +565,20 @@ const maxVerificationReminders = 2
 const maxEditRecoveryReminders = 2
 
 var inspectionToolNames = map[string]struct{}{
-	"read_file":      {},
-	"list_dir":       {},
-	"glob":           {},
-	"grep":           {},
-	"search_symbols": {},
+	"read_file":       {},
+	"list_dir":        {},
+	"glob":            {},
+	"grep":            {},
+	"search_symbols":  {},
 	"find_references": {},
-	"git_status":     {},
-	"git_diff":       {},
-	"git_log":        {},
-	"pkg_info":       {},
-	"web_fetch":      {},
-	"web_search":     {},
-	"github":         {},
-	"view_image":     {},
+	"git_status":      {},
+	"git_diff":        {},
+	"git_log":         {},
+	"pkg_info":        {},
+	"web_fetch":       {},
+	"web_search":      {},
+	"github":          {},
+	"view_image":      {},
 }
 
 var mutationToolNames = map[string]struct{}{
@@ -1081,6 +1081,13 @@ When multiple edit tools are available, choose the least brittle one for the job
 - Prefer transactional_edit for coordinated multi-file changes, especially when you can verify them with validate_command.
 - Prefer write_file for new files or intentional full rewrites, not casual edits to existing files.
 </editing_policy>
+
+<output_discipline>
+- Keep the final <result> compact and technical. Prefer terse fragments over narrative prose.
+- Skip step-by-step retelling unless the requested output_format explicitly requires it.
+- Good: "Updated auth/token.go:42-67. Added nil guard. Reran go test ./auth."
+- Bad: "I updated the auth token logic by first inspecting the file, then adding a guard, and finally rerunning tests to make sure everything worked."
+</output_discipline>
 
 <self_healing>
 When a tool returns an error, do not stop — diagnose and recover autonomously:

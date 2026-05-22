@@ -2,6 +2,7 @@ package tools
 
 import (
 	"regexp"
+	"strconv"
 	"strings"
 )
 
@@ -24,4 +25,32 @@ func sanitizeOutput(s string) string {
 		}
 	}
 	return b.String()
+}
+
+func collapseBlankLines(s string) string {
+	if s == "" {
+		return s
+	}
+	lines := strings.Split(s, "\n")
+	var out []string
+	blankRun := 0
+	collapsed := 0
+	for _, line := range lines {
+		if strings.TrimSpace(line) == "" {
+			blankRun++
+			if blankRun <= 2 {
+				out = append(out, "")
+			} else {
+				collapsed++
+			}
+			continue
+		}
+		blankRun = 0
+		out = append(out, line)
+	}
+	result := strings.Join(out, "\n")
+	if collapsed > 0 {
+		result = strings.TrimRight(result, "\n") + "\n[collapsed " + strconv.Itoa(collapsed) + " blank line(s)]"
+	}
+	return result
 }

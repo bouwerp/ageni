@@ -3,6 +3,7 @@ package tools
 import (
 	"bufio"
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -10,10 +11,26 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync"
 )
 
 // ReadFile reads a file's contents, optionally a line range.
-type ReadFile struct{}
+type ReadFile struct{ Cache *ReadFileCache }
+
+type ReadFileCache struct {
+	mu      sync.Mutex
+	nextSeq int
+	entries map[string]readFileFingerprint
+}
+
+type readFileFingerprint struct {
+	Hash        [32]byte
+	FirstReadID int
+}
+
+func NewReadFileCache() *ReadFileCache {
+	return &ReadFileCache{entries: make(map[string]readFileFingerprint)}
+}
 
 func (ReadFile) Name() string { return "read_file" }
 func (ReadFile) Description() string {
@@ -25,12 +42,12 @@ func (ReadFile) Schema() json.RawMessage {
 "properties":{
   "path":{"type":"string","description":"Absolute or relative path to the file."},
   "offset":{"type":"integer","description":"1-indexed starting line. Default 1."},
-  "limit":{"type":"integer","description":"Max lines to return. Default: whole file (capped at 2000 lines)."}
+  "limit":{"type":"integer","description":"Max lines to return. Default: whole file (capped at 500 lines)."}
 },
 "required":["path"]
 }`)
 }
-func (ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
+func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p struct {
 		Path   string `json:"path"`
 		Offset int    `json:"offset"`
@@ -52,7 +69,7 @@ func (ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) 
 		p.Offset = 1
 	}
 	if p.Limit <= 0 {
-		p.Limit = 2000
+		p.Limit = 500
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -80,7 +97,42 @@ func (ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error) 
 	if emitted == 0 {
 		header = fmt.Sprintf("[%s: offset %d is past end of file (%d lines total)]\n", p.Path, p.Offset, totalLines)
 	}
-	return header + sb.String(), nil
+	content := sb.String()
+	if stub, ok := r.cachedReadStub(p.Path, p.Offset, p.Limit, emitted, totalLines, content); ok {
+		return stub, nil
+	}
+	return header + content, nil
+}
+
+func (r ReadFile) cachedReadStub(path string, offset, limit, emitted, totalLines int, content string) (string, bool) {
+	if r.Cache == nil {
+		return "", false
+	}
+	abs, err := filepath.Abs(path)
+	if err != nil {
+		abs = path
+	}
+	key := fmt.Sprintf("%s:%d:%d", abs, offset, limit)
+	hash := sha256.Sum256([]byte(content))
+
+	r.Cache.mu.Lock()
+	defer r.Cache.mu.Unlock()
+	if r.Cache.entries == nil {
+		r.Cache.entries = make(map[string]readFileFingerprint)
+	}
+	if prior, ok := r.Cache.entries[key]; ok && prior.Hash == hash {
+		end := offset + emitted - 1
+		if emitted == 0 {
+			return fmt.Sprintf("[%s already read as request #%d; offset %d is still past end of file (%d lines total)]\n", path, prior.FirstReadID, offset, totalLines), true
+		}
+		return fmt.Sprintf("[%s already read as request #%d lines %d-%d of %d; content unchanged]\n", path, prior.FirstReadID, offset, end, totalLines), true
+	}
+	r.Cache.nextSeq++
+	r.Cache.entries[key] = readFileFingerprint{
+		Hash:        hash,
+		FirstReadID: r.Cache.nextSeq,
+	}
+	return "", false
 }
 
 // WriteFile writes (creating or overwriting) a file.

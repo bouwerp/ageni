@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"os/exec"
+	"strings"
 	"time"
 )
 
@@ -59,8 +60,13 @@ func (RunBash) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		}
 	}
 	out := buf.String()
-	if len(out) > 16384 {
-		out = out[:16384] + "\n[truncated to 16KB]"
+	out = collapseBlankLines(sanitizeOutput(out))
+	lines := strings.Split(out, "\n")
+	if len(lines) > 160 {
+		out = strings.Join(lines[:160], "\n") + "\n[truncated to 160 lines]"
+	}
+	if len(out) > 4096 {
+		out = out[:4096] + "\n[truncated to 4KB]"
 	}
 	return fmt.Sprintf("[exit %d]\n%s", exitCode, out), nil
 }

@@ -1217,9 +1217,11 @@ func TestSubagentSystemPromptIncludesEditingPolicy(t *testing.T) {
 
 	for _, want := range []string{
 		"<editing_policy>",
+		"<output_discipline>",
 		"Prefer edit_file only for one exact replacement",
 		"Prefer apply_diff for multi-line or multi-block edits",
 		"Prefer transactional_edit for coordinated multi-file changes",
+		"Keep the final <result> compact and technical",
 	} {
 		if !strings.Contains(prompt, want) {
 			t.Fatalf("expected subagent system prompt to contain %q", want)

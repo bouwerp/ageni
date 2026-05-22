@@ -15,7 +15,7 @@ type Grep struct{}
 
 func (Grep) Name() string { return "grep" }
 func (Grep) Description() string {
-	return `Search for a regex pattern across files using ripgrep. Returns matches as 'path:line:col: text' lines, capped at 100 hits. Faster and more accurate than grepping with run_bash. Pass type=go|py|js|... to restrict by language.`
+	return `Search for a regex pattern across files using ripgrep. Returns matches as 'path:line:col: text' lines, capped at 50 hits by default. Faster and more accurate than grepping with run_bash. Pass type=go|py|js|... to restrict by language.`
 }
 func (Grep) Schema() json.RawMessage {
 	return json.RawMessage(`{
@@ -25,7 +25,7 @@ func (Grep) Schema() json.RawMessage {
   "path":{"type":"string","description":"Directory or file to search. Defaults to cwd."},
   "type":{"type":"string","description":"Restrict by ripgrep type, e.g. go, py, js, ts, md, yaml. Optional."},
   "case_sensitive":{"type":"boolean","description":"Defaults to smart-case (case-insensitive unless pattern contains uppercase)."},
-  "max_results":{"type":"integer","description":"Cap on returned matches. Default 100, max 500."}
+  "max_results":{"type":"integer","description":"Cap on returned matches. Default 50, max 200."}
 },
 "required":["pattern"]
 }`)
@@ -51,10 +51,10 @@ func (Grep) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		p.Path = "."
 	}
 	if p.MaxResults <= 0 {
-		p.MaxResults = 100
+		p.MaxResults = 50
 	}
-	if p.MaxResults > 500 {
-		p.MaxResults = 500
+	if p.MaxResults > 200 {
+		p.MaxResults = 200
 	}
 
 	cliArgs := []string{"--json", "--max-columns=300", "--max-columns-preview"}

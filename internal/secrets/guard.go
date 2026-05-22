@@ -98,8 +98,8 @@ type GuardedReadFile struct {
 }
 
 // NewGuardedReadFile returns a ReadFile tool with path-blocking enabled.
-func NewGuardedReadFile() GuardedReadFile {
-	return GuardedReadFile{}
+func NewGuardedReadFile(cache *tools.ReadFileCache) GuardedReadFile {
+	return GuardedReadFile{inner: tools.ReadFile{Cache: cache}}
 }
 
 func (GuardedReadFile) Name() string              { return "read_file" }
