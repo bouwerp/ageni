@@ -1,6 +1,7 @@
 package session
 
 import (
+	"bufio"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -22,6 +23,7 @@ type Logger struct {
 	path  string
 	mode  string
 	scrub func(string) string
+	nextSeq int64
 }
 
 type LoggerOptions struct {
@@ -80,6 +82,7 @@ func NewLogger(s *Session, opts LoggerOptions) (*Logger, error) {
 		path:  path,
 		mode:  NormalizeLogMode(opts.Mode),
 		scrub: opts.Scrub,
+		nextSeq: detectNextSequence(path),
 	}, nil
 }
 
@@ -103,6 +106,7 @@ func (l *Logger) Run(ctx context.Context, sub <-chan agent.Event) {
 }
 
 type entry struct {
+	Sequence      int64  `json:"seq,omitempty"`
 	Kind          string `json:"kind"`
 	At            string `json:"at"`
 	CorrelationID string `json:"correlation_id,omitempty"`
@@ -125,7 +129,10 @@ type entry struct {
 
 // WriteEvent persists one event to the append-only session journal.
 func (l *Logger) WriteEvent(ev agent.Event) {
+	l.mu.Lock()
+	l.nextSeq++
 	e := entry{
+		Sequence:      l.nextSeq,
 		Kind:          string(ev.Kind),
 		At:            ev.At.Format(time.RFC3339Nano),
 		CorrelationID: ev.CorrelationID,
@@ -153,10 +160,35 @@ func (l *Logger) WriteEvent(ev agent.Event) {
 	if ev.Err != nil {
 		e.Err = l.applyScrubbers(ev.Err.Error())
 	}
-	l.mu.Lock()
 	_ = l.enc.Encode(&e)
 	_ = l.file.Sync()
 	l.mu.Unlock()
+}
+
+func detectNextSequence(path string) int64 {
+	f, err := os.Open(path) //nolint:gosec
+	if err != nil {
+		return 0
+	}
+	defer f.Close()
+
+	var maxSeq int64
+	scanner := bufio.NewScanner(f)
+	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
+	for scanner.Scan() {
+		line := scanner.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		maxSeq++
+		var e struct {
+			Sequence int64 `json:"seq,omitempty"`
+		}
+		if err := json.Unmarshal(line, &e); err == nil && e.Sequence > maxSeq {
+			maxSeq = e.Sequence
+		}
+	}
+	return maxSeq
 }
 
 func (l *Logger) scrubToolPayload(kind, toolName, value string) string {

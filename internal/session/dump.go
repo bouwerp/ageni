@@ -183,8 +183,10 @@ func FormatLog(s *Session, w io.Writer) error {
 // here so the session package can read its own logs without exposing the
 // shape to callers.
 type logEntry struct {
+	Sequence      int64  `json:"seq,omitempty"`
 	Kind          string `json:"kind"`
 	At            string `json:"at"`
+	CorrelationID string `json:"correlation_id,omitempty"`
 	SubagentID    string `json:"subagent_id,omitempty"`
 	Text          string `json:"text,omitempty"`
 	ToolName      string `json:"tool_name,omitempty"`

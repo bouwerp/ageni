@@ -2,10 +2,12 @@ package session
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/bouwerp/ageni/internal/agent"
 	"github.com/bouwerp/ageni/internal/llm"
@@ -68,13 +70,13 @@ func TestLoadShellSnapshots(t *testing.T) {
 func TestLoadWorkerSnapshots(t *testing.T) {
 	dir := t.TempDir()
 	writeLogEntries(t, dir, []logEntry{
-		{Kind: "subagent_spawn", SubagentID: "s1", SubagentTask: "inspect auth", SubagentModel: "claude-sonnet"},
-		{Kind: "subagent_text", SubagentID: "s1", Text: "working"},
-		{Kind: "subagent_paused", SubagentID: "s1"},
-		{Kind: "subagent_resumed", SubagentID: "s1"},
-		{Kind: "subagent_done", SubagentID: "s1", Text: "<result>done</result>"},
-		{Kind: "subagent_spawn", SubagentID: "s2", SubagentTask: "long task", SubagentModel: "claude-haiku"},
-		{Kind: "subagent_text", SubagentID: "s2", Text: "partial"},
+		{Sequence: 1, Kind: "subagent_spawn", SubagentID: "s1", SubagentTask: "inspect auth", SubagentModel: "claude-sonnet"},
+		{Sequence: 2, Kind: "subagent_text", SubagentID: "s1", Text: "working"},
+		{Sequence: 3, Kind: "subagent_paused", SubagentID: "s1"},
+		{Sequence: 4, Kind: "subagent_resumed", SubagentID: "s1"},
+		{Sequence: 5, Kind: "subagent_done", SubagentID: "s1", Text: "<result>done</result>"},
+		{Sequence: 6, Kind: "subagent_spawn", SubagentID: "s2", SubagentTask: "long task", SubagentModel: "claude-haiku"},
+		{Sequence: 7, Kind: "subagent_retry", SubagentID: "s2", Text: "retrying"},
 	})
 
 	snaps, maxN, err := LoadWorkerSnapshots(&Session{Dir: dir})
@@ -90,8 +92,76 @@ func TestLoadWorkerSnapshots(t *testing.T) {
 	if snaps[0].Status != agent.StatusDone || !strings.Contains(snaps[0].Buffer, "<result>done</result>") {
 		t.Fatalf("worker 1 = %+v", snaps[0])
 	}
-	if snaps[1].Status != agent.StatusCancelled || !strings.Contains(snaps[1].Buffer, "no longer attached") {
+	if snaps[1].Status != agent.StatusCancelled || !strings.Contains(snaps[1].Buffer, "retry-count") || !strings.Contains(snaps[1].Buffer, "no longer attached") {
 		t.Fatalf("worker 2 = %+v", snaps[1])
+	}
+}
+
+func TestLoadSupervisorStateReplaysSequenceAndStatus(t *testing.T) {
+	dir := t.TempDir()
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	writeLogEntries(t, dir, []logEntry{
+		{Sequence: 4, Kind: "subagent_spawn", At: now, SubagentID: "s2", SubagentTask: "run tests", SubagentModel: "m"},
+		{Sequence: 5, Kind: "subagent_retry", At: now, SubagentID: "s2", Text: "retrying"},
+		{Sequence: 6, Kind: "subagent_done", At: now, SubagentID: "s2", Text: "<result>done</result>"},
+	})
+
+	replay, err := LoadSupervisorState(&Session{Dir: dir})
+	if err != nil {
+		t.Fatalf("LoadSupervisorState: %v", err)
+	}
+	if replay.LastSeq != 6 {
+		t.Fatalf("LastSeq = %d, want 6", replay.LastSeq)
+	}
+	snap, ok := replay.State.Worker("s2")
+	if !ok {
+		t.Fatal("expected worker snapshot for s2")
+	}
+	if snap.State != agent.SupervisorWorkerDoneUnintegrated {
+		t.Fatalf("worker state = %q, want %q", snap.State, agent.SupervisorWorkerDoneUnintegrated)
+	}
+	if snap.RetryCount != 1 {
+		t.Fatalf("retry count = %d, want 1", snap.RetryCount)
+	}
+}
+
+func TestLoggerSequencePersistsAcrossReopen(t *testing.T) {
+	dir := t.TempDir()
+	sess := &Session{Dir: dir}
+	logger, err := NewLogger(sess, LoggerOptions{Mode: LogModePrivate})
+	if err != nil {
+		t.Fatalf("NewLogger first: %v", err)
+	}
+	logger.WriteEvent(agent.Event{Kind: agent.EvFlash, Text: "one"})
+	logger.WriteEvent(agent.Event{Kind: agent.EvFlash, Text: "two"})
+	if err := logger.Close(); err != nil {
+		t.Fatalf("Close first logger: %v", err)
+	}
+
+	logger, err = NewLogger(sess, LoggerOptions{Mode: LogModePrivate})
+	if err != nil {
+		t.Fatalf("NewLogger second: %v", err)
+	}
+	defer logger.Close()
+	logger.WriteEvent(agent.Event{Kind: agent.EvFlash, Text: "three"})
+
+	f, err := os.Open(filepath.Join(dir, "log.jsonl")) //nolint:gosec
+	if err != nil {
+		t.Fatalf("Open log: %v", err)
+	}
+	defer f.Close()
+
+	dec := json.NewDecoder(f)
+	var seqs []int64
+	for dec.More() {
+		var e logEntry
+		if err := dec.Decode(&e); err != nil {
+			t.Fatalf("Decode: %v", err)
+		}
+		seqs = append(seqs, e.Sequence)
+	}
+	if strings.TrimSpace(fmt.Sprint(seqs)) != "[1 2 3]" {
+		t.Fatalf("sequence numbers = %v, want [1 2 3]", seqs)
 	}
 }
 

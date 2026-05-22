@@ -65,10 +65,21 @@ func (s *SupervisorState) Worker(id string) (SupervisorWorkerSnapshot, bool) {
 }
 
 func (s *SupervisorState) Observe(ev Event) SupervisorDecision {
+	return s.observeAt(s.now(), ev)
+}
+
+func (s *SupervisorState) Replay(ev Event) SupervisorDecision {
+	at := ev.At
+	if at.IsZero() {
+		at = s.now()
+	}
+	return s.observeAt(at, ev)
+}
+
+func (s *SupervisorState) observeAt(now time.Time, ev Event) SupervisorDecision {
 	if s == nil || ev.SubagentID == "" || !strings.HasPrefix(ev.SubagentID, "s") {
 		return SupervisorDecisionNone
 	}
-	now := s.now()
 	snap := s.workers[ev.SubagentID]
 	if snap.ID == "" {
 		snap.ID = ev.SubagentID
@@ -131,10 +142,13 @@ func (s *SupervisorState) Observe(ev Event) SupervisorDecision {
 }
 
 func (s *SupervisorState) Tick() (SupervisorDecision, string) {
+	return s.TickAt(s.now())
+}
+
+func (s *SupervisorState) TickAt(now time.Time) (SupervisorDecision, string) {
 	if s == nil {
 		return SupervisorDecisionNone, ""
 	}
-	now := s.now()
 	if s.stalledAfter <= 0 {
 		s.stalledAfter = 2 * time.Minute
 	}
@@ -156,6 +170,22 @@ func (s *SupervisorState) Tick() (SupervisorDecision, string) {
 		}
 	}
 	return SupervisorDecisionNone, ""
+}
+
+func (s *SupervisorState) Snapshots() []SupervisorWorkerSnapshot {
+	if s == nil {
+		return nil
+	}
+	ids := make([]string, 0, len(s.workers))
+	for id := range s.workers {
+		ids = append(ids, id)
+	}
+	sort.Strings(ids)
+	out := make([]SupervisorWorkerSnapshot, 0, len(ids))
+	for _, id := range ids {
+		out = append(out, s.workers[id])
+	}
+	return out
 }
 
 func clipSupervisorText(text string, max int) string {

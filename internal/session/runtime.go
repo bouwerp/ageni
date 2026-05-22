@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/bouwerp/ageni/internal/agent"
 )
@@ -27,6 +28,12 @@ type WorkerSnapshot struct {
 	Objective string
 	Status    agent.SubagentStatus
 	Buffer    string
+}
+
+type SupervisorReplay struct {
+	State       *agent.SupervisorState
+	LastSeq     int64
+	LastEventAt time.Time
 }
 
 // LoadShellSnapshots reconstructs persisted shell sessions from the append-only session log.
@@ -119,33 +126,55 @@ func PriorShellIDs(snaps []ShellSnapshot) (ids []string, maxN int) {
 }
 
 func LoadWorkerSnapshots(s *Session) ([]WorkerSnapshot, int, error) {
+	replay, err := LoadSupervisorState(s)
+	if err != nil {
+		return nil, 0, err
+	}
+	if replay.State == nil {
+		return nil, 0, nil
+	}
+	snaps := replay.State.Snapshots()
+	out := make([]WorkerSnapshot, 0, len(snaps))
+	maxN := 0
+	for _, snap := range snaps {
+		outSnap := WorkerSnapshot{
+			ID:        snap.ID,
+			Model:     snap.Model,
+			Objective: snap.Objective,
+			Status:    mapSupervisorStatus(snap.State),
+		}
+		if snap.ResultSnippet != "" {
+			outSnap.Buffer += "\n[final]\n" + snap.ResultSnippet + "\n"
+		}
+		if snap.LastError != "" {
+			outSnap.Buffer += "\n[error] " + snap.LastError + "\n"
+		}
+		if snap.RetryCount > 0 {
+			outSnap.Buffer += fmt.Sprintf("\n[retry-count] %d\n", snap.RetryCount)
+		}
+		if outSnap.Status == agent.StatusRunning || outSnap.Status == agent.StatusPaused {
+			outSnap.Status = agent.StatusCancelled
+			outSnap.Buffer += "\n[resumed session: worker no longer attached]\n"
+		}
+		out = append(out, outSnap)
+		if n, convErr := strconv.Atoi(strings.TrimPrefix(snap.ID, "s")); convErr == nil && n > maxN {
+			maxN = n
+		}
+	}
+	return out, maxN, nil
+}
+
+func LoadSupervisorState(s *Session) (SupervisorReplay, error) {
 	f, err := os.Open(s.Path("log.jsonl")) //nolint:gosec
 	if err != nil {
 		if os.IsNotExist(err) {
-			return nil, 0, nil
+			return SupervisorReplay{}, nil
 		}
-		return nil, 0, err
+		return SupervisorReplay{}, err
 	}
 	defer f.Close()
-
-	type workerState struct {
-		WorkerSnapshot
-	}
-	byID := map[string]*workerState{}
-	order := make([]string, 0, 8)
-	maxN := 0
-	ensure := func(id string) *workerState {
-		if w, ok := byID[id]; ok {
-			return w
-		}
-		w := &workerState{WorkerSnapshot: WorkerSnapshot{ID: id, Status: agent.StatusRunning}}
-		byID[id] = w
-		order = append(order, id)
-		if n, err := strconv.Atoi(strings.TrimPrefix(id, "s")); err == nil && n > maxN {
-			maxN = n
-		}
-		return w
-	}
+	supervisor := agent.NewSupervisorState(nil)
+	replay := SupervisorReplay{State: supervisor}
 
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 64*1024), 8*1024*1024)
@@ -158,59 +187,25 @@ func LoadWorkerSnapshots(s *Session) ([]WorkerSnapshot, int, error) {
 		if err := json.Unmarshal(line, &e); err != nil {
 			continue
 		}
+		replay.LastSeq = max(replay.LastSeq, e.Sequence)
+		if at, err := time.Parse(time.RFC3339Nano, e.At); err == nil && at.After(replay.LastEventAt) {
+			replay.LastEventAt = at
+		}
 		if !strings.HasPrefix(e.SubagentID, "s") {
 			continue
 		}
-		w := ensure(e.SubagentID)
-		switch e.Kind {
-		case "subagent_spawn":
-			w.Model = e.SubagentModel
-			w.Objective = e.SubagentTask
-			w.Status = agent.StatusRunning
-		case "subagent_text":
-			w.Buffer += e.Text
-		case "subagent_tool_call":
-			w.Buffer += fmt.Sprintf("\n[tool] %s %s\n", e.ToolName, strings.TrimSpace(e.ToolArgs))
-		case "subagent_tool_done":
-			suffix := ""
-			if e.ToolError {
-				suffix = " error"
-			}
-			w.Buffer += fmt.Sprintf("\n[tool-result%s]\n%s\n", suffix, e.ToolResult)
-		case "subagent_retry":
-			w.Buffer += "\n[retry] " + e.Text + "\n"
-		case "subagent_inbox":
-			w.Buffer += "\n[inbox] " + e.Text + "\n"
-		case "subagent_paused":
-			w.Status = agent.StatusPaused
-			w.Buffer += "\n[paused]\n"
-		case "subagent_resumed":
-			w.Status = agent.StatusRunning
-			w.Buffer += "\n[resumed]\n"
-		case "subagent_done":
-			w.Status = agent.StatusDone
-			if e.Text != "" {
-				w.Buffer += "\n[final]\n" + e.Text + "\n"
-			}
-		case "subagent_error":
-			w.Status = agent.StatusError
-			w.Buffer += "\n[error] " + e.Err + "\n"
+		ev := replayEventFromLogEntry(e)
+		if !ev.At.IsZero() || ev.Kind != "" {
+			supervisor.Replay(ev)
 		}
 	}
 	if err := scanner.Err(); err != nil {
-		return nil, 0, fmt.Errorf("read log: %w", err)
+		return SupervisorReplay{}, fmt.Errorf("read log: %w", err)
 	}
-
-	out := make([]WorkerSnapshot, 0, len(order))
-	for _, id := range order {
-		w := byID[id].WorkerSnapshot
-		if w.Status == agent.StatusRunning || w.Status == agent.StatusPaused {
-			w.Status = agent.StatusCancelled
-			w.Buffer += "\n[resumed session: worker no longer attached]\n"
-		}
-		out = append(out, w)
+	if !replay.LastEventAt.IsZero() {
+		supervisor.TickAt(replay.LastEventAt)
 	}
-	return out, maxN, nil
+	return replay, nil
 }
 
 func ResumeShellReminder(priorIDs []string, nextN int) string {
@@ -222,4 +217,48 @@ Session resumed from disk; prior shell sessions (%s) are NOT live anymore. Do no
 
 Their persisted output is still available in the TUI for inspection. If you need a live shell, open a fresh one. The next shell ID will be sh%d.
 </system-reminder>`, strings.Join(priorIDs, ", "), nextN)
+}
+
+func replayEventFromLogEntry(e logEntry) agent.Event {
+	ev := agent.Event{
+		Kind:          agent.EventKind(e.Kind),
+		CorrelationID: e.CorrelationID,
+		SubagentID:    e.SubagentID,
+		Text:          e.Text,
+		SubagentTask:  e.SubagentTask,
+		SubagentModel: e.SubagentModel,
+		ShellKind:     agent.ShellKind(e.ShellKind),
+		Bytes:         e.Bytes,
+	}
+	if e.At != "" {
+		if at, err := time.Parse(time.RFC3339Nano, e.At); err == nil {
+			ev.At = at
+		}
+	}
+	if e.Err != "" {
+		ev.Err = fmt.Errorf("%s", e.Err)
+	}
+	return ev
+}
+
+func mapSupervisorStatus(state agent.SupervisorWorkerState) agent.SubagentStatus {
+	switch state {
+	case agent.SupervisorWorkerPaused:
+		return agent.StatusPaused
+	case agent.SupervisorWorkerDoneUnintegrated:
+		return agent.StatusDone
+	case agent.SupervisorWorkerErrorTerminal, agent.SupervisorWorkerStalled:
+		return agent.StatusError
+	case agent.SupervisorWorkerCancelled:
+		return agent.StatusCancelled
+	default:
+		return agent.StatusRunning
+	}
+}
+
+func max(a, b int64) int64 {
+	if a > b {
+		return a
+	}
+	return b
 }
