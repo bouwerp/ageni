@@ -137,26 +137,27 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 
 func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams {
 	isCerebras := strings.Contains(o.baseURL, "cerebras.ai")
+	isLlama := o.provider == "llamacpp" || o.provider == "llamacpp-fleet"
 
 	params := openai.ChatCompletionNewParams{
 		Model: req.Model,
 	}
-	if o.provider == "llamacpp" || o.provider == "llamacpp-fleet" {
+	if isLlama {
 		params.SetExtraFields(map[string]any{
 			"chat_template_kwargs": map[string]any{
 				"enable_thinking": false,
 			},
 		})
 	}
-	if !isCerebras {
+	if !isCerebras && !isLlama {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
 		}
 	}
 
 	if req.MaxTokens > 0 {
-		if isCerebras {
-			// Cerebras and some other strict providers still expect max_tokens.
+		if isCerebras || isLlama {
+			// Cerebras and llamacpp still expect max_tokens.
 			params.MaxTokens = openai.Int(int64(req.MaxTokens))
 		} else {
 			params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))

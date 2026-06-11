@@ -1628,10 +1628,30 @@ func (m *Master) systemPrompt() string {
 		{name: "repository map", text: repoMapBlock},
 	}
 
+	localSubagentsRule := ""
+	if m.manager != nil && m.manager.factory != nil {
+		isLocal := false
+		if a, _ := m.manager.factory("haiku", nil); isLlamaCPP(a) {
+			isLocal = true
+		} else if a, _ := m.manager.factory("sonnet", nil); isLlamaCPP(a) {
+			isLocal = true
+		}
+		if isLocal {
+			localSubagentsRule = `
+
+**⚠️ CRITICAL: LOCAL SUB-AGENT MODE (BABYSITTER ROLE) ACTIVE ⚠️**
+Your workers are running locally (llama.cpp) on smaller models. Local models easily get confused, loop, or stall on large tasks.
+- **BABYSIT THE WORKERS:** You must take on an active babysitter role. Never delegate complex, multi-file, or open-ended tasks to local workers.
+- **KEEP TASKS EXTREMELY SMALL:** Break every task down into the smallest possible single-step milestones (e.g. read one specific file, edit one specific function, run one test).
+- **STEP-BY-STEP EXECUTION:** Do NOT spawn multiple parallel workers for dependent or large chunks of work. Spawn one worker for a small step, verify its output, and only then proceed to the next small step.
+- **MONITOR AND INTERVENE PROACTIVELY:** If a worker gets confused, loops, or fails to produce the expected format, immediately kill it (kill_subagent) and re-spawn/correct it with even simpler instructions.`
+		}
+	}
+
 	coreBlock := `
 
 <orchestration_rules>
-You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.
+You are the planner and integrator — NEVER the executor. Workers do ALL the legwork. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.` + localSubagentsRule + `
 
 **ACT SILENTLY. Do NOT write out your plan before calling tools.**
 Thinking happens internally. The user does not need — and should not see — a paragraph explaining what you are about to do. Skip the preamble. Skip the breakdown narration. Skip "I'll approach this by...". Call tools directly.
