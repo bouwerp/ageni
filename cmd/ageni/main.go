@@ -39,65 +39,87 @@ var (
 
 func main() {
 	if len(os.Args) > 1 {
-		switch os.Args[1] {
-		case "--version", "-v", "version":
-			printVersion()
-			return
-		case "update":
-			if err := runUpdate(version); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "init":
-			if err := runInit(); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "skills":
-			if err := runSkills(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "sessions":
-			if err := runSessions(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "exec":
-			if err := runExec(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "eval":
-			if err := runEval(os.Args[2:]); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
-				os.Exit(1)
-			}
-			return
-		case "doctor":
-			autoInstall := false
-			for _, a := range os.Args[2:] {
-				if a == "--install" || a == "-y" {
-					autoInstall = true
+		first := os.Args[1]
+		if strings.HasPrefix(first, "-") {
+			switch first {
+			case "--version", "-v":
+				printVersion()
+				return
+			case "--help", "-h":
+				printUsage(os.Stdout)
+				return
+			case "--new", "--session":
+				// Valid TUI flags, let them fall through to run()
+			default:
+				if strings.HasPrefix(first, "--session=") {
+					// Valid TUI flag, let it fall through to run()
+				} else {
+					fmt.Fprintf(os.Stderr, "ageni: unknown flag %q\n\n", first)
+					printUsage(os.Stderr)
+					os.Exit(1)
 				}
 			}
-			if err := runDoctor(autoInstall); err != nil {
-				fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+		} else {
+			switch first {
+			case "version":
+				printVersion()
+				return
+			case "update":
+				if err := runUpdate(version); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "init":
+				if err := runInit(); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "skills":
+				if err := runSkills(os.Args[2:]); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "sessions":
+				if err := runSessions(os.Args[2:]); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "exec":
+				if err := runExec(os.Args[2:]); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "eval":
+				if err := runEval(os.Args[2:]); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "doctor":
+				autoInstall := false
+				for _, a := range os.Args[2:] {
+					if a == "--install" || a == "-y" {
+						autoInstall = true
+					}
+				}
+				if err := runDoctor(autoInstall); err != nil {
+					fmt.Fprintln(os.Stderr, "ageni: "+err.Error())
+					os.Exit(1)
+				}
+				return
+			case "help":
+				printUsage(os.Stdout)
+				return
+			default:
+				fmt.Fprintf(os.Stderr, "ageni: unknown command %q\n\n", first)
+				printUsage(os.Stderr)
 				os.Exit(1)
 			}
-			return
-		case "--help", "-h", "help":
-			printUsage(os.Stdout)
-			return
-		default:
-			fmt.Fprintf(os.Stderr, "ageni: unknown command %q\n\n", os.Args[1])
-			printUsage(os.Stderr)
-			os.Exit(1)
 		}
 	}
 

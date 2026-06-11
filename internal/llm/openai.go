@@ -141,6 +141,13 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 	params := openai.ChatCompletionNewParams{
 		Model: req.Model,
 	}
+	if o.provider == "llamacpp" || o.provider == "llamacpp-fleet" {
+		params.SetExtraFields(map[string]any{
+			"chat_template_kwargs": map[string]any{
+				"enable_thinking": false,
+			},
+		})
+	}
 	if !isCerebras {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),

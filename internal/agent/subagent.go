@@ -975,11 +975,24 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 	var text strings.Builder
 	var calls []llm.ToolCall
 	var reasoningContent string
+
+	disableThinking := isLlamaCPP(s.Adapter)
+	var stripper *thinkStripper
+	if disableThinking {
+		stripper = &thinkStripper{}
+	}
+
 	for ev := range stream {
 		switch ev.Type {
 		case llm.StreamEventText:
-			text.WriteString(ev.TextDelta)
-			s.publish(Event{Kind: EvSubagentText, SubagentID: s.ID, Text: ev.TextDelta})
+			txt := ev.TextDelta
+			if disableThinking {
+				txt = stripper.Feed(txt)
+			}
+			if txt != "" {
+				text.WriteString(txt)
+				s.publish(Event{Kind: EvSubagentText, SubagentID: s.ID, Text: txt})
+			}
 		case llm.StreamEventToolCall:
 			if ev.ToolCall != nil {
 				calls = append(calls, *ev.ToolCall)
@@ -993,7 +1006,16 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 				s.tracker.Add("subagent:"+s.ID, s.Model, *ev.Usage)
 				s.publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
 			}
-			reasoningContent = ev.ReasoningContent
+			if !disableThinking {
+				reasoningContent = ev.ReasoningContent
+			}
+		}
+	}
+	if disableThinking {
+		txt := stripper.Flush()
+		if txt != "" {
+			text.WriteString(txt)
+			s.publish(Event{Kind: EvSubagentText, SubagentID: s.ID, Text: txt})
 		}
 	}
 	if ctx.Err() != nil {
@@ -1001,6 +1023,79 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 	}
 	return text.String(), reasoningContent, calls, nil
 }
+
+func isLlamaCPP(a llm.Adapter) bool {
+	if a == nil {
+		return false
+	}
+	if fa, ok := a.(*llm.FallbackAdapter); ok {
+		for _, entry := range fa.Entries() {
+			if isLlamaCPP(entry.Adapter) {
+				return true
+			}
+		}
+		return false
+	}
+	prov := a.Provider()
+	return prov == "llamacpp" || prov == "llamacpp-fleet"
+}
+
+type thinkStripper struct {
+	inThink bool
+	buf     string
+}
+
+func (ts *thinkStripper) Feed(delta string) string {
+	ts.buf += delta
+	var output strings.Builder
+
+	for len(ts.buf) > 0 {
+		if !ts.inThink {
+			idx := strings.Index(ts.buf, "<think>")
+			if idx == -1 {
+				keep := 0
+				for i := 1; i <= 6; i++ {
+					if len(ts.buf) >= i && strings.HasSuffix(ts.buf, "<think>"[:i]) {
+						keep = i
+						break
+					}
+				}
+				output.WriteString(ts.buf[:len(ts.buf)-keep])
+				ts.buf = ts.buf[len(ts.buf)-keep:]
+				break
+			} else {
+				output.WriteString(ts.buf[:idx])
+				ts.buf = ts.buf[idx+len("<think>"):]
+				ts.inThink = true
+			}
+		} else {
+			idx := strings.Index(ts.buf, "</think>")
+			if idx == -1 {
+				keep := 0
+				for i := 1; i <= 7; i++ {
+					if len(ts.buf) >= i && strings.HasSuffix(ts.buf, "</think>"[:i]) {
+						keep = i
+						break
+					}
+				}
+				ts.buf = ts.buf[len(ts.buf)-keep:]
+				break
+			} else {
+				ts.buf = ts.buf[idx+len("</think>"):]
+				ts.inThink = false
+			}
+		}
+	}
+	return output.String()
+}
+
+func (ts *thinkStripper) Flush() string {
+	if !ts.inThink {
+		return ts.buf
+	}
+	return ""
+}
+
 
 // drainInbox appends any pending messages from the master as user-role
 // messages and notifies the bus so the UI can reflect the injection.
