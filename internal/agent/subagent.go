@@ -1185,6 +1185,23 @@ To optimize token generation speeds, you MUST avoid writing or overwriting entir
 - For any edits to existing files, you MUST use apply_diff with search_replace format (SEARCH/REPLACE blocks), edit_file, or multi_edit. Do NOT use whole-file replacement. Keep edits as minimal as possible to avoid slow decoding.
 </editing_policy>`
 
+	toolCallingFormat := ""
+	if isLlamaCPP(s.Adapter) {
+		toolCallingFormat = `
+<tool_calling_format>
+To call a tool, you MUST write the tool call on its own line using the Compact DSL format. Do not add any extra text or comments on that line.
+Format:
+@call:tool_name{"parameter1":"value1","parameter2":42}
+
+Examples:
+- To grep for a term:
+@call:grep_search{"Query":"func NewOpenAI","SearchPath":"/home/code/repos/ageni"}
+
+- To read a file:
+@call:read_file{"AbsolutePath":"/home/code/repos/ageni/main.go","StartLine":1,"EndLine":50}
+</tool_calling_format>`
+	}
+
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
 	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `
 
@@ -1195,7 +1212,7 @@ To optimize token generation speeds, you MUST avoid writing or overwriting entir
 - Final response: produce exactly one assistant turn that contains a <result>...</result> block matching the requested output_format, followed by a <reasoning>...</reasoning> block summarizing what you did. No tool calls in the final turn.
 - Do not invent file paths, function names, or APIs. If you don't know, say so.
 - If the master named a specific skill in <use_skill>, call read_skill on it first and apply its procedures.
-</rules>` + editingPolicy + `
+</rules>` + editingPolicy + toolCallingFormat + `
 
 <output_discipline>
 - Keep the final <result> compact and technical. Prefer terse fragments over narrative prose.

@@ -3,6 +3,7 @@ package llm
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"strings"
 
 	"github.com/openai/openai-go"
@@ -62,6 +63,13 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		var usage Usage
 		var reasoningContent strings.Builder
 
+		isLlama := o.provider == "llamacpp" || o.provider == "llamacpp-fleet"
+		var dslParser *llamaDSLParser
+		var dslToolCounter int64
+		if isLlama {
+			dslParser = &llamaDSLParser{}
+		}
+
 		emitTools := func() {
 			for _, t := range pending {
 				out <- StreamEvent{
@@ -85,7 +93,23 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 			}
 			for _, choice := range chunk.Choices {
 				if choice.Delta.Content != "" {
-					out <- StreamEvent{Type: StreamEventText, TextDelta: choice.Delta.Content}
+					if isLlama {
+						dslParser.Feed(choice.Delta.Content, func(text string) {
+							out <- StreamEvent{Type: StreamEventText, TextDelta: text}
+						}, func(name, args string) {
+							out <- StreamEvent{
+								Type: StreamEventToolCall,
+								ToolCall: &ToolCall{
+									ID:        fmt.Sprintf("call_%d", dslToolCounter),
+									Name:      name,
+									Arguments: sanitizeArgs([]byte(args)),
+								},
+							}
+							dslToolCounter++
+						})
+					} else {
+						out <- StreamEvent{Type: StreamEventText, TextDelta: choice.Delta.Content}
+					}
 				}
 				// Capture DeepSeek reasoning_content streamed as an extra field.
 				// Extra/unknown fields are marked invalid by the apijson decoder even
@@ -124,6 +148,21 @@ func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamE
 		}
 		// Drain any remaining tool calls (in case finish_reason wasn't on a chunk we saw).
 		emitTools()
+		if isLlama {
+			dslParser.Flush(func(text string) {
+				out <- StreamEvent{Type: StreamEventText, TextDelta: text}
+			}, func(name, args string) {
+				out <- StreamEvent{
+					Type: StreamEventToolCall,
+					ToolCall: &ToolCall{
+						ID:        fmt.Sprintf("call_%d", dslToolCounter),
+						Name:      name,
+						Arguments: sanitizeArgs([]byte(args)),
+					},
+				}
+				dslToolCounter++
+			})
+		}
 		u := usage
 		done := StreamEvent{Type: StreamEventDone, Usage: &u}
 		if rc := reasoningContent.String(); rc != "" {
@@ -143,11 +182,15 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		Model: req.Model,
 	}
 	if isLlama {
-		params.SetExtraFields(map[string]any{
+		extra := map[string]any{
 			"chat_template_kwargs": map[string]any{
 				"enable_thinking": false,
 			},
-		})
+		}
+		if len(req.Tools) > 0 {
+			extra["grammar"] = buildGBNFGrammar(req.Tools)
+		}
+		params.SetExtraFields(extra)
 	}
 	if req.JSONMode {
 		fmtParam := shared.NewResponseFormatJSONObjectParam()
@@ -171,6 +214,8 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 	}
 	if req.Temperature != nil {
 		params.Temperature = openai.Float(*req.Temperature)
+	} else if isLlama {
+		params.Temperature = openai.Float(0.0)
 	}
 
 	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)+1)
@@ -223,7 +268,7 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 
 	params.Messages = msgs
 
-	if len(req.Tools) > 0 {
+	if len(req.Tools) > 0 && !isLlama {
 		params.Tools = make([]openai.ChatCompletionToolParam, 0, len(req.Tools))
 		for _, t := range req.Tools {
 			var sch shared.FunctionParameters
@@ -241,6 +286,112 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 	}
 
 	return params
+}
+
+// buildGBNFGrammar formats the allowed tools into a schema grammar for llama.cpp.
+func buildGBNFGrammar(tools []ToolDef) string {
+	if len(tools) == 0 {
+		return ""
+	}
+	var names []string
+	for _, t := range tools {
+		names = append(names, fmt.Sprintf("%q", t.Name))
+	}
+	toolNameRule := strings.Join(names, " | ")
+	return fmt.Sprintf(`root      ::= ( text | tool_call )*
+tool_call ::= "@call:" tool_name object "\n"
+tool_name ::= %s
+object    ::= "{" space ( string ":" value ( "," space string ":" value )* )? "}"
+value     ::= string | number | "true" | "false" | "null" | object | array
+string    ::= "\"" ( [^\"\\\n\r] | "\\" [\"\\/bfnrt] )* "\""
+number    ::= "-"? ( "0" | [1-9] [0-9]* ) ( "." [0-9]+ )? ( [eE] [+-]? [0-9]+ )?
+array     ::= "[" space ( value ( "," space value )* )? "]"
+space     ::= [ \t\n\r]*
+text      ::= [^@]+ | "@" [^c] | "@c" [^a] | "@ca" [^l] | "@cal" [^l] | "@call" [^:]
+`, toolNameRule)
+}
+
+// llamaDSLParser parses streamed character blocks to extract custom Compact DSL format.
+type llamaDSLParser struct {
+	buffer      strings.Builder
+	inCall      bool
+	callBuffer  strings.Builder
+	currentTool string
+}
+
+func (p *llamaDSLParser) Feed(text string, emitText func(string), emitTool func(name, args string)) {
+	for i := 0; i < len(text); i++ {
+		ch := text[i]
+		if !p.inCall {
+			if ch == '@' {
+				// Flush everything before this '@'
+				if p.buffer.Len() > 0 {
+					emitText(p.buffer.String())
+					p.buffer.Reset()
+				}
+				p.buffer.WriteByte(ch)
+			} else {
+				p.buffer.WriteByte(ch)
+				bufStr := p.buffer.String()
+				// If the buffer starts with '@' but is no longer a prefix of "@call:", flush it.
+				if strings.HasPrefix(bufStr, "@") && !strings.HasPrefix("@call:", bufStr) {
+					emitText(bufStr)
+					p.buffer.Reset()
+				}
+			}
+
+			// Check if we hit the full prefix
+			if p.buffer.String() == "@call:" {
+				p.buffer.Reset()
+				p.inCall = true
+				p.callBuffer.Reset()
+				p.currentTool = ""
+			}
+		} else {
+			if ch == '\n' {
+				p.inCall = false
+				callStr := p.callBuffer.String()
+				p.callBuffer.Reset()
+				p.buffer.Reset()
+				braceIdx := strings.Index(callStr, "{")
+				if braceIdx >= 0 {
+					toolName := strings.TrimSpace(callStr[:braceIdx])
+					argsJSON := callStr[braceIdx:]
+					emitTool(toolName, argsJSON)
+				}
+			} else {
+				p.callBuffer.WriteByte(ch)
+			}
+		}
+	}
+
+	// At the end of Feed, if we are not in a call, and the buffer is NOT a prefix of "@call:",
+	// we should flush it so the text is displayed immediately.
+	if !p.inCall && p.buffer.Len() > 0 {
+		bufStr := p.buffer.String()
+		if !strings.HasPrefix("@call:", bufStr) {
+			emitText(bufStr)
+			p.buffer.Reset()
+		}
+	}
+}
+
+func (p *llamaDSLParser) Flush(emitText func(string), emitTool func(name, args string)) {
+	if p.inCall {
+		callStr := p.callBuffer.String()
+		braceIdx := strings.Index(callStr, "{")
+		if braceIdx >= 0 {
+			toolName := strings.TrimSpace(callStr[:braceIdx])
+			argsJSON := callStr[braceIdx:]
+			emitTool(toolName, argsJSON)
+		}
+		p.inCall = false
+		p.callBuffer.Reset()
+		p.buffer.Reset()
+	} else if p.buffer.Len() > 0 {
+		emitText(p.buffer.String())
+		p.buffer.Reset()
+	}
 }
 
 func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {

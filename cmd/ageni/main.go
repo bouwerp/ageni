@@ -668,23 +668,87 @@ func buildAdapter(rc config.RoleConfig) llm.Adapter {
 }
 
 // localFleetPool holds a set of local adapter endpoints and assigns them to
-// sub-agents round-robin using an atomic counter.
+// sub-agents using a least-busy strategy with dynamic backpressure.
 type localFleetPool struct {
 	entries []localFleetEntry
 	counter uint64
+	mu      sync.Mutex
 }
 
 type localFleetEntry struct {
-	adapter llm.Adapter
-	model   string
-	label   string
+	adapter     llm.Adapter
+	model       string
+	label       string
+	activeCount *int32
 }
 
-// next returns the next adapter in the pool (round-robin).
+// fleetNodeAdapter wraps a local adapter and tracks its active request count.
+type fleetNodeAdapter struct {
+	llm.Adapter
+	activeCount *int32
+	label       string
+}
+
+func (f *fleetNodeAdapter) Stream(ctx context.Context, req llm.Request) (<-chan llm.StreamEvent, error) {
+	// Active backpressure queueing: if the node is already busy, we wait for it to be free
+	// to avoid overloading llama.cpp and causing prefill latency spikes or connection timeouts.
+	maxWait := 15 * time.Second
+	start := time.Now()
+	for {
+		act := atomic.LoadInt32(f.activeCount)
+		if act == 0 || time.Since(start) > maxWait {
+			break
+		}
+		select {
+		case <-time.After(50 * time.Millisecond):
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		}
+	}
+
+	atomic.AddInt32(f.activeCount, 1)
+	stream, err := f.Adapter.Stream(ctx, req)
+	if err != nil {
+		atomic.AddInt32(f.activeCount, -1)
+		return nil, err
+	}
+	out := make(chan llm.StreamEvent, 16)
+	go func() {
+		defer atomic.AddInt32(f.activeCount, -1)
+		defer close(out)
+		for ev := range stream {
+			out <- ev
+		}
+	}()
+	return out, nil
+}
+
+// next returns the next adapter in the pool (least-busy).
 func (p *localFleetPool) next() (llm.Adapter, string) {
-	idx := atomic.AddUint64(&p.counter, 1) - 1
-	e := p.entries[idx%uint64(len(p.entries))]
-	return e.adapter, e.model
+	p.mu.Lock()
+	defer p.mu.Unlock()
+
+	var bestEntry *localFleetEntry
+	minActive := int32(999999)
+	for i := range p.entries {
+		act := atomic.LoadInt32(p.entries[i].activeCount)
+		if act < minActive {
+			minActive = act
+			bestEntry = &p.entries[i]
+		}
+	}
+
+	if bestEntry == nil {
+		idx := atomic.AddUint64(&p.counter, 1) - 1
+		bestEntry = &p.entries[idx%uint64(len(p.entries))]
+	}
+
+	wrapped := &fleetNodeAdapter{
+		Adapter:     bestEntry.adapter,
+		activeCount: bestEntry.activeCount,
+		label:       bestEntry.label,
+	}
+	return wrapped, bestEntry.model
 }
 
 // buildFleet constructs a localFleetPool from config endpoints. Returns nil
@@ -701,7 +765,13 @@ func buildFleet(endpoints []config.LocalEndpoint) *localFleetPool {
 		if model == "" {
 			model = "default"
 		}
-		entries = append(entries, localFleetEntry{adapter: a, model: model, label: ep.BaseURL})
+		activeCount := new(int32)
+		entries = append(entries, localFleetEntry{
+			adapter:     a,
+			model:       model,
+			label:       ep.BaseURL,
+			activeCount: activeCount,
+		})
 	}
 	return &localFleetPool{entries: entries}
 }
