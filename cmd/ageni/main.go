@@ -35,6 +35,7 @@ import (
 var (
 	version   = "dev"
 	buildTime = ""
+	forceCLI  = false
 )
 
 func main() {
@@ -48,8 +49,8 @@ func main() {
 			case "--help", "-h":
 				printUsage(os.Stdout)
 				return
-			case "--new", "--session":
-				// Valid TUI flags, let them fall through to run()
+			case "--new", "--session", "--cli":
+				// Valid TUI/CLI flags, let them fall through to run()
 			default:
 				if strings.HasPrefix(first, "--session=") {
 					// Valid TUI flag, let it fall through to run()
@@ -152,9 +153,10 @@ func printUsage(w *os.File) {
 	fmt.Fprintln(w, "  update           update ageni to the latest release")
 	fmt.Fprintln(w, "  help, -h         show this help")
 	fmt.Fprintln(w)
-	fmt.Fprintln(w, "Flags (when starting the TUI):")
+	fmt.Fprintln(w, "Flags (when starting the TUI/CLI):")
 	fmt.Fprintln(w, "  --session <id>   resume an existing session instead of starting a new one")
 	fmt.Fprintln(w, "  --new            skip the session picker and start fresh")
+	fmt.Fprintln(w, "  --cli            run in interactive CLI mode instead of Bubble Tea TUI")
 }
 
 func run() error {
@@ -603,6 +605,10 @@ func run() error {
 		return manager.CancelAll()
 	}
 
+	if forceCLI {
+		return runInteractiveCLI(ctx, bus, master, manager, masterIn, sess, resumeHistory)
+	}
+
 	// TUI
 	app := tui.New(ctx, bus, master, manager, tracker, masterIn, reload, cancelInFlight, sess, todo, changes, shellMgr)
 	if secretStore != nil {
@@ -857,6 +863,8 @@ func openOrCreateSession() (*session.Session, bool, error) {
 			resumeID = strings.TrimPrefix(args[i], "--session=")
 		case args[i] == "--new":
 			forceNew = true
+		case args[i] == "--cli":
+			forceCLI = true
 		default:
 			cleaned = append(cleaned, args[i])
 		}
