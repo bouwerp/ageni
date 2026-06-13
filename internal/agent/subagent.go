@@ -145,15 +145,13 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
 	}
-	if isLlamaCPP(adapter) {
-		var filtered []string
-		for _, name := range allowed.Names() {
-			if name != "write_file" && name != "transactional_edit" {
-				filtered = append(filtered, name)
-			}
+	var filtered []string
+	for _, name := range allowed.Names() {
+		if name != "write_file" && name != "transactional_edit" {
+			filtered = append(filtered, name)
 		}
-		allowed = allowed.Subset(filtered)
 	}
+	allowed = allowed.Subset(filtered)
 	budget := task.BudgetToolCalls
 	if budget <= 0 {
 		budget = 200
@@ -360,17 +358,15 @@ func (s *Subagent) Run(parent context.Context) {
 		// Drain inbox messages from the master before this turn.
 		messages = s.drainInbox(messages)
 
-		if isLlamaCPP(s.Adapter) {
+		s.mu.Lock()
+		tokens := s.lastInputTokens
+		s.mu.Unlock()
+		if tokens >= 16000 {
+			messages = trimSubagentHistory(messages, 3)
 			s.mu.Lock()
-			tokens := s.lastInputTokens
+			s.lastInputTokens = 0
 			s.mu.Unlock()
-			if tokens >= 16000 {
-				messages = trimSubagentHistory(messages, 3)
-				s.mu.Lock()
-				s.lastInputTokens = 0
-				s.mu.Unlock()
-				s.appendTranscript("trimmed oldest conversation history to fit local model context window")
-			}
+			s.appendTranscript("trimmed oldest conversation history to fit model context window")
 		}
 
 		req := llm.Request{
@@ -1184,22 +1180,10 @@ func (s *Subagent) systemPrompt() string {
 
 	editingPolicy := `
 <editing_policy>
-When multiple edit tools are available, choose the least brittle one for the job:
-- Prefer edit_file only for one exact replacement that should match exactly once.
-- Prefer apply_diff for multi-line or multi-block edits to an existing file; it gives better retry diagnostics when a search block misses.
-- Prefer multi_edit for several deterministic replacements in one file when each old_string should match exactly.
-- Prefer transactional_edit for coordinated multi-file changes, especially when you can verify them with validate_command.
-- Prefer write_file for new files or intentional full rewrites, not casual edits to existing files.
-</editing_policy>`
-
-	if isLlamaCPP(s.Adapter) {
-		editingPolicy = `
-<editing_policy>
-You are running on a local model. To optimize token generation speeds, you MUST avoid writing or overwriting entire files.
+To optimize token generation speeds, you MUST avoid writing or overwriting entire files.
 - To create a new file, use apply_diff with "format": "whole".
 - For any edits to existing files, you MUST use apply_diff with search_replace format (SEARCH/REPLACE blocks), edit_file, or multi_edit. Do NOT use whole-file replacement. Keep edits as minimal as possible to avoid slow decoding.
 </editing_policy>`
-	}
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
 	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `

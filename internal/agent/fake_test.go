@@ -1218,9 +1218,8 @@ func TestSubagentSystemPromptIncludesEditingPolicy(t *testing.T) {
 	for _, want := range []string{
 		"<editing_policy>",
 		"<output_discipline>",
-		"Prefer edit_file only for one exact replacement",
-		"Prefer apply_diff for multi-line or multi-block edits",
-		"Prefer transactional_edit for coordinated multi-file changes",
+		"To create a new file, use apply_diff with \"format\": \"whole\"",
+		"For any edits to existing files, you MUST use apply_diff",
 		"Keep the final <result> compact and technical",
 	} {
 		if !strings.Contains(prompt, want) {

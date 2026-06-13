@@ -1202,9 +1202,9 @@ func (m *Master) trimHistory() bool {
 // compaction is triggered. When a turn consumes more than this many tokens
 // the assistant's full conversation history is summarised before the next
 // user turn, keeping only the most recent exchanges verbatim.
-// 40 000 tokens covers most models' "comfortable" range while leaving
+// 16 000 tokens covers most models' "comfortable" range while leaving
 // headroom for the reply and tool calls.
-const compactionThreshold = 40_000
+const compactionThreshold = 16_000
 
 // compactionKeepExchanges is the number of complete user/assistant exchanges to
 // retain verbatim after compaction. Everything older than that is replaced by
@@ -1218,19 +1218,7 @@ const compactedContextTag = "compacted_context"
 // each terminal (no-tool) assistant turn so the compaction happens "between
 // conversations" rather than mid-tool-loop.
 func (m *Master) maybeCompactHistory(ctx context.Context) {
-	threshold := compactionThreshold
-	if m.manager != nil && m.manager.factory != nil {
-		isLocal := false
-		if a, _ := m.manager.factory("haiku", nil); isLlamaCPP(a) {
-			isLocal = true
-		} else if a, _ := m.manager.factory("sonnet", nil); isLlamaCPP(a) {
-			isLocal = true
-		}
-		if isLocal {
-			threshold = 16000
-		}
-	}
-	if m.lastInputTokens < threshold {
+	if m.lastInputTokens < compactionThreshold {
 		return
 	}
 	// Only compact when there is enough history to make it worthwhile.
