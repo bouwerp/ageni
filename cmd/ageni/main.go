@@ -165,6 +165,7 @@ func run() error {
 	memguard.CatchInterrupt()
 	defer memguard.Purge()
 
+	fmt.Printf("\033[36m[*] Initializing secret store...\033[0m\n")
 	// Open the secrets store (env-var backed; used for agent tools like
 	// run_with_secret). API keys are stored in ~/.ageni/.env, not the OS keychain.
 	secretStore, storeErr := secrets.OpenEnvOnly()
@@ -180,6 +181,7 @@ func run() error {
 	// degrade gracefully.
 	lipgloss.SetColorProfile(termenv.TrueColor)
 
+	fmt.Printf("\033[36m[*] Loading configuration...\033[0m\n")
 	cfg, err := config.Load()
 	if err != nil {
 		// First-run UX: drop into the wizard if no provider is configured.
@@ -222,6 +224,7 @@ func run() error {
 			})
 		}
 	}
+	fmt.Printf("\033[36m[*] Initializing LLM adapters...\033[0m\n")
 	masterAdapter := buildChain("master", cfg.Master, cfg.MasterFallbacks, onFallback("master"))
 	subAdapter := buildChain("subagent", cfg.Subagent, cfg.SubagentFallbacks, onFallback("subagent"))
 	var masterLeadAdapter llm.Adapter
@@ -256,12 +259,14 @@ func run() error {
 	// Build a base set of tools used by both master and sub-agents.
 	// Connect to any configured MCP servers (~/.ageni/mcp.json) and collect
 	// their tools to add to the registries below.
+	fmt.Printf("\033[36m[*] Connecting to MCP servers (Model Context Protocol)...\033[0m\n")
 	mcpMgr, mcpTools := loadMCPTools(ctx)
 	if mcpMgr != nil {
 		defer mcpMgr.Close()
 	}
 
 	// Load skills from ~/.ageni/skills/ and ./.ageni/skills/.
+	fmt.Printf("\033[36m[*] Loading skills, roles, and memory registries...\033[0m\n")
 	skillReg := loadSkillRegistry()
 
 	// Load roles from embedded built-ins and ~/.ageni/roles/.
@@ -275,6 +280,7 @@ func run() error {
 	// Open a session — either resume an existing one (--session <id>) or
 	// start fresh. Per-instance state lives under ~/.ageni/sessions/<id>/
 	// so multiple instances in the same repo never collide.
+	fmt.Printf("\033[36m[*] Opening session...\033[0m\n")
 	sess, resumed, sessErr := openOrCreateSession()
 	if sessErr != nil {
 		return fmt.Errorf("session init: %w", sessErr)
@@ -286,6 +292,7 @@ func run() error {
 	// One TodoWrite instance shared between master and sub-agents so the
 	// session todo list is a single source of truth — now scoped to the
 	// session dir.
+	fmt.Printf("\033[36m[*] Setting up workspace and registry states...\033[0m\n")
 	todo := tools.NewTodoWrite(sess.Path("todo.json"))
 
 	// One ChangeTracker shared between master and sub-agents. Records
@@ -469,6 +476,7 @@ func run() error {
 	// Codex, Cursor, Amp, Factory, Jules, Copilot — see https://agents.md).
 	// Fast enough to do synchronously; the user wants their project rules
 	// to bind from turn 1, not turn N.
+	fmt.Printf("\033[36m[*] Loading AGENTS.md project instructions...\033[0m\n")
 	if root := detectRepoRoot(); root != "" {
 		if res, err := agentsmd.Load(root); err == nil && res.Rendered != "" {
 			master.SetAgentsMD(res.Rendered)
@@ -605,6 +613,7 @@ func run() error {
 		return manager.CancelAll()
 	}
 
+	fmt.Printf("\033[32m[✓] Startup complete!\033[0m\n\n")
 	if forceCLI {
 		return runInteractiveCLI(ctx, bus, master, manager, masterIn, sess, resumeHistory)
 	}
