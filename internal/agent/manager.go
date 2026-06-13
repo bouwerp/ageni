@@ -100,6 +100,13 @@ func (m *Manager) SetDefaultBudget(n int) {
 	m.mu.Unlock()
 }
 
+// DefaultBudget returns the default tool-call budget applied to newly spawned sub-agents.
+func (m *Manager) DefaultBudget() int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.defaultBudget
+}
+
 // SetNextSubagentID nudges the spawn counter so the next worker created
 // gets ID s<n+1>. Used on session resume to skip past IDs the master
 // remembers from before the restart — keeps fresh workers' IDs distinct

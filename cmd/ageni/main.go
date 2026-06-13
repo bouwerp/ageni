@@ -615,7 +615,7 @@ func run() error {
 
 	fmt.Printf("\033[32m[✓] Startup complete!\033[0m\n\n")
 	if forceCLI {
-		return runInteractiveCLI(ctx, bus, master, manager, masterIn, sess, resumeHistory)
+		return runInteractiveCLI(ctx, bus, master, manager, masterIn, sess, resumeHistory, tracker)
 	}
 
 	// TUI
