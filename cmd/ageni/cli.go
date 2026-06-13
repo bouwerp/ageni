@@ -3,6 +3,7 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -40,9 +41,6 @@ func runInteractiveCLI(
 		fmt.Printf("\033[90mResumed session history with %d message(s).\033[0m\n", len(resumeHistory))
 	}
 
-	// Initial status bar draw
-	drawCLIStatusBar(sess.ID, tracker, len(manager.List()))
-
 	// Ensure we restore terminal scrolling region on exit
 	defer func() {
 		fmt.Print("\033[r") // Reset scrolling region
@@ -51,8 +49,8 @@ func runInteractiveCLI(
 
 	// Read input and handle events concurrently
 	for {
-		// Draw status bar before prompting
-		drawCLIStatusBar(sess.ID, tracker, len(manager.List()))
+		// Reset scroll region and clear status bar before prompting
+		clearCLIStatusBar()
 
 		prompt, ok := readPrompt(scanner)
 		if !ok {
@@ -68,6 +66,9 @@ func runInteractiveCLI(
 			handleCLISlashCommand(prompt, master, manager, sess, tracker)
 			continue
 		}
+
+		// Draw status bar before master runs
+		drawCLIStatusBar(sess.ID, tracker, len(manager.List()))
 
 		// Send user message to the master agent
 		select {
@@ -97,13 +98,31 @@ func runInteractiveCLI(
 					fmt.Printf("\033[90m%s\033[0m", ev.Text)
 				case agent.EvMasterToolCall:
 					if ev.ToolCall != nil {
-						fmt.Printf("\n\033[36m[Master Tool: %s]\033[0m\n", ev.ToolCall.Name)
+						args := formatToolArgs(ev.ToolCall.Arguments)
+						fmt.Printf("\n\033[36m[Master Tool: %s %s]\033[0m\n", ev.ToolCall.Name, args)
+					}
+				case agent.EvMasterToolDone:
+					if ev.ToolResult != nil {
+						if ev.ToolResult.IsError {
+							fmt.Printf("\033[31m[Master Tool Done: error, result=%s]\033[0m\n", formatToolResultSummary(ev.ToolResult.Content))
+						} else {
+							fmt.Printf("\033[36m[Master Tool Done: success, result=%s]\033[0m\n", formatToolResultSummary(ev.ToolResult.Content))
+						}
 					}
 				case agent.EvSubagentSpawn:
 					fmt.Printf("\n\033[33m[Spawning Subagent %s: %s]\033[0m\n", ev.SubagentID, ev.Text)
 				case agent.EvSubagentToolCall:
 					if ev.ToolCall != nil {
-						fmt.Printf("\033[33m[Subagent %s Tool: %s]\033[0m\n", ev.SubagentID, ev.ToolCall.Name)
+						args := formatToolArgs(ev.ToolCall.Arguments)
+						fmt.Printf("\033[33m[Subagent %s Tool: %s %s]\033[0m\n", ev.SubagentID, ev.ToolCall.Name, args)
+					}
+				case agent.EvSubagentToolDone:
+					if ev.ToolResult != nil {
+						if ev.ToolResult.IsError {
+							fmt.Printf("\033[31m[Subagent %s Tool Done: error, result=%s]\033[0m\n", ev.SubagentID, formatToolResultSummary(ev.ToolResult.Content))
+						} else {
+							fmt.Printf("\033[33m[Subagent %s Tool Done: success, result=%s]\033[0m\n", ev.SubagentID, formatToolResultSummary(ev.ToolResult.Content))
+						}
 					}
 				case agent.EvSubagentDone:
 					fmt.Printf("\033[32m[Subagent %s Done]\033[0m\n", ev.SubagentID)
@@ -111,6 +130,10 @@ func runInteractiveCLI(
 					fmt.Printf("\033[31m[Subagent %s Failed: %v]\033[0m\n", ev.SubagentID, ev.Err)
 				case agent.EvSubagentRetry:
 					fmt.Printf("\033[33m[Subagent %s Retry: %s]\033[0m\n", ev.SubagentID, ev.Text)
+				case agent.EvCompaction:
+					fmt.Printf("\033[90m[Compaction: %s]\033[0m\n", ev.Text)
+				case agent.EvShellOutput:
+					fmt.Print(ev.Text)
 				case agent.EvMasterTurnDone:
 					fmt.Println()
 					turnDone = true
@@ -127,7 +150,6 @@ func runInteractiveCLI(
 func readPrompt(scanner *bufio.Scanner) (string, bool) {
 	var lines []string
 	for {
-
 		if len(lines) == 0 {
 			fmt.Print("\nUser> ")
 		} else {
@@ -196,6 +218,57 @@ func drawCLIStatusBar(sessID string, tracker *llm.Tracker, activeWorkers int) {
 
 	// Restore cursor
 	fmt.Print("\033[u")
+}
+
+func clearCLIStatusBar() {
+	width, height, err := term.GetSize(int(os.Stdout.Fd()))
+	if err != nil || height < 5 || width < 10 {
+		return
+	}
+	// Save cursor
+	fmt.Print("\033[s")
+	// Reset scrolling region to full screen
+	fmt.Print("\033[r")
+	// Move cursor to height-1 and clear line
+	fmt.Printf("\033[%d;1H\033[2K", height-1)
+	// Move cursor to height and clear line
+	fmt.Printf("\033[%d;1H\033[2K", height)
+	// Restore cursor
+	fmt.Print("\033[u")
+}
+
+func formatToolArgs(raw []byte) string {
+	if len(raw) == 0 {
+		return ""
+	}
+	var m map[string]any
+	if err := json.Unmarshal(raw, &m); err == nil {
+		var parts []string
+		for k, v := range m {
+			valStr := fmt.Sprintf("%v", v)
+			if len(valStr) > 60 {
+				valStr = valStr[:57] + "..."
+			}
+			parts = append(parts, fmt.Sprintf("%s=%q", k, valStr))
+		}
+		return "{" + strings.Join(parts, ", ") + "}"
+	}
+	s := string(raw)
+	if len(s) > 80 {
+		s = s[:77] + "..."
+	}
+	return s
+}
+
+func formatToolResultSummary(content string) string {
+	summary := ""
+	if len(content) > 100 {
+		summary = content[:97] + "..."
+	} else {
+		summary = content
+	}
+	summary = strings.ReplaceAll(summary, "\n", " ")
+	return summary
 }
 
 func handleCLISlashCommand(cmd string, master *agent.Master, manager *agent.Manager, sess *session.Session, tracker *llm.Tracker) {
