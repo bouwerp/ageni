@@ -295,7 +295,19 @@ func buildGBNFGrammar(tools []ToolDef) string {
 	}
 	var names []string
 	for _, t := range tools {
-		names = append(names, fmt.Sprintf("%q", t.Name))
+		var sb strings.Builder
+		for _, ch := range t.Name {
+			if (ch >= 'a' && ch <= 'z') || (ch >= 'A' && ch <= 'Z') || (ch >= '0' && ch <= '9') || ch == '_' {
+				sb.WriteRune(ch)
+			}
+		}
+		cleanName := sb.String()
+		if cleanName != "" {
+			names = append(names, fmt.Sprintf("%q", cleanName))
+		}
+	}
+	if len(names) == 0 {
+		return ""
 	}
 	toolNameRule := strings.Join(names, " | ")
 	return fmt.Sprintf(`root      ::= ( text | tool_call )*

@@ -694,13 +694,16 @@ func (f *fleetNodeAdapter) Stream(ctx context.Context, req llm.Request) (<-chan 
 	// to avoid overloading llama.cpp and causing prefill latency spikes or connection timeouts.
 	maxWait := 15 * time.Second
 	start := time.Now()
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+
 	for {
 		act := atomic.LoadInt32(f.activeCount)
 		if act == 0 || time.Since(start) > maxWait {
 			break
 		}
 		select {
-		case <-time.After(50 * time.Millisecond):
+		case <-ticker.C:
 		case <-ctx.Done():
 			return nil, ctx.Err()
 		}
@@ -716,8 +719,20 @@ func (f *fleetNodeAdapter) Stream(ctx context.Context, req llm.Request) (<-chan 
 	go func() {
 		defer atomic.AddInt32(f.activeCount, -1)
 		defer close(out)
-		for ev := range stream {
-			out <- ev
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case ev, ok := <-stream:
+				if !ok {
+					return
+				}
+				select {
+				case out <- ev:
+				case <-ctx.Done():
+					return
+				}
+			}
 		}
 	}()
 	return out, nil
