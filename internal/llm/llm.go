@@ -60,7 +60,9 @@ type Request struct {
 	// Temperature, MaxTokens, etc. Optional.
 	Temperature *float64
 	MaxTokens   int
+	JSONMode    bool
 }
+
 
 // StreamEvent is one event from a streamed response.
 type StreamEventType string

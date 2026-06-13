@@ -1218,7 +1218,19 @@ const compactedContextTag = "compacted_context"
 // each terminal (no-tool) assistant turn so the compaction happens "between
 // conversations" rather than mid-tool-loop.
 func (m *Master) maybeCompactHistory(ctx context.Context) {
-	if m.lastInputTokens < compactionThreshold {
+	threshold := compactionThreshold
+	if m.manager != nil && m.manager.factory != nil {
+		isLocal := false
+		if a, _ := m.manager.factory("haiku", nil); isLlamaCPP(a) {
+			isLocal = true
+		} else if a, _ := m.manager.factory("sonnet", nil); isLlamaCPP(a) {
+			isLocal = true
+		}
+		if isLocal {
+			threshold = 16000
+		}
+	}
+	if m.lastInputTokens < threshold {
 		return
 	}
 	// Only compact when there is enough history to make it worthwhile.

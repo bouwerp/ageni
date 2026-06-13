@@ -113,12 +113,13 @@ type Subagent struct {
 	status        SubagentStatus
 	spawnedAt     time.Time
 	transcript    []string
-	finalText     string
-	cancel        context.CancelFunc
-	scrubber      func(string) string // optional; redacts secrets from LLM text before storage
-	correlationID string
-	paused        bool
-	pauseCond     *sync.Cond
+	finalText       string
+	cancel          context.CancelFunc
+	scrubber        func(string) string // optional; redacts secrets from LLM text before storage
+	correlationID   string
+	paused          bool
+	pauseCond       *sync.Cond
+	lastInputTokens int
 }
 
 // SetScrubber installs a function applied to LLM-generated text before it is
@@ -143,6 +144,15 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
+	}
+	if isLlamaCPP(adapter) {
+		var filtered []string
+		for _, name := range allowed.Names() {
+			if name != "write_file" && name != "transactional_edit" {
+				filtered = append(filtered, name)
+			}
+		}
+		allowed = allowed.Subset(filtered)
 	}
 	budget := task.BudgetToolCalls
 	if budget <= 0 {
@@ -349,6 +359,19 @@ func (s *Subagent) Run(parent context.Context) {
 		}
 		// Drain inbox messages from the master before this turn.
 		messages = s.drainInbox(messages)
+
+		if isLlamaCPP(s.Adapter) {
+			s.mu.Lock()
+			tokens := s.lastInputTokens
+			s.mu.Unlock()
+			if tokens >= 16000 {
+				messages = trimSubagentHistory(messages, 3)
+				s.mu.Lock()
+				s.lastInputTokens = 0
+				s.mu.Unlock()
+				s.appendTranscript("trimmed oldest conversation history to fit local model context window")
+			}
+		}
 
 		req := llm.Request{
 			Model:    s.Model,
@@ -1005,6 +1028,9 @@ func (s *Subagent) runOneTurn(ctx context.Context, req llm.Request) (string, str
 			if ev.Usage != nil {
 				s.tracker.Add("subagent:"+s.ID, s.Model, *ev.Usage)
 				s.publish(Event{Kind: EvSubagentUsage, SubagentID: s.ID, Usage: ev.Usage})
+				s.mu.Lock()
+				s.lastInputTokens = ev.Usage.InputTokens + ev.Usage.CacheReadTokens + ev.Usage.CacheCreationTokens
+				s.mu.Unlock()
 			}
 			if !disableThinking {
 				reasoningContent = ev.ReasoningContent
@@ -1156,6 +1182,25 @@ func (s *Subagent) systemPrompt() string {
 
 	capsBlock := buildSubagentCapsBlock(caps)
 
+	editingPolicy := `
+<editing_policy>
+When multiple edit tools are available, choose the least brittle one for the job:
+- Prefer edit_file only for one exact replacement that should match exactly once.
+- Prefer apply_diff for multi-line or multi-block edits to an existing file; it gives better retry diagnostics when a search block misses.
+- Prefer multi_edit for several deterministic replacements in one file when each old_string should match exactly.
+- Prefer transactional_edit for coordinated multi-file changes, especially when you can verify them with validate_command.
+- Prefer write_file for new files or intentional full rewrites, not casual edits to existing files.
+</editing_policy>`
+
+	if isLlamaCPP(s.Adapter) {
+		editingPolicy = `
+<editing_policy>
+You are running on a local model. To optimize token generation speeds, you MUST avoid writing or overwriting entire files.
+- To create a new file, use apply_diff with "format": "whole".
+- For any edits to existing files, you MUST use apply_diff with search_replace format (SEARCH/REPLACE blocks), edit_file, or multi_edit. Do NOT use whole-file replacement. Keep edits as minimal as possible to avoid slow decoding.
+</editing_policy>`
+	}
+
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
 	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `
 
@@ -1166,16 +1211,7 @@ func (s *Subagent) systemPrompt() string {
 - Final response: produce exactly one assistant turn that contains a <result>...</result> block matching the requested output_format, followed by a <reasoning>...</reasoning> block summarizing what you did. No tool calls in the final turn.
 - Do not invent file paths, function names, or APIs. If you don't know, say so.
 - If the master named a specific skill in <use_skill>, call read_skill on it first and apply its procedures.
-</rules>
-
-<editing_policy>
-When multiple edit tools are available, choose the least brittle one for the job:
-- Prefer edit_file only for one exact replacement that should match exactly once.
-- Prefer apply_diff for multi-line or multi-block edits to an existing file; it gives better retry diagnostics when a search block misses.
-- Prefer multi_edit for several deterministic replacements in one file when each old_string should match exactly.
-- Prefer transactional_edit for coordinated multi-file changes, especially when you can verify them with validate_command.
-- Prefer write_file for new files or intentional full rewrites, not casual edits to existing files.
-</editing_policy>
+</rules>` + editingPolicy + `
 
 <output_discipline>
 - Keep the final <result> compact and technical. Prefer terse fragments over narrative prose.
@@ -1409,3 +1445,35 @@ func buildSubagentCapsBlock(caps []string) string {
 	sb.WriteString("\n</model_capabilities>")
 	return sb.String()
 }
+
+// trimSubagentHistory trims the middle portion of the messages list, preserving the first message
+// (initial task setup) and the last N complete assistant turns.
+func trimSubagentHistory(messages []llm.Message, keepLastN int) []llm.Message {
+	if len(messages) <= 1 {
+		return messages
+	}
+
+	assistantIndices := []int{}
+	for i := len(messages) - 1; i >= 1; i-- {
+		if messages[i].Role == llm.RoleAssistant {
+			assistantIndices = append(assistantIndices, i)
+		}
+	}
+
+	if len(assistantIndices) <= keepLastN {
+		return messages
+	}
+
+	keepFrom := assistantIndices[keepLastN-1]
+
+	notice := llm.Message{
+		Role: llm.RoleUser,
+		Text: fmt.Sprintf("[Note: %d oldest message(s) removed to fit local model context window]", keepFrom-1),
+	}
+	trimmed := make([]llm.Message, 0, len(messages)-keepFrom+2)
+	trimmed = append(trimmed, messages[0])
+	trimmed = append(trimmed, notice)
+	trimmed = append(trimmed, messages[keepFrom:]...)
+	return trimmed
+}
+

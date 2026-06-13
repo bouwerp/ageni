@@ -82,6 +82,19 @@ func (r *Registry) Missing(names []string) []string {
 	return missing
 }
 
+// Names returns a sorted list of all tool names in the registry.
+func (r *Registry) Names() []string {
+	if r == nil {
+		return nil
+	}
+	names := make([]string, 0, len(r.tools))
+	for name := range r.tools {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // Definitions returns ToolDefs sorted by name (deterministic for cache hits).
 func (r *Registry) Definitions() []llm.ToolDef {
 	names := make([]string, 0, len(r.tools))

@@ -149,6 +149,12 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 			},
 		})
 	}
+	if req.JSONMode {
+		fmtParam := shared.NewResponseFormatJSONObjectParam()
+		params.ResponseFormat = openai.ChatCompletionNewParamsResponseFormatUnion{
+			OfJSONObject: &fmtParam,
+		}
+	}
 	if !isCerebras && !isLlama {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
