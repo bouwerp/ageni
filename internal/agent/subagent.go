@@ -1156,16 +1156,6 @@ func (s *Subagent) systemPrompt() string {
 	caps := s.capabilities
 	s.mu.Unlock()
 
-	skillsBlock := ""
-	if s.skillCatalog != "" {
-		skillsBlock = "\n\n<available_skills>\n" + s.skillCatalog + "\n\nCall read_skill(name=\"...\") to load a skill's full instructions when one matches your task.\n</available_skills>"
-	}
-
-	rolesBlock := ""
-	if s.roleCatalog != "" {
-		rolesBlock = "\n\n<available_roles>\n" + s.roleCatalog + "\n</available_roles>"
-	}
-
 	memoriesBlock := ""
 	if s.memBlock != "" {
 		memoriesBlock = "\n\n" + s.memBlock
@@ -1203,7 +1193,7 @@ Examples:
 	}
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + skillsBlock + rolesBlock + memoriesBlock + capsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + memoriesBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
