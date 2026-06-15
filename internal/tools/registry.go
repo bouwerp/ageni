@@ -14,6 +14,7 @@ import (
 var toolAliases = map[string]string{
 	"shell":       "run_bash",
 	"bash":        "run_bash",
+	"bash_tool":   "run_bash",
 	"cmd":         "run_bash",
 	"run":         "run_bash",
 	"run_command": "run_bash",
@@ -32,6 +33,7 @@ var toolAliases = map[string]string{
 	"rg":          "grep",
 	"ripgrep":     "grep",
 	"find":        "glob",
+	"glob_search": "glob",
 	"edit":        "apply_diff",
 	"patch":       "apply_diff",
 	"apply_patch": "apply_diff",
@@ -78,6 +80,12 @@ func (r *Registry) Register(t Tool) {
 }
 
 func (r *Registry) Get(name string) (Tool, bool) {
+	name = sanitizeToolName(name)
+	if target, ok := toolAliases[strings.ToLower(name)]; ok {
+		if _, exists := r.tools[target]; exists {
+			name = target
+		}
+	}
 	t, ok := r.tools[name]
 	return t, ok
 }
@@ -97,6 +105,11 @@ func (r *Registry) Missing(names []string) []string {
 		}
 		if name == "" {
 			continue
+		}
+		if target, ok := toolAliases[strings.ToLower(name)]; ok {
+			if _, exists := r.tools[target]; exists {
+				name = target
+			}
 		}
 		if _, ok := r.tools[name]; ok {
 			continue
@@ -264,8 +277,17 @@ func guessAlternative(name string) string {
 func (r *Registry) Subset(names []string) *Registry {
 	sub := NewRegistry()
 	sub.scrubber = r.scrubber
-	for _, n := range names {
-		if t, ok := r.tools[n]; ok {
+	for _, raw := range names {
+		name := sanitizeToolName(strings.TrimSpace(raw))
+		if name == "" {
+			name = strings.TrimSpace(raw)
+		}
+		if target, ok := toolAliases[strings.ToLower(name)]; ok {
+			if _, exists := r.tools[target]; exists {
+				name = target
+			}
+		}
+		if t, ok := r.tools[name]; ok {
 			sub.Register(t)
 		}
 	}
