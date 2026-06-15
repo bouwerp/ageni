@@ -88,6 +88,9 @@ func (t ShellExecTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
+	}
 	s, ok := t.SM.Get(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
@@ -130,6 +133,9 @@ func (t ShellReadTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
 	}
 	s, ok := t.SM.Get(a.ID)
 	if !ok {
@@ -187,6 +193,9 @@ func (t ShellWaitTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
+	}
 	s, ok := t.SM.Get(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
@@ -239,6 +248,9 @@ func (t ShellSendInputTool) Call(ctx context.Context, args json.RawMessage) (str
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
+	}
 	s, ok := t.SM.Get(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
@@ -283,6 +295,9 @@ func (t CloseShellTool) Call(ctx context.Context, args json.RawMessage) (string,
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
 	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
+	}
 	if err := t.SM.Close(a.ID); err != nil {
 		return "", err
 	}
@@ -313,6 +328,9 @@ func (t InterruptShellTool) Call(ctx context.Context, args json.RawMessage) (str
 	}
 	if err := json.Unmarshal(args, &a); err != nil {
 		return "", fmt.Errorf("invalid args: %w", err)
+	}
+	if a.ID == "" {
+		a.ID = ResolveShellID(args)
 	}
 	if err := t.SM.Interrupt(a.ID); err != nil {
 		return "", err
@@ -357,4 +375,54 @@ func (t ListShellsTool) Call(ctx context.Context, args json.RawMessage) (string,
 		fmt.Fprintf(&sb, "%s  kind=%s  status=%s  bytes=%d%s\n", label, s.Kind(), status, s.TotalBytes(), lost)
 	}
 	return strings.TrimRight(sb.String(), "\n"), nil
+}
+
+type idArgs struct {
+	ID         string   `json:"id"`
+	ID2        string   `json:"ID"`
+	ShellID    string   `json:"shell_id"`
+	ShellID2   string   `json:"shellID"`
+	ShellID3   string   `json:"ShellID"`
+	SessionID  string   `json:"session_id"`
+	SessionID2 string   `json:"sessionID"`
+	SessionID3 string   `json:"SessionID"`
+	Session    string   `json:"session"`
+	Session2   string   `json:"Session"`
+}
+
+func ResolveShellID(args json.RawMessage) string {
+	var p idArgs
+	if err := json.Unmarshal(args, &p); err == nil {
+		if p.ID != "" {
+			return p.ID
+		}
+		if p.ID2 != "" {
+			return p.ID2
+		}
+		if p.ShellID != "" {
+			return p.ShellID
+		}
+		if p.ShellID2 != "" {
+			return p.ShellID2
+		}
+		if p.ShellID3 != "" {
+			return p.ShellID3
+		}
+		if p.SessionID != "" {
+			return p.SessionID
+		}
+		if p.SessionID2 != "" {
+			return p.SessionID2
+		}
+		if p.SessionID3 != "" {
+			return p.SessionID3
+		}
+		if p.Session != "" {
+			return p.Session
+		}
+		if p.Session2 != "" {
+			return p.Session2
+		}
+	}
+	return ""
 }
