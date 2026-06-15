@@ -147,6 +147,42 @@ func (m *Manager) GetClient(ctx context.Context, lang string) (*Client, error) {
 		return nil, err
 	}
 
+	var initOpts any
+	switch lang {
+	case "python":
+		pyPath := resolvePythonPath(root)
+		initOpts = map[string]any{
+			"python": map[string]any{
+				"pythonPath": pyPath,
+				"analysis": map[string]any{
+					"autoSearchPaths":        true,
+					"useLibraryCodeForTypes": true,
+				},
+			},
+		}
+	case "typescript":
+		opts := map[string]any{
+			"preferences": map[string]any{
+				"quotePreference": "double",
+			},
+		}
+		if tsdk := findTsdk(root); tsdk != "" {
+			opts["typescript"] = map[string]any{
+				"tsdk": tsdk,
+			}
+		}
+		initOpts = opts
+	case "go":
+		initOpts = map[string]any{
+			"gopls": map[string]any{
+				"analyses": map[string]bool{
+					"unusedparams": true,
+				},
+				"staticcheck": true,
+			},
+		}
+	}
+
 	initParams := InitializeParams{
 		ProcessID: os.Getpid(),
 		RootPath:  root,
@@ -159,6 +195,7 @@ func (m *Manager) GetClient(ctx context.Context, lang string) (*Client, error) {
 				},
 			},
 		},
+		InitializationOptions: initOpts,
 	}
 
 	var initResult InitializeResult
@@ -408,4 +445,28 @@ func (m *Manager) RegisterClient(lang string, client *Client) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.clients[lang] = client
+}
+
+func resolvePythonPath(root string) string {
+	paths := []string{
+		filepath.Join(root, ".venv", "bin", "python"),
+		filepath.Join(root, "venv", "bin", "python"),
+		filepath.Join(root, ".conda", "bin", "python"),
+		filepath.Join(root, ".venv", "Scripts", "python.exe"),
+		filepath.Join(root, "venv", "Scripts", "python.exe"),
+	}
+	for _, p := range paths {
+		if _, err := os.Stat(p); err == nil {
+			return p
+		}
+	}
+	return "python3"
+}
+
+func findTsdk(root string) string {
+	p := filepath.Join(root, "node_modules", "typescript", "lib")
+	if _, err := os.Stat(p); err == nil {
+		return p
+	}
+	return ""
 }
