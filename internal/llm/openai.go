@@ -218,11 +218,51 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		params.Temperature = openai.Float(0.0)
 	}
 
-	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(req.Messages)+1)
+	messagesToProcess := req.Messages
+	if isLlama {
+		messagesToProcess = make([]Message, 0, len(req.Messages))
+		for _, m := range req.Messages {
+			if m.Role == RoleAssistant && len(m.ToolCalls) > 0 {
+				var sb strings.Builder
+				sb.WriteString(m.Text)
+				for _, tc := range m.ToolCalls {
+					if sb.Len() > 0 && !strings.HasSuffix(sb.String(), "\n") {
+						sb.WriteByte('\n')
+					}
+					sb.WriteString(fmt.Sprintf("@call:%s%s\n", tc.Name, string(tc.Arguments)))
+				}
+				messagesToProcess = append(messagesToProcess, Message{
+					Role:             RoleAssistant,
+					Text:             sb.String(),
+					ReasoningContent: m.ReasoningContent,
+				})
+			} else if m.Role == RoleTool {
+				var sb strings.Builder
+				if len(m.ToolResults) > 0 {
+					for _, tr := range m.ToolResults {
+						if sb.Len() > 0 {
+							sb.WriteString("\n")
+						}
+						sb.WriteString(tr.Content)
+					}
+				} else {
+					sb.WriteString(m.Text)
+				}
+				messagesToProcess = append(messagesToProcess, Message{
+					Role: RoleUser,
+					Text: sb.String(),
+				})
+			} else {
+				messagesToProcess = append(messagesToProcess, m)
+			}
+		}
+	}
+
+	msgs := make([]openai.ChatCompletionMessageParamUnion, 0, len(messagesToProcess)+1)
 	if req.System != "" {
 		msgs = append(msgs, openai.SystemMessage(SanitizeText(req.System)))
 	}
-	for _, m := range req.Messages {
+	for _, m := range messagesToProcess {
 		if m.Role == RoleTool && len(m.ToolResults) > 1 {
 			// Each tool result must be its own tool message so that every
 			// tool_call_id from the preceding assistant message is satisfied.
@@ -361,15 +401,21 @@ func (p *llamaDSLParser) Feed(text string, emitText func(string), emitTool func(
 			}
 		} else {
 			if ch == '\n' {
-				p.inCall = false
 				callStr := p.callBuffer.String()
-				p.callBuffer.Reset()
-				p.buffer.Reset()
-				braceIdx := strings.Index(callStr, "{")
-				if braceIdx >= 0 {
-					toolName := strings.TrimSpace(callStr[:braceIdx])
-					argsJSON := callStr[braceIdx:]
-					emitTool(toolName, argsJSON)
+				// If we don't have a brace yet, or if the call is complete (balanced braces and quotes),
+				// terminate the call. Otherwise, write the newline to the buffer.
+				if !strings.Contains(callStr, "{") || isCallComplete(callStr) {
+					p.inCall = false
+					p.callBuffer.Reset()
+					p.buffer.Reset()
+					braceIdx := strings.Index(callStr, "{")
+					if braceIdx >= 0 {
+						toolName := strings.TrimSpace(callStr[:braceIdx])
+						argsJSON := callStr[braceIdx:]
+						emitTool(toolName, argsJSON)
+					}
+				} else {
+					p.callBuffer.WriteByte(ch)
 				}
 			} else {
 				p.callBuffer.WriteByte(ch)
@@ -404,6 +450,43 @@ func (p *llamaDSLParser) Flush(emitText func(string), emitTool func(name, args s
 		emitText(p.buffer.String())
 		p.buffer.Reset()
 	}
+}
+
+func isCallComplete(s string) bool {
+	braceIdx := strings.Index(s, "{")
+	if braceIdx < 0 {
+		return false
+	}
+	jsonPart := s[braceIdx:]
+	inStr := false
+	escaped := false
+	braceCount := 0
+	hasBrace := false
+	for _, r := range jsonPart {
+		if escaped {
+			escaped = false
+			continue
+		}
+		if r == '\\' {
+			if inStr {
+				escaped = true
+			}
+			continue
+		}
+		if r == '"' {
+			inStr = !inStr
+			continue
+		}
+		if !inStr {
+			if r == '{' {
+				braceCount++
+				hasBrace = true
+			} else if r == '}' {
+				braceCount--
+			}
+		}
+	}
+	return hasBrace && braceCount <= 0 && !inStr
 }
 
 func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
