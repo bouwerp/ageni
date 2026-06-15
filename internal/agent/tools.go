@@ -102,7 +102,7 @@ func (t SpawnTool) Call(ctx context.Context, args json.RawMessage) (string, erro
 		task.ModelTier, _ = models.EstimateComplexity(task.Objective)
 	}
 
-	id, err := t.M.Spawn(ctx, task)
+	id, err := t.M.Spawn(ctx, &task)
 	if err != nil {
 		return "", err
 	}

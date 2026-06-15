@@ -154,7 +154,12 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	allowed = allowed.Subset(filtered)
 	budget := task.BudgetToolCalls
 	if budget <= 0 {
-		budget = 200
+		isLocal := adapter.Provider() == "llamacpp" || adapter.Provider() == "llamacpp-fleet"
+		if isLocal {
+			budget = 300
+		} else {
+			budget = 200
+		}
 	}
 	totalRuntime := 10 * time.Minute
 	if task.TimeoutMinutes > 0 {

@@ -120,7 +120,7 @@ func (m *Manager) SetNextSubagentID(n int) {
 }
 
 // Spawn creates and starts a sub-agent. Returns its ID.
-func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) {
+func (m *Manager) Spawn(ctx context.Context, task *SubagentTask) (string, error) {
 	if task.Objective == "" {
 		return "", fmt.Errorf("spawn_subagent failed — no sub-agent was created: objective is required")
 	}
@@ -161,12 +161,26 @@ func (m *Manager) Spawn(ctx context.Context, task SubagentTask) (string, error) 
 		m.mu.Unlock()
 		return "", fmt.Errorf("no adapter configured for tier=%s", task.ModelTier)
 	}
+	isLocal := adapter.Provider() == "llamacpp" || adapter.Provider() == "llamacpp-fleet"
+	if task.BudgetToolCalls <= 0 {
+		if isLocal {
+			task.BudgetToolCalls = 300
+		} else {
+			task.BudgetToolCalls = 200
+		}
+	} else if isLocal {
+		task.BudgetToolCalls = int(float64(task.BudgetToolCalls) * 1.5)
+		if task.BudgetToolCalls < 150 {
+			task.BudgetToolCalls = 150
+		}
+	}
+
 	caps := models.Global.CapabilitiesForModel(model)
 	memBlock := ""
 	if m.memReg != nil {
-		memBlock = m.memReg.InlineBlockForQuery(memoryQueryForTask(task), 6)
+		memBlock = m.memReg.InlineBlockForQuery(memoryQueryForTask(*task), 6)
 	}
-	sub := NewSubagent(id, task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps, correlationID)
+	sub := NewSubagent(id, *task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps, correlationID)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}

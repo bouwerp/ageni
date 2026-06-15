@@ -87,7 +87,7 @@ func (t FindInCodebase) Call(ctx context.Context, args json.RawMessage) (string,
 	findCtx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
 
-	id, err := t.M.Spawn(findCtx, task)
+	id, err := t.M.Spawn(findCtx, &task)
 	if err != nil {
 		return "", err
 	}

@@ -626,16 +626,16 @@ func TestSpawnRequiresContract(t *testing.T) {
 	}
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 4)
 
-	if _, err := mgr.Spawn(context.Background(), SubagentTask{}); err == nil {
+	if _, err := mgr.Spawn(context.Background(), &SubagentTask{}); err == nil {
 		t.Fatal("expected error for empty task, got nil")
 	}
-	if _, err := mgr.Spawn(context.Background(), SubagentTask{Objective: "x"}); err == nil {
+	if _, err := mgr.Spawn(context.Background(), &SubagentTask{Objective: "x"}); err == nil {
 		t.Fatal("expected error for missing output_format, got nil")
 	}
-	if _, err := mgr.Spawn(context.Background(), SubagentTask{Objective: "x", OutputFormat: "y"}); err != nil {
+	if _, err := mgr.Spawn(context.Background(), &SubagentTask{Objective: "x", OutputFormat: "y"}); err != nil {
 		t.Fatalf("expected ok spawn, got %v", err)
 	}
-	if _, err := mgr.Spawn(context.Background(), SubagentTask{
+	if _, err := mgr.Spawn(context.Background(), &SubagentTask{
 		Objective:    "x",
 		OutputFormat: "y",
 		AllowedTools: []string{"pause_subagent", "list_dir"},
@@ -1287,7 +1287,7 @@ func TestManagerSpawnFiltersMemoryBlockForTask(t *testing.T) {
 	mgr := NewManager(context.Background(), bus, reg, tracker, factory, 1)
 	mgr.SetMemoryRegistry(memReg)
 
-	id, err := mgr.Spawn(context.Background(), SubagentTask{
+	id, err := mgr.Spawn(context.Background(), &SubagentTask{
 		Objective:    "fix the build pipeline",
 		OutputFormat: "<result/>",
 	})
