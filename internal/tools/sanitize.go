@@ -1,6 +1,7 @@
 package tools
 
 import (
+	"encoding/json"
 	"regexp"
 	"strconv"
 	"strings"
@@ -53,4 +54,54 @@ func collapseBlankLines(s string) string {
 		result = strings.TrimRight(result, "\n") + "\n[collapsed " + strconv.Itoa(collapsed) + " blank line(s)]"
 	}
 	return result
+}
+
+type pathArgs struct {
+	Path         string `json:"path"`
+	TargetFile   string `json:"TargetFile"`
+	TargetFile2  string `json:"target_file"`
+	File         string `json:"file"`
+	Filepath     string `json:"filepath"`
+	Filepath2    string `json:"filePath"`
+	Filename     string `json:"filename"`
+	Filename2    string `json:"fileName"`
+	AbsolutePath string `json:"absolute_path"`
+	AbsPath      string `json:"abs_path"`
+}
+
+func resolvePath(args json.RawMessage) string {
+	var p pathArgs
+	if err := json.Unmarshal(args, &p); err == nil {
+		if p.Path != "" {
+			return p.Path
+		}
+		if p.TargetFile != "" {
+			return p.TargetFile
+		}
+		if p.TargetFile2 != "" {
+			return p.TargetFile2
+		}
+		if p.File != "" {
+			return p.File
+		}
+		if p.Filepath != "" {
+			return p.Filepath
+		}
+		if p.Filepath2 != "" {
+			return p.Filepath2
+		}
+		if p.Filename != "" {
+			return p.Filename
+		}
+		if p.Filename2 != "" {
+			return p.Filename2
+		}
+		if p.AbsolutePath != "" {
+			return p.AbsolutePath
+		}
+		if p.AbsPath != "" {
+			return p.AbsPath
+		}
+	}
+	return ""
 }

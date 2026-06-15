@@ -110,3 +110,31 @@ func TestMultiEditErrorSuggestsApplyDiffOnAmbiguousMatch(t *testing.T) {
 		t.Fatalf("expected apply_diff guidance, got %q", err.Error())
 	}
 }
+
+func TestPathFallback(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "fallback_test.txt")
+	
+	// WriteFile fallback test
+	wTool := WriteFile{Tracker: NewChangeTracker(filepath.Join(dir, "changes.jsonl"), filepath.Join(dir, "snapshots"))}
+	wArgs, _ := json.Marshal(map[string]any{
+		"target_file": path,
+		"content":     "fallback content works!",
+	})
+	if _, err := wTool.Call(context.Background(), wArgs); err != nil {
+		t.Fatalf("WriteFile failed with fallback: %v", err)
+	}
+
+	// ReadFile fallback test
+	rTool := ReadFile{}
+	rArgs, _ := json.Marshal(map[string]any{
+		"absolute_path": path,
+	})
+	content, err := rTool.Call(context.Background(), rArgs)
+	if err != nil {
+		t.Fatalf("ReadFile failed with fallback: %v", err)
+	}
+	if !strings.Contains(content, "fallback content works!") {
+		t.Fatalf("unexpected content: %s", content)
+	}
+}
