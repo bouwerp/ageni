@@ -196,7 +196,7 @@ func (l *Logger) scrubToolPayload(kind, toolName, value string) string {
 	if value == "" {
 		return value
 	}
-	if l.mode == LogModeFull {
+	if l.mode == LogModeFull || isOrchestrationTool(toolName) {
 		return value
 	}
 	label := toolName
@@ -204,6 +204,16 @@ func (l *Logger) scrubToolPayload(kind, toolName, value string) string {
 		label = "tool"
 	}
 	return fmt.Sprintf("[redacted %s for %s; %d byte(s) omitted]", kind, label, len(value))
+}
+
+func isOrchestrationTool(name string) bool {
+	switch name {
+	case "spawn_subagent", "check_subagent", "send_to_subagent", "kill_subagent",
+		"pause_subagent", "resume_subagent", "todo_write", "record_correction":
+		return true
+	default:
+		return false
+	}
 }
 
 func (l *Logger) scrubText(kind agent.EventKind, value string) string {
