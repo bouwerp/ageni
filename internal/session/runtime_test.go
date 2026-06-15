@@ -263,3 +263,18 @@ func TestLoggerPrivateModeScrubsSensitivePayloads(t *testing.T) {
 		t.Fatalf("shell output not scrubbed: %q", entries[1].Text)
 	}
 }
+
+func TestSortIDsNaturalOrder(t *testing.T) {
+	ids := []string{"s10", "s1", "s100", "s2", "s20", "sh10", "sh1", "sh100", "sh2"}
+	SortIDs(ids)
+	expected := []string{"s1", "s2", "s10", "s20", "s100", "sh1", "sh2", "sh10", "sh100"}
+	if len(ids) != len(expected) {
+		t.Fatalf("length mismatch: got %v, want %v", ids, expected)
+	}
+	for i := range expected {
+		if ids[i] != expected[i] {
+			t.Errorf("at index %d: got %q, want %q", i, ids[i], expected[i])
+		}
+	}
+}
+

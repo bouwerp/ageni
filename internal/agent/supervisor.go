@@ -1,7 +1,6 @@
 package agent
 
 import (
-	"sort"
 	"strings"
 	"time"
 
@@ -184,7 +183,7 @@ func (s *SupervisorState) TickAt(now time.Time) (SupervisorDecision, string) {
 	for id := range s.workers {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	SortIDs(ids)
 	for _, id := range ids {
 		snap := s.workers[id]
 		switch snap.State {
@@ -223,7 +222,7 @@ func (s *SupervisorState) Snapshots() []SupervisorWorkerSnapshot {
 	for id := range s.workers {
 		ids = append(ids, id)
 	}
-	sort.Strings(ids)
+	SortIDs(ids)
 	out := make([]SupervisorWorkerSnapshot, 0, len(ids))
 	for _, id := range ids {
 		out = append(out, s.workers[id])

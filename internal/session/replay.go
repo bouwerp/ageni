@@ -7,7 +7,6 @@ import (
 	"html"
 	"os"
 	"regexp"
-	"sort"
 	"strconv"
 	"strings"
 
@@ -437,7 +436,7 @@ func PriorSubagentIDs(messages []llm.Message) (ids []string, maxN int) {
 			}
 		}
 	}
-	sort.Strings(ids)
+	SortIDs(ids)
 	return
 }
 

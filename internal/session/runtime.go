@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"fmt"
 	"os"
-	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -122,7 +121,7 @@ func PriorShellIDs(snaps []ShellSnapshot) (ids []string, maxN int) {
 			maxN = n
 		}
 	}
-	sort.Strings(ids)
+	SortIDs(ids)
 	return ids, maxN
 }
 
