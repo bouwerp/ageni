@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bouwerp/ageni/internal/lsp"
 )
 
 // ApplyDiff applies edits to a file using an explicit edit format. More
@@ -74,7 +76,7 @@ type applyDiffArgs struct {
 	ReplaceAll bool   `json:"replace_all"`
 }
 
-func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error) {
+func (a ApplyDiff) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	var p applyDiffArgs
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
@@ -110,6 +112,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 		if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
 			return "", err
 		}
+		_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, p.Content)
 		kind := ChangeCreated
 		if existed {
 			kind = ChangeEdited
@@ -156,6 +159,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 		if err := os.WriteFile(p.Path, []byte(text), 0o644); err != nil { //nolint:gosec
 			return "", err
 		}
+		_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, text)
 		a.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 		result := fmt.Sprintf("applied %d block(s) to %s (search_replace)", applied, p.Path)
 		if lint := lintAfterEdit(abs); lint != "" {
