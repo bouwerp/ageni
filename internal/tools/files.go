@@ -270,7 +270,11 @@ func (ListDir) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		if e.IsDir() {
 			suffix = "/"
 		}
-		names = append(names, e.Name()+suffix)
+		fullName := e.Name()
+		if p.Path != "." && p.Path != "" {
+			fullName = filepath.Join(p.Path, e.Name())
+		}
+		names = append(names, fullName+suffix)
 	}
 	sort.Strings(names)
 	return strings.Join(names, "\n"), nil

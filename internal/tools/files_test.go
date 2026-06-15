@@ -150,3 +150,42 @@ func TestPathFallback(t *testing.T) {
 		t.Fatalf("unexpected content: %s", content2)
 	}
 }
+
+func TestListDirPrefix(t *testing.T) {
+	dir := t.TempDir()
+	subDir := filepath.Join(dir, "sub")
+	if err := os.MkdirAll(subDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	filePath := filepath.Join(subDir, "file.txt")
+	if err := os.WriteFile(filePath, []byte("hello"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := ListDir{}
+	// Test listing subDir — entries should be prefixed with subDir
+	args, _ := json.Marshal(map[string]any{"path": subDir})
+	out, err := tool.Call(context.Background(), args)
+	if err != nil {
+		t.Fatalf("ListDir failed: %v", err)
+	}
+	expected := filepath.Join(subDir, "file.txt")
+	if !strings.Contains(out, expected) {
+		t.Errorf("expected output to contain prefixed path %q, got: %q", expected, out)
+	}
+
+	// Test listing CWD / "." — entries should NOT be prefixed
+	oldwd, _ := os.Getwd()
+	defer os.Chdir(oldwd)
+	if err := os.Chdir(subDir); err != nil {
+		t.Fatal(err)
+	}
+	argsDot, _ := json.Marshal(map[string]any{"path": "."})
+	outDot, err := tool.Call(context.Background(), argsDot)
+	if err != nil {
+		t.Fatalf("ListDir failed on dot: %v", err)
+	}
+	if outDot != "file.txt" {
+		t.Errorf("expected clean base name 'file.txt' when listing '.', got: %q", outDot)
+	}
+}
