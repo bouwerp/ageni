@@ -45,7 +45,13 @@ func (Grep) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", err
 	}
 	if p.Pattern == "" {
+		p.Pattern = ResolveQuery(args)
+	}
+	if p.Pattern == "" {
 		return "", errors.New("pattern is required")
+	}
+	if p.Path == "" {
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		p.Path = "."

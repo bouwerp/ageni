@@ -34,6 +34,9 @@ func (SearchSymbols) Call(ctx context.Context, args json.RawMessage) (string, er
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
+	if p.Query == "" {
+		p.Query = ResolveQuery(args)
+	}
 	if strings.TrimSpace(p.Query) == "" {
 		return "", fmt.Errorf("query is required")
 	}

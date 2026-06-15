@@ -62,7 +62,7 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")

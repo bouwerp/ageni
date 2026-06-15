@@ -80,7 +80,7 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")

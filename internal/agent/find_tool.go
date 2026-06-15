@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/tools"
 )
 
 // FindInCodebase is a master-only tool that delegates code-search to a
@@ -53,8 +55,14 @@ func (t FindInCodebase) Call(ctx context.Context, args json.RawMessage) (string,
 	if err := json.Unmarshal(args, &p); err != nil {
 		return "", err
 	}
+	if p.Query == "" {
+		p.Query = tools.ResolveQuery(args)
+	}
 	if strings.TrimSpace(p.Query) == "" {
 		return "", errors.New("query is required")
+	}
+	if p.Scope == "" {
+		p.Scope = tools.ResolvePath(args)
 	}
 
 	objective := "Search the codebase for: " + p.Query

@@ -57,7 +57,7 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")
@@ -159,7 +159,7 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")
@@ -213,7 +213,7 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")

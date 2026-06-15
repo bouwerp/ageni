@@ -75,7 +75,7 @@ type pathArgs struct {
 	AbsPath       string `json:"abs_path"`
 }
 
-func resolvePath(args json.RawMessage) string {
+func ResolvePath(args json.RawMessage) string {
 	var p pathArgs
 	if err := json.Unmarshal(args, &p); err == nil {
 		if p.Path != "" {
@@ -125,6 +125,68 @@ func resolvePath(args json.RawMessage) string {
 		}
 		if p.AbsPath != "" {
 			return p.AbsPath
+		}
+	}
+	return ""
+}
+
+type queryArgs struct {
+	Query       string `json:"query"`
+	Query2      string `json:"Query"`
+	Pattern     string `json:"pattern"`
+	Pattern2    string `json:"Pattern"`
+	Regex       string `json:"regex"`
+	Regex2      string `json:"Regex"`
+	Glob        string `json:"glob"`
+	Glob2       string `json:"Glob"`
+	Search      string `json:"search"`
+	Search2     string `json:"Search"`
+	Q           string `json:"q"`
+	Q2          string `json:"Q"`
+	GlobPattern string `json:"glob_pattern"`
+}
+
+func ResolveQuery(args json.RawMessage) string {
+	var p queryArgs
+	if err := json.Unmarshal(args, &p); err == nil {
+		if p.Query != "" {
+			return p.Query
+		}
+		if p.Query2 != "" {
+			return p.Query2
+		}
+		if p.Pattern != "" {
+			return p.Pattern
+		}
+		if p.Pattern2 != "" {
+			return p.Pattern2
+		}
+		if p.Regex != "" {
+			return p.Regex
+		}
+		if p.Regex2 != "" {
+			return p.Regex2
+		}
+		if p.Glob != "" {
+			return p.Glob
+		}
+		if p.Glob2 != "" {
+			return p.Glob2
+		}
+		if p.Search != "" {
+			return p.Search
+		}
+		if p.Search2 != "" {
+			return p.Search2
+		}
+		if p.Q != "" {
+			return p.Q
+		}
+		if p.Q2 != "" {
+			return p.Q2
+		}
+		if p.GlobPattern != "" {
+			return p.GlobPattern
 		}
 	}
 	return ""

@@ -25,7 +25,7 @@ func (md MakeDir) Call(ctx context.Context, args json.RawMessage) (string, error
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")
@@ -127,7 +127,7 @@ func (d DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, err
 		return "", err
 	}
 	if p.Path == "" {
-		p.Path = resolvePath(args)
+		p.Path = ResolvePath(args)
 	}
 	if p.Path == "" {
 		return "", errors.New("path is required")
