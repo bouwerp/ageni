@@ -108,6 +108,10 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 			}
 		}
 	}
+
+	GlobalLockManager.RLock(p.Path)
+	defer GlobalLockManager.RUnlock(p.Path)
+
 	f, err := os.Open(p.Path)
 	if err != nil {
 		return "", err
@@ -210,6 +214,10 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+
+	GlobalLockManager.Lock(p.Path)
+	defer GlobalLockManager.Unlock(p.Path)
+
 	abs, _ := filepath.Abs(p.Path)
 	existed := false
 	if _, err := os.Stat(abs); err == nil {
@@ -264,6 +272,10 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+
+	GlobalLockManager.Lock(p.Path)
+	defer GlobalLockManager.Unlock(p.Path)
+
 	b, err := os.ReadFile(p.Path)
 	if err != nil {
 		return "", err

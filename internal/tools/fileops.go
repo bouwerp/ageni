@@ -76,6 +76,9 @@ func (mv MoveFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if p.Src == "" || p.Dst == "" {
 		return "", errors.New("src and dst are required")
 	}
+
+	unlock := GlobalLockManager.LockMany([]string{p.Src, p.Dst})
+	defer unlock()
 	if _, err := os.Stat(p.Src); err != nil {
 		return "", fmt.Errorf("src not found: %w", err)
 	}
@@ -132,6 +135,9 @@ func (d DeleteFile) Call(ctx context.Context, args json.RawMessage) (string, err
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+
+	GlobalLockManager.Lock(p.Path)
+	defer GlobalLockManager.Unlock(p.Path)
 	info, err := os.Stat(p.Path)
 	if err != nil {
 		return "", fmt.Errorf("path not found: %w", err)

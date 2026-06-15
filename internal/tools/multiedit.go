@@ -70,6 +70,10 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if len(p.Edits) == 0 {
 		return "", errors.New("at least one edit is required")
 	}
+
+	GlobalLockManager.Lock(p.Path)
+	defer GlobalLockManager.Unlock(p.Path)
+
 	b, err := os.ReadFile(p.Path)
 	if err != nil {
 		return "", err

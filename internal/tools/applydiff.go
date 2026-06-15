@@ -91,6 +91,10 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 	if p.Format == "" {
 		p.Format = "search_replace"
 	}
+
+	GlobalLockManager.Lock(p.Path)
+	defer GlobalLockManager.Unlock(p.Path)
+
 	abs, _ := filepath.Abs(p.Path)
 
 	switch p.Format {

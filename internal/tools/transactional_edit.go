@@ -72,6 +72,14 @@ func (t TransactionalEdit) Call(ctx context.Context, args json.RawMessage) (stri
 	if len(p.Changes) == 0 {
 		return "", errors.New("at least one change is required")
 	}
+
+	paths := make([]string, 0, len(p.Changes))
+	for _, ch := range p.Changes {
+		paths = append(paths, ch.Path)
+	}
+	unlock := GlobalLockManager.LockMany(paths)
+	defer unlock()
+
 	if p.TimeoutSeconds <= 0 {
 		p.TimeoutSeconds = 60
 	}
