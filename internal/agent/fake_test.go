@@ -1363,3 +1363,59 @@ func TestMasterPauseResume(t *testing.T) {
 		t.Fatalf("pause/resume events missing: %+v", seen)
 	}
 }
+
+func TestSubagentTaskUnmarshal(t *testing.T) {
+	testCases := []struct {
+		name     string
+		jsonStr  string
+		expected []string
+	}{
+		{
+			name:     "JSON array of strings",
+			jsonStr:  `{"objective": "x", "output_format": "y", "allowed_tools": ["read_file", "grep"]}`,
+			expected: []string{"read_file", "grep"},
+		},
+		{
+			name:     "String representing single quotes array",
+			jsonStr:  `{"objective": "x", "output_format": "y", "allowed_tools": "['read_file', 'grep']"}`,
+			expected: []string{"read_file", "grep"},
+		},
+		{
+			name:     "String representing comma-separated list",
+			jsonStr:  `{"objective": "x", "output_format": "y", "allowed_tools": "read_file, grep"}`,
+			expected: []string{"read_file", "grep"},
+		},
+		{
+			name:     "Single string tool name",
+			jsonStr:  `{"objective": "x", "output_format": "y", "allowed_tools": "read_file"}`,
+			expected: []string{"read_file"},
+		},
+		{
+			name:     "Empty allowed_tools string",
+			jsonStr:  `{"objective": "x", "output_format": "y", "allowed_tools": ""}`,
+			expected: nil,
+		},
+		{
+			name:     "Omitted allowed_tools",
+			jsonStr:  `{"objective": "x", "output_format": "y"}`,
+			expected: nil,
+		},
+	}
+
+	for _, tc := range testCases {
+		t.Run(tc.name, func(t *testing.T) {
+			var task SubagentTask
+			if err := json.Unmarshal([]byte(tc.jsonStr), &task); err != nil {
+				t.Fatalf("unexpected unmarshal error: %v", err)
+			}
+			if len(task.AllowedTools) != len(tc.expected) {
+				t.Fatalf("expected allowed tools count %d, got %d (values: %+v)", len(tc.expected), len(task.AllowedTools), task.AllowedTools)
+			}
+			for i := range tc.expected {
+				if task.AllowedTools[i] != tc.expected[i] {
+					t.Errorf("at index %d: expected %q, got %q", i, tc.expected[i], task.AllowedTools[i])
+				}
+			}
+		})
+	}
+}

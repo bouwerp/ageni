@@ -72,6 +72,58 @@ type SubagentTask struct {
 	TimeoutMinutes float64 `json:"timeout_minutes,omitempty"`
 }
 
+func (t *SubagentTask) UnmarshalJSON(data []byte) error {
+	type Alias SubagentTask
+	aux := &struct {
+		*Alias
+		AllowedTools json.RawMessage `json:"allowed_tools"`
+	}{
+		Alias: (*Alias)(t),
+	}
+	if err := json.Unmarshal(data, &aux); err != nil {
+		return err
+	}
+
+	if len(aux.AllowedTools) > 0 {
+		var arr []string
+		if err := json.Unmarshal(aux.AllowedTools, &arr); err == nil {
+			t.AllowedTools = arr
+			return nil
+		}
+		var str string
+		if err := json.Unmarshal(aux.AllowedTools, &str); err == nil {
+			if str == "" {
+				t.AllowedTools = nil
+				return nil
+			}
+			str = strings.TrimSpace(str)
+			if strings.HasPrefix(str, "[") && strings.HasSuffix(str, "]") {
+				str = str[1 : len(str)-1]
+				str = strings.ReplaceAll(str, "'", "\"")
+				var innerArr []string
+				if err := json.Unmarshal([]byte("["+str+"]"), &innerArr); err == nil {
+					t.AllowedTools = innerArr
+					return nil
+				}
+			}
+			parts := strings.Split(str, ",")
+			for i := range parts {
+				parts[i] = strings.TrimSpace(strings.Trim(parts[i], `"'`))
+			}
+			var filtered []string
+			for _, p := range parts {
+				if p != "" {
+					filtered = append(filtered, p)
+				}
+			}
+			t.AllowedTools = filtered
+			return nil
+		}
+		return fmt.Errorf("allowed_tools: cannot unmarshal %s into []string", string(aux.AllowedTools))
+	}
+	return nil
+}
+
 // Subagent runs a single delegated task in its own goroutine.
 type Subagent struct {
 	ID      string
