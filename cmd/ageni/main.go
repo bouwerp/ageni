@@ -744,19 +744,24 @@ func (p *localFleetPool) next() (llm.Adapter, string) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 
-	var bestEntry *localFleetEntry
-	minActive := int32(999999)
-	for i := range p.entries {
-		act := atomic.LoadInt32(p.entries[i].activeCount)
-		if act < minActive {
-			minActive = act
-			bestEntry = &p.entries[i]
-		}
+	n := len(p.entries)
+	if n == 0 {
+		return nil, ""
 	}
 
-	if bestEntry == nil {
-		idx := atomic.AddUint64(&p.counter, 1) - 1
-		bestEntry = &p.entries[idx%uint64(len(p.entries))]
+	// Choose a random starting index to distribute tie-breaks randomly across the pool.
+	startIdx := int(uint64(time.Now().UnixNano()) % uint64(n))
+
+	var bestEntry *localFleetEntry
+	minActive := int32(999999)
+
+	for i := 0; i < n; i++ {
+		idx := (startIdx + i) % n
+		act := atomic.LoadInt32(p.entries[idx].activeCount)
+		if act < minActive {
+			minActive = act
+			bestEntry = &p.entries[idx]
+		}
 	}
 
 	wrapped := &fleetNodeAdapter{

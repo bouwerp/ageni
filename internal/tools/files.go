@@ -62,6 +62,52 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+
+	// Resolve alternative names / aliases for Offset and Limit
+	var extra struct {
+		StartLine  int `json:"StartLine"`
+		EndLine    int `json:"EndLine"`
+		StartLine2 int `json:"start_line"`
+		EndLine2   int `json:"end_line"`
+		StartLine3 int `json:"startLine"`
+		EndLine3   int `json:"endLine"`
+		Offset2    int `json:"Offset"`
+		Limit2     int `json:"Limit"`
+	}
+	if err := json.Unmarshal(args, &extra); err == nil {
+		if p.Offset <= 0 {
+			if extra.Offset2 > 0 {
+				p.Offset = extra.Offset2
+			} else if extra.StartLine > 0 {
+				p.Offset = extra.StartLine
+			} else if extra.StartLine2 > 0 {
+				p.Offset = extra.StartLine2
+			} else if extra.StartLine3 > 0 {
+				p.Offset = extra.StartLine3
+			}
+		}
+		if p.Limit <= 0 {
+			if extra.Limit2 > 0 {
+				p.Limit = extra.Limit2
+			} else {
+				start := p.Offset
+				if start <= 0 {
+					start = 1
+				}
+				end := 0
+				if extra.EndLine > 0 {
+					end = extra.EndLine
+				} else if extra.EndLine2 > 0 {
+					end = extra.EndLine2
+				} else if extra.EndLine3 > 0 {
+					end = extra.EndLine3
+				}
+				if end >= start {
+					p.Limit = end - start + 1
+				}
+			}
+		}
+	}
 	f, err := os.Open(p.Path)
 	if err != nil {
 		return "", err

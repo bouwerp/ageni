@@ -3,6 +3,7 @@ package tools
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -187,5 +188,35 @@ func TestListDirPrefix(t *testing.T) {
 	}
 	if outDot != "file.txt" {
 		t.Errorf("expected clean base name 'file.txt' when listing '.', got: %q", outDot)
+	}
+}
+
+func TestReadFileStartLineEndLine(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "range.txt")
+	var body strings.Builder
+	for i := 1; i <= 20; i++ {
+		body.WriteString(fmt.Sprintf("line %d\n", i))
+	}
+	if err := os.WriteFile(path, []byte(body.String()), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	tool := ReadFile{}
+	args, _ := json.Marshal(map[string]any{
+		"AbsolutePath": path,
+		"StartLine":    5,
+		"EndLine":      8,
+	})
+	out, err := tool.Call(context.Background(), args)
+	if err != nil {
+		t.Fatalf("ReadFile failed: %v", err)
+	}
+	if !strings.Contains(out, "lines 5-8 of 20") {
+		t.Errorf("expected header to contain lines 5-8 of 20, got: %q", out)
+	}
+	expectedContent := "line 5\nline 6\nline 7\nline 8\n"
+	if !strings.Contains(out, expectedContent) {
+		t.Errorf("expected content to contain %q, got: %q", expectedContent, out)
 	}
 }

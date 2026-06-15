@@ -198,7 +198,8 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 			OfJSONObject: &fmtParam,
 		}
 	}
-	if !isCerebras && !isLlama {
+	isOpenRouter := o.provider == "openrouter"
+	if !isCerebras && !isLlama && !isOpenRouter {
 		params.StreamOptions = openai.ChatCompletionStreamOptionsParam{
 			IncludeUsage: openai.Bool(true),
 		}
