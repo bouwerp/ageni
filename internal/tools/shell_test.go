@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"strings"
 	"testing"
+
+	"github.com/bouwerp/ageni/internal/llm"
 )
 
 func TestRunBashCollapsesBlankLinesAndTruncates(t *testing.T) {
@@ -26,3 +28,40 @@ done`,
 		t.Fatalf("expected line truncation notice, got: %s", out)
 	}
 }
+
+func TestRegistryShellAlias(t *testing.T) {
+	r := NewRegistry()
+	r.Register(RunBash{})
+
+	call := llm.ToolCall{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command": "echo hello"}`),
+	}
+	res := r.Execute(context.Background(), call)
+	if res.IsError {
+		t.Fatalf("expected successful execution, got error: %s", res.Content)
+	}
+	if !strings.Contains(res.Content, "hello") {
+		t.Fatalf("expected output to contain 'hello', got: %q", res.Content)
+	}
+}
+
+func TestRegistryGuessAlternative(t *testing.T) {
+	r := NewRegistry()
+	
+	// Test without run_bash registered
+	call := llm.ToolCall{
+		ID:        "c1",
+		Name:      "shell",
+		Arguments: json.RawMessage(`{"command": "echo hello"}`),
+	}
+	res := r.Execute(context.Background(), call)
+	if !res.IsError {
+		t.Fatalf("expected error for unknown tool")
+	}
+	if !strings.Contains(res.Content, "Did you mean run_bash") {
+		t.Fatalf("expected content to contain hint, got: %q", res.Content)
+	}
+}
+

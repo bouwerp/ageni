@@ -120,6 +120,11 @@ func (r *Registry) Definitions() []llm.ToolDef {
 // the next turn instead of repeating the same mistake.
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResult {
 	name := sanitizeToolName(call.Name)
+	if name == "shell" || name == "bash" {
+		if _, ok := r.tools["run_bash"]; ok {
+			name = "run_bash"
+		}
+	}
 	t, ok := r.tools[name]
 	if !ok {
 		return llm.ToolResult{
@@ -212,6 +217,8 @@ func guessAlternative(name string) string {
 		return "Did you mean apply_diff (SEARCH/REPLACE blocks or whole-file), edit_file (single replacement), or multi_edit (atomic batch)?"
 	case "edit_file":
 		return "Did you mean apply_diff for multi-block edits, multi_edit for atomic batch edits, or write_file for whole-file replacement? edit_file may not be in your allowed_tools."
+	case "shell", "bash", "cmd", "run_command":
+		return "Did you mean run_bash (for single commands)? Or if using persistent/stateful terminal sessions, use open_shell + shell_exec."
 	}
 	return ""
 }

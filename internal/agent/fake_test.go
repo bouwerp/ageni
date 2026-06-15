@@ -115,7 +115,7 @@ func TestSubagentRunsToolThenFinalText(t *testing.T) {
 		AllowedTools:    []string{"list_dir"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -177,7 +177,7 @@ func TestSubagentRemindsOnUnresolvedLintBeforeFinalText(t *testing.T) {
 		AllowedTools:    []string{"edit_file"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -246,7 +246,7 @@ func TestSubagentRemindsOnFailedTestsBeforeFinalText(t *testing.T) {
 		AllowedTools:    []string{"run_tests"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -319,7 +319,7 @@ func TestSubagentRemindsToSwitchEditBackendsBeforeFinalText(t *testing.T) {
 		AllowedTools:    []string{"edit_file", "apply_diff"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -381,7 +381,7 @@ func TestSubagentRequiresInspectionBeforeMutationOnEditTasks(t *testing.T) {
 		AllowedTools:    []string{"read_file", "apply_diff"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -438,7 +438,7 @@ func TestSubagentRemindsToInspectBeforeFinalizingEditTask(t *testing.T) {
 		AllowedTools:    []string{"read_file", "apply_diff"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -500,7 +500,7 @@ func TestSubagentRemindsOnFailedRunBashTestsBeforeFinalText(t *testing.T) {
 		AllowedTools:    []string{"run_bash"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -563,7 +563,7 @@ func TestSubagentRemindsOnFailedRunBashBuildBeforeFinalText(t *testing.T) {
 		AllowedTools:    []string{"run_bash"},
 		BudgetToolCalls: 5,
 	}
-	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
@@ -606,7 +606,7 @@ func TestSubagentRespectsBudget(t *testing.T) {
 		OutputFormat:    "<result/>",
 		BudgetToolCalls: 3,
 	}
-	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", task, adapter, "m", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	sub.Run(ctx)
@@ -1310,7 +1310,7 @@ func TestSubagentPauseResume(t *testing.T) {
 	bus := NewBus()
 	tracker := llm.NewTracker()
 	reg := tools.NewRegistry()
-	sub := NewSubagent("s1", SubagentTask{Objective: "x", OutputFormat: "y"}, &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m", reg, bus, tracker, "", "", "", nil, "test-corr")
+	sub := NewSubagent("s1", SubagentTask{Objective: "x", OutputFormat: "y"}, &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "m", reg, bus, tracker, "", "", "", "", nil, "test-corr")
 	sub.setStatus(StatusRunning)
 
 	subEvents := bus.Subscribe(8)
@@ -1417,5 +1417,42 @@ func TestSubagentTaskUnmarshal(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+func TestSubagentRepoMap(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+	
+	manager := NewManager(context.Background(), bus, reg, tracker, func(tier string, caps []string) (llm.Adapter, string) {
+		return &fakeAdapter{scripts: [][]llm.StreamEvent{{{Type: llm.StreamEventDone}}}}, "fake-model"
+	}, 5)
+
+	// Set a mock repo map on the manager
+	mockRepoMap := "src/app.py:\n  class App\n    def _refresh\n    def _update_metrics"
+	manager.SetRepoMap(mockRepoMap)
+
+	task := SubagentTask{
+		Objective:    "check system prompt",
+		OutputFormat: "ok",
+	}
+
+	id, err := manager.Spawn(context.Background(), &task)
+	if err != nil {
+		t.Fatalf("Spawn failed: %v", err)
+	}
+
+	sub, ok := manager.Get(id)
+	if !ok {
+		t.Fatalf("Subagent not found")
+	}
+
+	sysPrompt := sub.systemPrompt()
+	if !strings.Contains(sysPrompt, mockRepoMap) {
+		t.Fatalf("expected system prompt to contain repo map, got:\n%s", sysPrompt)
+	}
+	if !strings.Contains(sysPrompt, "<repo_map>") {
+		t.Fatalf("expected system prompt to contain <repo_map> tags")
 	}
 }

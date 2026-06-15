@@ -225,6 +225,7 @@ func runHeadlessPrompt(prompt string) (string, error) {
 			return
 		}
 		master.SetRepoMap(m.Rendered)
+		manager.SetRepoMap(m.Rendered)
 	}()
 	if root := detectRepoRoot(); root != "" {
 		if res, err := agentsmd.Load(root); err == nil && res.Rendered != "" {

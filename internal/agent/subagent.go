@@ -144,6 +144,7 @@ type Subagent struct {
 	skillCatalog string
 	roleCatalog  string
 	memBlock     string // snapshot of memories at spawn time, injected into system prompt
+	repoMap      string // snapshot of repository map at spawn time, injected into system prompt
 
 	// capabilities lists the model capabilities of this subagent's model
 	// (e.g. "vision", "reasoning"). Injected into the system prompt so the
@@ -192,7 +193,7 @@ func (s *Subagent) scrub(text string) string {
 	return f(text)
 }
 
-func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, caps []string, correlationID string) *Subagent {
+func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string, registry *tools.Registry, bus *Bus, tracker *llm.Tracker, skillCatalog string, roleCatalog string, memBlock string, repoMap string, caps []string, correlationID string) *Subagent {
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
@@ -230,6 +231,7 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 		skillCatalog:    skillCatalog,
 		roleCatalog:     roleCatalog,
 		memBlock:        memBlock,
+		repoMap:         repoMap,
 		capabilities:    append([]string(nil), caps...),
 		inbox:           make(chan string, 16),
 		turnTimeout:     5 * time.Minute,
@@ -1218,6 +1220,11 @@ func (s *Subagent) systemPrompt() string {
 		memoriesBlock = "\n\n" + s.memBlock
 	}
 
+	repoMapBlock := ""
+	if s.repoMap != "" {
+		repoMapBlock = "\n\n<repo_map>\n" + s.repoMap + "\n\nUse this map BEFORE calling grep/glob/read_file. It tells you which files exist and what they contain — use it to plan which files to read, then read them with read_file. The map is intentionally compact; if a file you need isn't listed, fall back to glob/grep.\n</repo_map>"
+	}
+
 	roleAddendum := ""
 	if s.Task.RoleSystemAddendum != "" {
 		roleAddendum = "\n\n<persona>\n" + strings.TrimSpace(s.Task.RoleSystemAddendum) + "\n</persona>"
@@ -1250,7 +1257,7 @@ Examples:
 	}
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + memoriesBlock + capsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + memoriesBlock + repoMapBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.

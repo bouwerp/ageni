@@ -470,6 +470,7 @@ func run() error {
 			return
 		}
 		master.SetRepoMap(m.Rendered)
+		manager.SetRepoMap(m.Rendered)
 	}()
 
 	// Load AGENTS.md (cross-vendor project-instruction format used by

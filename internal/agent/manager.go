@@ -33,6 +33,7 @@ type Manager struct {
 	factory       AdapterFactory
 	skillCatalog  string
 	roleCatalog   string
+	repoMap       string
 	memReg        *memory.Registry
 	maxConcurrent int
 	defaultBudget int
@@ -73,6 +74,14 @@ func (m *Manager) SetSkillCatalog(catalog string) {
 func (m *Manager) SetRoleCatalog(catalog string) {
 	m.mu.Lock()
 	m.roleCatalog = catalog
+	m.mu.Unlock()
+}
+
+// SetRepoMap updates the codebase map passed to newly-spawned sub-agents.
+// Existing sub-agents keep the map they were spawned with.
+func (m *Manager) SetRepoMap(rendered string) {
+	m.mu.Lock()
+	m.repoMap = rendered
 	m.mu.Unlock()
 }
 
@@ -180,7 +189,7 @@ func (m *Manager) Spawn(ctx context.Context, task *SubagentTask) (string, error)
 	if m.memReg != nil {
 		memBlock = m.memReg.InlineBlockForQuery(memoryQueryForTask(*task), 6)
 	}
-	sub := NewSubagent(id, *task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, caps, correlationID)
+	sub := NewSubagent(id, *task, adapter, model, m.tools, m.bus, m.tracker, m.skillCatalog, m.roleCatalog, memBlock, m.repoMap, caps, correlationID)
 	if m.scrubber != nil {
 		sub.SetScrubber(m.scrubber)
 	}
