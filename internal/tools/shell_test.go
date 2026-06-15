@@ -96,6 +96,32 @@ func TestRegistryGuessAlternative(t *testing.T) {
 	if !strings.Contains(res3.Content, `Did you mean run_bash with "cp <src> <dst>"`) {
 		t.Fatalf("expected cp hint to suggest run_bash, got: %q", res3.Content)
 	}
+
+	// Test grep_search -> grep suggestion
+	call4 := llm.ToolCall{
+		ID:   "c4",
+		Name: "grep_search",
+	}
+	res4 := r.Execute(context.Background(), call4)
+	if !strings.Contains(res4.Content, "Did you mean grep") {
+		t.Fatalf("expected grep_search hint to suggest grep, got: %q", res4.Content)
+	}
 }
+
+func TestRegistryGrepAlias(t *testing.T) {
+	r := NewRegistry()
+	r.Register(Grep{})
+
+	call := llm.ToolCall{
+		ID:        "c1",
+		Name:      "grep_search",
+		Arguments: json.RawMessage(`{"pattern": "func NewOpenAI"}`),
+	}
+	res := r.Execute(context.Background(), call)
+	if strings.Contains(res.Content, "unknown tool") {
+		t.Fatalf("expected grep_search to be mapped to grep, but got: %s", res.Content)
+	}
+}
+
 
 

@@ -28,6 +28,7 @@ var toolAliases = map[string]string{
 	"head":        "read_file",
 	"tail":        "read_file",
 	"search":      "grep",
+	"grep_search": "grep",
 	"rg":          "grep",
 	"ripgrep":     "grep",
 	"find":        "glob",

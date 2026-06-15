@@ -1249,7 +1249,7 @@ Format:
 
 Examples:
 - To grep for a term:
-@call:grep_search{"Query":"func NewOpenAI","SearchPath":"/home/code/repos/ageni"}
+@call:grep{"pattern":"func NewOpenAI","path":"/home/code/repos/ageni"}
 
 - To read a file:
 @call:read_file{"AbsolutePath":"/home/code/repos/ageni/main.go","StartLine":1,"EndLine":50}
