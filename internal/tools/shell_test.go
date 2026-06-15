@@ -45,6 +45,19 @@ func TestRegistryShellAlias(t *testing.T) {
 	if !strings.Contains(res.Content, "hello") {
 		t.Fatalf("expected output to contain 'hello', got: %q", res.Content)
 	}
+
+	call2 := llm.ToolCall{
+		ID:        "c2",
+		Name:      "bash",
+		Arguments: json.RawMessage(`{"command": "echo world"}`),
+	}
+	res2 := r.Execute(context.Background(), call2)
+	if res2.IsError {
+		t.Fatalf("expected successful execution, got error: %s", res2.Content)
+	}
+	if !strings.Contains(res2.Content, "world") {
+		t.Fatalf("expected output to contain 'world', got: %q", res2.Content)
+	}
 }
 
 func TestRegistryGuessAlternative(t *testing.T) {
@@ -63,5 +76,26 @@ func TestRegistryGuessAlternative(t *testing.T) {
 	if !strings.Contains(res.Content, "Did you mean run_bash") {
 		t.Fatalf("expected content to contain hint, got: %q", res.Content)
 	}
+
+	// Test mkdir -> make_dir suggestion
+	call2 := llm.ToolCall{
+		ID:   "c2",
+		Name: "mkdir",
+	}
+	res2 := r.Execute(context.Background(), call2)
+	if !strings.Contains(res2.Content, "Did you mean make_dir") {
+		t.Fatalf("expected mkdir hint to suggest make_dir, got: %q", res2.Content)
+	}
+
+	// Test cp -> run_bash suggestion
+	call3 := llm.ToolCall{
+		ID:   "c3",
+		Name: "cp",
+	}
+	res3 := r.Execute(context.Background(), call3)
+	if !strings.Contains(res3.Content, `Did you mean run_bash with "cp <src> <dst>"`) {
+		t.Fatalf("expected cp hint to suggest run_bash, got: %q", res3.Content)
+	}
 }
+
 

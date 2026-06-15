@@ -11,6 +11,34 @@ import (
 	"github.com/bouwerp/ageni/internal/llm"
 )
 
+var toolAliases = map[string]string{
+	"shell":       "run_bash",
+	"bash":        "run_bash",
+	"cmd":         "run_bash",
+	"run":         "run_bash",
+	"run_command": "run_bash",
+	"mkdir":       "make_dir",
+	"rm":          "delete_file",
+	"delete":      "delete_file",
+	"remove":      "delete_file",
+	"mv":          "move_file",
+	"move":        "move_file",
+	"rename":      "move_file",
+	"cat":         "read_file",
+	"head":        "read_file",
+	"tail":        "read_file",
+	"search":      "grep",
+	"rg":          "grep",
+	"ripgrep":     "grep",
+	"find":        "glob",
+	"edit":        "apply_diff",
+	"patch":       "apply_diff",
+	"apply_patch": "apply_diff",
+	"ls":          "list_dir",
+	"dir":         "list_dir",
+	"list":        "list_dir",
+}
+
 // Tool is a typed unit of work the model can invoke.
 type Tool interface {
 	Name() string
@@ -120,9 +148,9 @@ func (r *Registry) Definitions() []llm.ToolDef {
 // the next turn instead of repeating the same mistake.
 func (r *Registry) Execute(ctx context.Context, call llm.ToolCall) llm.ToolResult {
 	name := sanitizeToolName(call.Name)
-	if name == "shell" || name == "bash" {
-		if _, ok := r.tools["run_bash"]; ok {
-			name = "run_bash"
+	if target, ok := toolAliases[strings.ToLower(name)]; ok {
+		if _, exists := r.tools[target]; exists {
+			name = target
 		}
 	}
 	t, ok := r.tools[name]
@@ -196,31 +224,38 @@ func (r *Registry) unknownToolMessage(name string) string {
 
 // guessAlternative maps common hallucinated tool names to the correct one.
 func guessAlternative(name string) string {
-	switch strings.ToLower(name) {
-	case "mkdir":
-		return `Did you mean make_dir? Or run_bash with "mkdir -p <path>".`
-	case "ls", "dir", "tree", "print_tree", "list":
-		return `Did you mean list_dir or glob? glob supports recursive ** patterns.`
-	case "rm", "delete", "remove", "unlink":
-		return "Did you mean delete_file?"
-	case "mv", "move", "rename":
-		return "Did you mean move_file?"
-	case "cp", "copy":
+	nameLower := strings.ToLower(name)
+	if nameLower == "tree" || nameLower == "print_tree" {
+		return "Did you mean list_dir or glob? glob supports recursive ** patterns."
+	}
+	if nameLower == "cp" || nameLower == "copy" {
 		return `Did you mean run_bash with "cp <src> <dst>"?`
-	case "cat", "head", "tail":
+	}
+	target, ok := toolAliases[nameLower]
+	if !ok {
+		return ""
+	}
+	switch target {
+	case "make_dir":
+		return `Did you mean make_dir? Or run_bash with "mkdir -p <path>".`
+	case "list_dir":
+		return "Did you mean list_dir or glob? glob supports recursive ** patterns."
+	case "delete_file":
+		return "Did you mean delete_file?"
+	case "move_file":
+		return "Did you mean move_file?"
+	case "read_file":
 		return "Did you mean read_file? It supports offset+limit for line ranges."
-	case "grep", "search", "rg", "ripgrep":
+	case "grep":
 		return "Did you mean grep? It uses ripgrep with --json output."
-	case "find":
+	case "glob":
 		return "Did you mean glob? Or run_bash with find."
-	case "edit", "patch", "apply_patch":
+	case "apply_diff":
 		return "Did you mean apply_diff (SEARCH/REPLACE blocks or whole-file), edit_file (single replacement), or multi_edit (atomic batch)?"
-	case "edit_file":
-		return "Did you mean apply_diff for multi-block edits, multi_edit for atomic batch edits, or write_file for whole-file replacement? edit_file may not be in your allowed_tools."
-	case "shell", "bash", "cmd", "run_command":
+	case "run_bash":
 		return "Did you mean run_bash (for single commands)? Or if using persistent/stateful terminal sessions, use open_shell + shell_exec."
 	}
-	return ""
+	return "Did you mean " + target + "?"
 }
 
 // Subset returns a new Registry containing only the named tools. Used to
