@@ -137,4 +137,16 @@ func TestPathFallback(t *testing.T) {
 	if !strings.Contains(content, "fallback content works!") {
 		t.Fatalf("unexpected content: %s", content)
 	}
+
+	// ReadFile fallback test with AbsolutePath
+	rArgs2, _ := json.Marshal(map[string]any{
+		"AbsolutePath": path,
+	})
+	content2, err := rTool.Call(context.Background(), rArgs2)
+	if err != nil {
+		t.Fatalf("ReadFile failed with fallback AbsolutePath: %v", err)
+	}
+	if !strings.Contains(content2, "fallback content works!") {
+		t.Fatalf("unexpected content: %s", content2)
+	}
 }

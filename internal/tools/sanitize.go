@@ -57,16 +57,22 @@ func collapseBlankLines(s string) string {
 }
 
 type pathArgs struct {
-	Path         string `json:"path"`
-	TargetFile   string `json:"TargetFile"`
-	TargetFile2  string `json:"target_file"`
-	File         string `json:"file"`
-	Filepath     string `json:"filepath"`
-	Filepath2    string `json:"filePath"`
-	Filename     string `json:"filename"`
-	Filename2    string `json:"fileName"`
-	AbsolutePath string `json:"absolute_path"`
-	AbsPath      string `json:"abs_path"`
+	Path          string `json:"path"`
+	Path2         string `json:"Path"`
+	TargetFile    string `json:"TargetFile"`
+	TargetFile2   string `json:"target_file"`
+	File          string `json:"file"`
+	File2         string `json:"File"`
+	Filepath      string `json:"filepath"`
+	Filepath2     string `json:"filePath"`
+	Filepath3     string `json:"FilePath"`
+	Filename      string `json:"filename"`
+	Filename2     string `json:"fileName"`
+	Filename3     string `json:"FileName"`
+	AbsolutePath  string `json:"absolute_path"`
+	AbsolutePath2 string `json:"AbsolutePath"`
+	AbsolutePath3 string `json:"absolutePath"`
+	AbsPath       string `json:"abs_path"`
 }
 
 func resolvePath(args json.RawMessage) string {
@@ -74,6 +80,9 @@ func resolvePath(args json.RawMessage) string {
 	if err := json.Unmarshal(args, &p); err == nil {
 		if p.Path != "" {
 			return p.Path
+		}
+		if p.Path2 != "" {
+			return p.Path2
 		}
 		if p.TargetFile != "" {
 			return p.TargetFile
@@ -84,11 +93,17 @@ func resolvePath(args json.RawMessage) string {
 		if p.File != "" {
 			return p.File
 		}
+		if p.File2 != "" {
+			return p.File2
+		}
 		if p.Filepath != "" {
 			return p.Filepath
 		}
 		if p.Filepath2 != "" {
 			return p.Filepath2
+		}
+		if p.Filepath3 != "" {
+			return p.Filepath3
 		}
 		if p.Filename != "" {
 			return p.Filename
@@ -96,8 +111,17 @@ func resolvePath(args json.RawMessage) string {
 		if p.Filename2 != "" {
 			return p.Filename2
 		}
+		if p.Filename3 != "" {
+			return p.Filename3
+		}
 		if p.AbsolutePath != "" {
 			return p.AbsolutePath
+		}
+		if p.AbsolutePath2 != "" {
+			return p.AbsolutePath2
+		}
+		if p.AbsolutePath3 != "" {
+			return p.AbsolutePath3
 		}
 		if p.AbsPath != "" {
 			return p.AbsPath
