@@ -299,6 +299,16 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	}
 	p.Path = validatedPath
 
+	if p.OldString == "" {
+		if oldStr, newStr, ok := ResolveOldNewStrings(args); ok {
+			p.OldString = oldStr
+			p.NewString = newStr
+		}
+	}
+	if p.OldString == "" {
+		return "", errors.New("old_string is required")
+	}
+
 	GlobalLockManager.Lock(p.Path)
 	defer GlobalLockManager.Unlock(p.Path)
 

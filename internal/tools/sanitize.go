@@ -361,4 +361,42 @@ func ResolveContent(args json.RawMessage) string {
 	return ""
 }
 
+// ResolveOldNewStrings best-effort extracts old_string and new_string from raw tool arguments.
+func ResolveOldNewStrings(args json.RawMessage) (string, string, bool) {
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(args, &rawMap); err != nil {
+		return "", "", false
+	}
+
+	// Lowercase all keys to make lookup case-insensitive
+	m := make(map[string]string)
+	for k, v := range rawMap {
+		var strVal string
+		if err := json.Unmarshal(v, &strVal); err == nil {
+			m[strings.ToLower(k)] = strVal
+		}
+	}
+
+	var oldVal, newVal string
+	var foundOld, foundNew bool
+	oldKeys := []string{"old_string", "oldstring", "old", "find"}
+	newKeys := []string{"new_string", "newstring", "new", "replacement"}
+	for _, k := range oldKeys {
+		if val, ok := m[k]; ok {
+			oldVal = val
+			foundOld = true
+			break
+		}
+	}
+	for _, k := range newKeys {
+		if val, ok := m[k]; ok {
+			newVal = val
+			foundNew = true
+			break
+		}
+	}
+	return oldVal, newVal, foundOld && foundNew
+}
+
+
 

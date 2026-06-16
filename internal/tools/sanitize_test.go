@@ -185,3 +185,53 @@ func TestResolveContent(t *testing.T) {
 		})
 	}
 }
+
+func TestResolveOldNewStrings(t *testing.T) {
+	tests := []struct {
+		name      string
+		args      string
+		wantOld   string
+		wantNew   string
+		wantFound bool
+	}{
+		{
+			name:      "exact keys",
+			args:      `{"old_string": "foo", "new_string": "bar"}`,
+			wantOld:   "foo",
+			wantNew:   "bar",
+			wantFound: true,
+		},
+		{
+			name:      "capital keys",
+			args:      `{"OLD": "foo", "NEW": "bar"}`,
+			wantOld:   "foo",
+			wantNew:   "bar",
+			wantFound: true,
+		},
+		{
+			name:      "find / replacement keys",
+			args:      `{"find": "foo", "replacement": "bar"}`,
+			wantOld:   "foo",
+			wantNew:   "bar",
+			wantFound: true,
+		},
+		{
+			name:      "missing key",
+			args:      `{"old_string": "foo"}`,
+			wantOld:   "foo",
+			wantNew:   "",
+			wantFound: false,
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			oldStr, newStr, found := ResolveOldNewStrings([]byte(tt.args))
+			if oldStr != tt.wantOld || newStr != tt.wantNew || found != tt.wantFound {
+				t.Errorf("ResolveOldNewStrings(%s) = (%q, %q, %t), expected (%q, %q, %t)",
+					tt.args, oldStr, newStr, found, tt.wantOld, tt.wantNew, tt.wantFound)
+			}
+		})
+	}
+}
+
