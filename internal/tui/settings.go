@@ -66,6 +66,9 @@ type settingsState struct {
 	// registry-guided best-model selection per tier.
 	subagentPool string
 
+	// collabMode is the raw AGENI_COLLABORATION_MODE env-var value.
+	collabMode string
+
 	// verifyResults is populated by save() with one entry per enabled
 	// provider showing the outcome of a quick auth probe. Surfaced to
 	// the user as a flash message after save.
@@ -102,6 +105,7 @@ func newSettingsState() (*settingsState, map[string]string, error) {
 		localFleet:      existing["LLAMACPP_FLEET"],
 		localFleetMode:  existing["LLAMACPP_FLEET_MODE"],
 		subagentPool:    existing["SUBAGENT_POOL"],
+		collabMode:      orDefault(existing["AGENI_COLLABORATION_MODE"], "off"),
 	}
 	// Initialise keyPtrs with existing values; the provider list will overwrite
 	// them when the user advances to the form phase.
@@ -265,6 +269,16 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Description("Soft tool-call cap. The master can override per-spawn.").
 			Value(&st.subagentBudget).
 			Validate(positiveInt),
+		huh.NewSelect[string]().
+			Title("Collaboration · Mode").
+			Description("Multi-LLM teamwork mode (cascade: cheap first; debate: developer+critic loop; self_moa: parallel flagship models).").
+			Options(
+				huh.NewOption("Off — standard single-agent orchestration loop", "off"),
+				huh.NewOption("Cascade — escalate tasks from fast to flagship models", "cascade"),
+				huh.NewOption("Debate — Developer/Critic peer review debate loop", "debate"),
+				huh.NewOption("Self-MoA — parallel flagship models trace aggregation", "self_moa"),
+			).
+			Value(&st.collabMode),
 	)
 
 	groupFleet := huh.NewGroup(
@@ -304,15 +318,16 @@ func (s *settingsState) save() error {
 	existing := config.LoadEnvFile(s.envPath)
 
 	out := config.MergeEnv(existing, map[string]string{
-		"MASTER_PROVIDER":       s.masterProvider,
-		"SUBAGENT_PROVIDER":     s.subProvider,
-		"AGENI_MAX_SUBAGENTS":   s.maxSubagents,
-		"AGENI_SUBAGENT_BUDGET": s.subagentBudget,
-		"MASTER_FALLBACKS":      strings.Join(s.masterFallbacks, ","),
-		"SUBAGENT_FALLBACKS":    strings.Join(s.subFallbacks, ","),
-		"LLAMACPP_FLEET":        strings.TrimSpace(s.localFleet),
-		"LLAMACPP_FLEET_MODE":   s.localFleetMode,
-		"SUBAGENT_POOL":         strings.TrimSpace(s.subagentPool),
+		"MASTER_PROVIDER":          s.masterProvider,
+		"SUBAGENT_PROVIDER":        s.subProvider,
+		"AGENI_MAX_SUBAGENTS":      s.maxSubagents,
+		"AGENI_SUBAGENT_BUDGET":    s.subagentBudget,
+		"MASTER_FALLBACKS":         strings.Join(s.masterFallbacks, ","),
+		"SUBAGENT_FALLBACKS":       strings.Join(s.subFallbacks, ","),
+		"LLAMACPP_FLEET":           strings.TrimSpace(s.localFleet),
+		"LLAMACPP_FLEET_MODE":      s.localFleetMode,
+		"SUBAGENT_POOL":            strings.TrimSpace(s.subagentPool),
+		"AGENI_COLLABORATION_MODE": s.collabMode,
 	})
 
 	// Persist which no-key providers the user explicitly disabled so the

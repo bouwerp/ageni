@@ -609,6 +609,11 @@ func run() error {
 		}
 		manager.UpdateFactory(newFactory)
 		manager.SetDefaultBudget(newCfg.SubagentBudget)
+		if newCfg.CollaborationMode != "" {
+			master.SetCollaborationMode(agent.CollaborationMode(newCfg.CollaborationMode))
+		} else {
+			master.SetCollaborationMode(agent.CollabOff)
+		}
 		return nil
 	}
 

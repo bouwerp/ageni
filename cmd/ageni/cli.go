@@ -311,15 +311,16 @@ func handleCLISettings(master *agent.Master, manager *agent.Manager) {
 	for {
 		fmt.Println("\nSelect setting to modify:")
 		fmt.Printf("  1. Subagent Budget (Current: %d)\n", manager.DefaultBudget())
-		fmt.Println("  2. Back to CLI")
-		fmt.Print("\nChoice (1-2): ")
+		fmt.Printf("  2. Collaboration Mode (Current: %s)\n", master.CollaborationMode())
+		fmt.Println("  3. Back to CLI")
+		fmt.Print("\nChoice (1-3): ")
 
 		choiceStr, err := reader.ReadString('\n')
 		if err != nil {
 			break
 		}
 		choiceStr = strings.TrimSpace(choiceStr)
-		if choiceStr == "2" || choiceStr == "" {
+		if choiceStr == "3" || choiceStr == "" {
 			break
 		}
 
@@ -338,6 +339,34 @@ func handleCLISettings(master *agent.Master, manager *agent.Manager) {
 			}
 			manager.SetDefaultBudget(newBudget)
 			fmt.Printf("\033[32mSubagent budget updated to %d!\033[0m\n", newBudget)
+		} else if choiceStr == "2" {
+			fmt.Println("Select Collaboration Mode:")
+			fmt.Println("  1. Off (standard single-agent)")
+			fmt.Println("  2. Cascade (sequential model escalation)")
+			fmt.Println("  3. Debate (Developer/Critic loop)")
+			fmt.Println("  4. Self-MoA (flagship model trace aggregation)")
+			fmt.Print("Choice (1-4): ")
+			collabStr, err := reader.ReadString('\n')
+			if err != nil {
+				continue
+			}
+			collabStr = strings.TrimSpace(collabStr)
+			var newMode agent.CollaborationMode
+			switch collabStr {
+			case "1":
+				newMode = agent.CollabOff
+			case "2":
+				newMode = agent.CollabCascade
+			case "3":
+				newMode = agent.CollabDebate
+			case "4":
+				newMode = agent.CollabSelfMoA
+			default:
+				fmt.Println("\033[31mInvalid collaboration mode.\033[0m")
+				continue
+			}
+			master.SetCollaborationMode(newMode)
+			fmt.Printf("\033[32mCollaboration mode updated to %s!\033[0m\n", newMode)
 		} else {
 			fmt.Println("\033[31mInvalid choice.\033[0m")
 		}
