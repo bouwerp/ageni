@@ -62,6 +62,11 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 
 	// Resolve alternative names / aliases for Offset and Limit
 	var extra struct {
@@ -214,6 +219,11 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 
 	GlobalLockManager.Lock(p.Path)
 	defer GlobalLockManager.Unlock(p.Path)
@@ -272,6 +282,11 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 
 	GlobalLockManager.Lock(p.Path)
 	defer GlobalLockManager.Unlock(p.Path)
@@ -317,6 +332,9 @@ func (ListDir) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	_ = json.Unmarshal(args, &p)
 	if p.Path == "" {
 		p.Path = "."
+	}
+	if _, err := ValidatePath(p.Path); err != nil {
+		return "", err
 	}
 	entries, err := os.ReadDir(p.Path)
 	if err != nil {

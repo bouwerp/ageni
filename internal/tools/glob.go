@@ -48,11 +48,13 @@ func (Glob) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", errors.New("pattern is required")
 	}
 	if p.Path == "" {
-		p.Path = ResolvePath(args)
-	}
-	if p.Path == "" {
 		p.Path = "."
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 	if p.MaxResults <= 0 {
 		p.MaxResults = 200
 	}
@@ -62,7 +64,7 @@ func (Glob) Call(ctx context.Context, args json.RawMessage) (string, error) {
 
 	root := os.DirFS(p.Path)
 	var matches []string
-	err := doublestar.GlobWalk(root, p.Pattern, func(path string, d fs.DirEntry) error {
+	err = doublestar.GlobWalk(root, p.Pattern, func(path string, d fs.DirEntry) error {
 		select {
 		case <-ctx.Done():
 			return ctx.Err()

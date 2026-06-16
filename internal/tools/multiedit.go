@@ -67,6 +67,11 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 	if len(p.Edits) == 0 {
 		return "", errors.New("at least one edit is required")
 	}

@@ -51,11 +51,13 @@ func (Grep) Call(ctx context.Context, args json.RawMessage) (string, error) {
 		return "", errors.New("pattern is required")
 	}
 	if p.Path == "" {
-		p.Path = ResolvePath(args)
-	}
-	if p.Path == "" {
 		p.Path = "."
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 	if p.MaxResults <= 0 {
 		p.MaxResults = 50
 	}

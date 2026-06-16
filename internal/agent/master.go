@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"html"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1595,7 +1596,13 @@ func (m *Master) systemPrompt() string {
 	subagentCaps := m.subagentCaps
 	m.mu.RUnlock()
 
-	roleBlock := `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>`
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "unknown"
+	}
+	cwdBlock := "\n\n<current_directory>\n" + cwd + "\n\nThis is the workspace root / current working directory of the process. All operations, file searches, reads, edits, and sub-agent explorations must be restricted to this workspace. Do not venture outside this directory unless explicitly required by the objective.\n</current_directory>"
+
+	roleBlock := `<role>You are the master agent in the ageni harness — a pure orchestrator. The user talks only to you. You plan, decompose work, and delegate every task to sub-agents. You never do the work yourself. You are not a coder, not a researcher, not an analyst — you are a planning and coordination layer. Workers execute; you only direct.</role>` + cwdBlock
 	skillsBlock := ""
 	if catalog != "" {
 		skillsBlock = "\n\n<available_skills>\n" + catalog + "\n\nWhen a user request matches a skill's trigger phrases or domain, call read_skill(name=\"...\") to load its full instructions before proceeding. Pass topic=\"...\" for sub-references when listed.\n</available_skills>"
@@ -1652,6 +1659,8 @@ Your workers are running locally (llama.cpp) on smaller models. Local models eas
 
 <orchestration_rules>
 You are strictly the planner and coordinator — NEVER the executor. Workers do ALL the legwork. You must NEVER perform code generation, research, or summarization of findings yourself; these tasks must ALWAYS be carried out by sub-agents. Your tokens are expensive; theirs are cheap. The rules below are absolute constraints, not guidelines.` + localSubagentsRule + `
+
+- **RESTRICT TO WORKSPACE:** All tasks, file operations, and sub-agent objectives must default to and remain within the current working directory shown in <current_directory>. Instruct sub-agents to only use paths inside this directory. Do not venture elsewhere unless explicitly required by the objective.
 
 **ACT SILENTLY. Do NOT write out your plan before calling tools.**
 Thinking happens internally. The user does not need — and should not see — a paragraph explaining what you are about to do. Skip the preamble. Skip the breakdown narration. Skip "I'll approach this by...". Call tools directly.

@@ -2,6 +2,9 @@ package tools
 
 import (
 	"encoding/json"
+	"fmt"
+	"os"
+	"path/filepath"
 	"regexp"
 	"strconv"
 	"strings"
@@ -191,3 +194,61 @@ func ResolveQuery(args json.RawMessage) string {
 	}
 	return ""
 }
+
+// ValidatePath resolves the absolute path of the input and checks if it escapes the current working directory.
+// It returns the absolute path if it's within the current working directory, or if it is a legitimate system/temp path.
+func ValidatePath(path string) (string, error) {
+	if path == "" {
+		return "", fmt.Errorf("path is required")
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return "", fmt.Errorf("failed to get current working directory: %w", err)
+	}
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		cwdAbs = filepath.Clean(cwd)
+	}
+
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = filepath.Clean(path)
+	}
+
+	// 1. If it's inside the workspace, it is allowed.
+	rel, err := filepath.Rel(cwdAbs, absPath)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return absPath, nil
+	}
+
+	// 2. If it's inside the OS temp directory, it is allowed.
+	tmpDir := os.TempDir()
+	tmpAbs, err := filepath.Abs(tmpDir)
+	if err == nil {
+		relTmp, err := filepath.Rel(tmpAbs, absPath)
+		if err == nil && relTmp != ".." && !strings.HasPrefix(relTmp, ".."+string(filepath.Separator)) {
+			return absPath, nil
+		}
+	}
+
+	// Also check explicit "/tmp" prefix for Unix environments
+	if strings.HasPrefix(absPath, "/tmp/") || absPath == "/tmp" {
+		return absPath, nil
+	}
+
+	// 3. If it's a legitimate system/library path, it is allowed.
+	// Standard library search and system configuration prefixes:
+	allowedPrefixes := []string{
+		"/usr/", "/lib/", "/lib64/", "/etc/", "/opt/",
+		"/System/", "/Library/", // macOS support
+	}
+	for _, prefix := range allowedPrefixes {
+		if strings.HasPrefix(absPath, prefix) {
+			return absPath, nil
+		}
+	}
+
+	// Otherwise, it escapes and is disallowed.
+	return "", fmt.Errorf("path %q escapes the workspace root %q. Venturing outside the current working directory is disallowed unless explicitly required", path, cwdAbs)
+}
+

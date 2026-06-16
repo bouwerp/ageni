@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"strings"
 	"sync"
 	"time"
@@ -1215,6 +1216,12 @@ func (s *Subagent) systemPrompt() string {
 	caps := s.capabilities
 	s.mu.Unlock()
 
+	cwd, err := os.Getwd()
+	if err != nil {
+		cwd = "unknown"
+	}
+	cwdBlock := "\n\n<current_directory>\n" + cwd + "\n\nThis is the workspace root / current working directory. You must restrict all search, inspection, and execution to this path. Do not venture outside this directory unless explicitly required by your objective.\n</current_directory>"
+
 	memoriesBlock := ""
 	if s.memBlock != "" {
 		memoriesBlock = "\n\n" + s.memBlock
@@ -1257,10 +1264,11 @@ Examples:
 	}
 
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
-	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + roleAddendum + memoriesBlock + repoMapBlock + capsBlock + `
+	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + cwdBlock + roleAddendum + memoriesBlock + repoMapBlock + capsBlock + `
 
 <rules>
 - Stay strictly within the task boundaries you were given.
+- Default all operations to the workspace directory shown in <current_directory> and remain within it. Avoid filesystem escaping or querying parent/odd paths unless explicitly required by the objective.
 - Use only the tools listed in <allowed_tools>; do not request others.
 - Respect the tool-call budget. If you cannot complete within budget, return what you have plus a clear blocker description.
 - Final response: produce exactly one assistant turn that contains a <result>...</result> block matching the requested output_format, followed by a <reasoning>...</reasoning> block summarizing what you did. No tool calls in the final turn.

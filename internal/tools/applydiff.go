@@ -85,6 +85,11 @@ func (a ApplyDiff) Call(_ context.Context, args json.RawMessage) (string, error)
 	if p.Path == "" {
 		return "", errors.New("path is required")
 	}
+	validatedPath, err := ValidatePath(p.Path)
+	if err != nil {
+		return "", err
+	}
+	p.Path = validatedPath
 	if p.Content == "" {
 		return "", errors.New("content is required")
 	}
