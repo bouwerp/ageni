@@ -164,6 +164,7 @@ func run() error {
 	// or panic, and on clean shutdown via defer.
 	memguard.CatchInterrupt()
 	defer memguard.Purge()
+	defer RestoreTerminal()
 
 	fmt.Printf("\033[36m[*] Initializing secret store...\033[0m\n")
 	// Open the secrets store (env-var backed; used for agent tools like
@@ -642,6 +643,8 @@ func run() error {
 		app.LoadWorkerHistory(workerSnapshots)
 	}
 	prog := tea.NewProgram(app, tea.WithAltScreen(), tea.WithMouseCellMotion())
+	setActiveProgram(prog)
+	defer setActiveProgram(nil)
 
 	// Start the model rankings updater. It fetches on startup and every 5 min,
 	// then sends rankingsRefreshMsg to the program so the dashboard re-renders.
@@ -1098,9 +1101,37 @@ func liveModelFetcher(rc config.RoleConfig) func() []string {
 	}
 }
 
+var (
+	activeProgram   *tea.Program
+	activeProgramMu sync.Mutex
+)
+
+func setActiveProgram(p *tea.Program) {
+	activeProgramMu.Lock()
+	activeProgram = p
+	activeProgramMu.Unlock()
+}
+
 func handleSignals(cancel context.CancelFunc) {
 	c := make(chan os.Signal, 1)
 	signal.Notify(c, syscall.SIGINT, syscall.SIGTERM)
 	<-c
 	cancel()
+	activeProgramMu.Lock()
+	p := activeProgram
+	activeProgramMu.Unlock()
+	if p != nil {
+		p.Quit()
+	} else {
+		RestoreTerminal()
+	}
+}
+
+// RestoreTerminal restores the terminal state by explicitly disabling mouse tracking
+// and alt-screen modes. This prevents raw mouse reporting escape sequences from
+// leaking to the user's shell if the program exits or crashes.
+func RestoreTerminal() {
+	// Disable mouse tracking (modes 1000, 1002, 1003, 1006)
+	// and show cursor (?25h), and exit alt-screen (?1049l)
+	_, _ = os.Stdout.WriteString("\x1b[?1000l\x1b[?1002l\x1b[?1003l\x1b[?1006l\x1b[?1049l\x1b[?25h")
 }
