@@ -271,12 +271,12 @@ func newSettingsFormFromState(st *settingsState, termHeight int) (*huh.Form, err
 			Validate(positiveInt),
 		huh.NewSelect[string]().
 			Title("Collaboration · Mode").
-			Description("Multi-LLM teamwork mode (cascade: cheap first; debate: developer+critic loop; self_moa: parallel flagship models).").
+			Description("Multi-LLM teamwork mode (utilizes either the local fleet or cloud providers).").
 			Options(
 				huh.NewOption("Off — standard single-agent orchestration loop", "off"),
-				huh.NewOption("Cascade — escalate tasks from fast to flagship models", "cascade"),
-				huh.NewOption("Debate — Developer/Critic peer review debate loop", "debate"),
-				huh.NewOption("Self-MoA — parallel flagship models trace aggregation", "self_moa"),
+				huh.NewOption("Cascade — escalate tasks sequentially from tiny/fast to capable local/flagship models", "cascade"),
+				huh.NewOption("Debate — Developer/Critic peer review loop (stops small local model write-loops)", "debate"),
+				huh.NewOption("Self-MoA — parallel trace aggregation (ensembles local fleet/flagship responses)", "self_moa"),
 			).
 			Value(&st.collabMode),
 	)
