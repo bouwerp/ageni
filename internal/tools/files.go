@@ -231,6 +231,10 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	}
 	p.Path = validatedPath
 
+	if p.Content == "" {
+		p.Content = ResolveContent(args)
+	}
+
 	GlobalLockManager.Lock(p.Path)
 	defer GlobalLockManager.Unlock(p.Path)
 

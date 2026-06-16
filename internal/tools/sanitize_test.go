@@ -102,3 +102,86 @@ func TestValidatePath(t *testing.T) {
 		})
 	}
 }
+
+func TestCleanAndMapPath(t *testing.T) {
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("failed to get cwd: %v", err)
+	}
+
+	// Calculate a parent and sibling repo path
+	parent := filepath.Dir(cwd)
+	siblingRepo := filepath.Join(parent, "agenitest")
+	siblingPath := filepath.Join(siblingRepo, "config.yaml")
+
+	// We expect siblingPath to map to config.yaml under CWD
+	expected := filepath.Join(cwd, "config.yaml")
+
+	got := CleanAndMapPath(siblingPath)
+	if got != expected {
+		t.Errorf("CleanAndMapPath(%q) = %q, expected %q", siblingPath, got, expected)
+	}
+
+	// Test nested file mapping
+	siblingNestedPath := filepath.Join(siblingRepo, "src", "config.py")
+	expectedNested := filepath.Join(cwd, "src", "config.py")
+	gotNested := CleanAndMapPath(siblingNestedPath)
+	if gotNested != expectedNested {
+		t.Errorf("CleanAndMapPath(%q) = %q, expected %q", siblingNestedPath, gotNested, expectedNested)
+	}
+
+	// Non-mapping case: normal file under CWD
+	normalPath := filepath.Join(cwd, "src", "app.py")
+	gotNormal := CleanAndMapPath(normalPath)
+	if gotNormal != normalPath {
+		t.Errorf("CleanAndMapPath(%q) = %q, expected no change", normalPath, gotNormal)
+	}
+}
+
+func TestResolveContent(t *testing.T) {
+	tests := []struct {
+		name     string
+		args     string
+		expected string
+	}{
+		{
+			name:     "content key exact",
+			args:     `{"content": "hello world"}`,
+			expected: "hello world",
+		},
+		{
+			name:     "content key capital C",
+			args:     `{"Content": "capital C content"}`,
+			expected: "capital C content",
+		},
+		{
+			name:     "text key",
+			args:     `{"text": "some text"}`,
+			expected: "some text",
+		},
+		{
+			name:     "search and replace keys",
+			args:     `{"search": "find me", "replace": "replace me"}`,
+			expected: "<<<<<<< SEARCH\nfind me\n=======\nreplace me\n>>>>>>> REPLACE\n",
+		},
+		{
+			name:     "SEARCH and REPLACE keys uppercase",
+			args:     `{"SEARCH": "find upper", "REPLACE": "replace upper"}`,
+			expected: "<<<<<<< SEARCH\nfind upper\n=======\nreplace upper\n>>>>>>> REPLACE\n",
+		},
+		{
+			name:     "old_string and new_string keys",
+			args:     `{"old_string": "old code", "new_string": "new code"}`,
+			expected: "<<<<<<< SEARCH\nold code\n=======\nnew code\n>>>>>>> REPLACE\n",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := ResolveContent([]byte(tt.args))
+			if got != tt.expected {
+				t.Errorf("ResolveContent(%s) = %q, expected %q", tt.args, got, tt.expected)
+			}
+		})
+	}
+}

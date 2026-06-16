@@ -93,6 +93,9 @@ func (a ApplyDiff) Call(ctx context.Context, args json.RawMessage) (string, erro
 	}
 	p.Path = validatedPath
 	if p.Content == "" {
+		p.Content = ResolveContent(args)
+	}
+	if p.Content == "" {
 		return "", errors.New("content is required")
 	}
 	if p.Format == "" {

@@ -81,53 +81,42 @@ type pathArgs struct {
 func ResolvePath(args json.RawMessage) string {
 	var p pathArgs
 	if err := json.Unmarshal(args, &p); err == nil {
+		var resolved string
 		if p.Path != "" {
-			return p.Path
+			resolved = p.Path
+		} else if p.Path2 != "" {
+			resolved = p.Path2
+		} else if p.TargetFile != "" {
+			resolved = p.TargetFile
+		} else if p.TargetFile2 != "" {
+			resolved = p.TargetFile2
+		} else if p.File != "" {
+			resolved = p.File
+		} else if p.File2 != "" {
+			resolved = p.File2
+		} else if p.Filepath != "" {
+			resolved = p.Filepath
+		} else if p.Filepath2 != "" {
+			resolved = p.Filepath2
+		} else if p.Filepath3 != "" {
+			resolved = p.Filepath3
+		} else if p.Filename != "" {
+			resolved = p.Filename
+		} else if p.Filename2 != "" {
+			resolved = p.Filename2
+		} else if p.Filename3 != "" {
+			resolved = p.Filename3
+		} else if p.AbsolutePath != "" {
+			resolved = p.AbsolutePath
+		} else if p.AbsolutePath2 != "" {
+			resolved = p.AbsolutePath2
+		} else if p.AbsolutePath3 != "" {
+			resolved = p.AbsolutePath3
+		} else if p.AbsPath != "" {
+			resolved = p.AbsPath
 		}
-		if p.Path2 != "" {
-			return p.Path2
-		}
-		if p.TargetFile != "" {
-			return p.TargetFile
-		}
-		if p.TargetFile2 != "" {
-			return p.TargetFile2
-		}
-		if p.File != "" {
-			return p.File
-		}
-		if p.File2 != "" {
-			return p.File2
-		}
-		if p.Filepath != "" {
-			return p.Filepath
-		}
-		if p.Filepath2 != "" {
-			return p.Filepath2
-		}
-		if p.Filepath3 != "" {
-			return p.Filepath3
-		}
-		if p.Filename != "" {
-			return p.Filename
-		}
-		if p.Filename2 != "" {
-			return p.Filename2
-		}
-		if p.Filename3 != "" {
-			return p.Filename3
-		}
-		if p.AbsolutePath != "" {
-			return p.AbsolutePath
-		}
-		if p.AbsolutePath2 != "" {
-			return p.AbsolutePath2
-		}
-		if p.AbsolutePath3 != "" {
-			return p.AbsolutePath3
-		}
-		if p.AbsPath != "" {
-			return p.AbsPath
+		if resolved != "" {
+			return CleanAndMapPath(resolved)
 		}
 	}
 	return ""
@@ -201,6 +190,7 @@ func ValidatePath(path string) (string, error) {
 	if path == "" {
 		return "", fmt.Errorf("path is required")
 	}
+	path = CleanAndMapPath(path)
 	cwd, err := os.Getwd()
 	if err != nil {
 		return "", fmt.Errorf("failed to get current working directory: %w", err)
@@ -251,4 +241,124 @@ func ValidatePath(path string) (string, error) {
 	// Otherwise, it escapes and is disallowed.
 	return "", fmt.Errorf("path %q escapes the workspace root %q. Venturing outside the current working directory is disallowed unless explicitly required", path, cwdAbs)
 }
+
+// CleanAndMapPath maps paths from other/alternate repository directories
+// to the current workspace root directory.
+func CleanAndMapPath(path string) string {
+	if path == "" {
+		return ""
+	}
+	cwd, err := os.Getwd()
+	if err != nil {
+		return path
+	}
+	cwdAbs, err := filepath.Abs(cwd)
+	if err != nil {
+		cwdAbs = filepath.Clean(cwd)
+	}
+
+	// Clean the input path
+	absPath, err := filepath.Abs(path)
+	if err != nil {
+		absPath = filepath.Clean(path)
+	}
+
+	// If it already is inside the cwd, no mapping needed.
+	rel, err := filepath.Rel(cwdAbs, absPath)
+	if err == nil && rel != ".." && !strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return absPath
+	}
+
+	// Check if the path is in the same parent directory as CWD.
+	// E.g. CWD is `/home/code/repos/repoA`, and path is `/home/code/repos/repoB/src/main.go`.
+	// We want to map it to `/home/code/repos/repoA/src/main.go`.
+	parentDir := filepath.Dir(cwdAbs)
+	if parentDir != "" && parentDir != "/" && parentDir != "." {
+		prefix := parentDir + string(filepath.Separator)
+		if strings.HasPrefix(absPath, prefix) {
+			sub := strings.TrimPrefix(absPath, prefix)
+			// Find the first separator separating the other repo name from the rest of the path
+			slashIdx := strings.IndexByte(sub, filepath.Separator)
+			if slashIdx >= 0 {
+				relPath := sub[slashIdx+1:]
+				mapped := filepath.Join(cwdAbs, relPath)
+				return mapped
+			}
+		}
+	}
+	return absPath
+}
+
+// ResolveContent best-effort extracts content from raw tool arguments.
+// It supports case-insensitive variations of content/text keys, and also
+// reconstructs search/replace or old/new string pairs into Aider blocks.
+func ResolveContent(args json.RawMessage) string {
+	var rawMap map[string]json.RawMessage
+	if err := json.Unmarshal(args, &rawMap); err != nil {
+		return ""
+	}
+
+	// Lowercase all keys to make lookup case-insensitive
+	m := make(map[string]string)
+	for k, v := range rawMap {
+		var strVal string
+		if err := json.Unmarshal(v, &strVal); err == nil {
+			m[strings.ToLower(k)] = strVal
+		}
+	}
+
+	// 1. Direct content fields
+	contentKeys := []string{
+		"content", "text", "code", "body", "value",
+		"new_content", "newcontent",
+	}
+	for _, k := range contentKeys {
+		if val, ok := m[k]; ok && val != "" {
+			return val
+		}
+	}
+
+	// 2. Search / Replace block fields
+	var searchVal, replaceVal string
+	searchKeys := []string{"search", "search_block", "searchblock"}
+	replaceKeys := []string{"replace", "replace_block", "replaceblock"}
+	for _, k := range searchKeys {
+		if val, ok := m[k]; ok {
+			searchVal = val
+			break
+		}
+	}
+	for _, k := range replaceKeys {
+		if val, ok := m[k]; ok {
+			replaceVal = val
+			break
+		}
+	}
+	if searchVal != "" || replaceVal != "" {
+		return fmt.Sprintf("<<<<<<< SEARCH\n%s\n=======\n%s\n>>>>>>> REPLACE\n", searchVal, replaceVal)
+	}
+
+	// 3. Old / New string fields
+	var oldVal, newVal string
+	oldKeys := []string{"old_string", "oldstring", "old", "find"}
+	newKeys := []string{"new_string", "newstring", "new", "replacement"}
+	for _, k := range oldKeys {
+		if val, ok := m[k]; ok {
+			oldVal = val
+			break
+		}
+	}
+	for _, k := range newKeys {
+		if val, ok := m[k]; ok {
+			newVal = val
+			break
+		}
+	}
+	if oldVal != "" || newVal != "" {
+		return fmt.Sprintf("<<<<<<< SEARCH\n%s\n=======\n%s\n>>>>>>> REPLACE\n", oldVal, newVal)
+	}
+
+	return ""
+}
+
 
