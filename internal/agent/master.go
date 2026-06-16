@@ -66,6 +66,8 @@ type Master struct {
 	// include the current state in the ephemeral active_context on every turn.
 	todo *tools.TodoWrite
 
+	collabMode CollaborationMode
+
 	// scrubber, if non-nil, is applied to all assistant text before it is
 	// stored in message history or published to the event bus. This prevents
 	// secret values that somehow ended up in LLM output from propagating back
@@ -116,6 +118,7 @@ func NewMaster(adapter llm.Adapter, model string, registry *tools.Registry, bus 
 		manager:    manager,
 		maxTurns:   30,
 		supervisor: NewSupervisorState(nil),
+		collabMode: CollabOff,
 	}
 }
 

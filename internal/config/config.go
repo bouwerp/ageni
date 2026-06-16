@@ -123,6 +123,10 @@ type Config struct {
 	// SessionLogMode controls how much raw session content is persisted to
 	// disk. Supported values: "private" (default) and "full".
 	SessionLogMode string
+
+	// CollaborationMode defines the default multi-LLM teamwork configuration.
+	// Driven by AGENI_COLLABORATION_MODE (off, cascade, debate, self_moa).
+	CollaborationMode string
 }
 
 // LocalEndpoint is one locally-hosted model server in the fleet.
@@ -167,8 +171,9 @@ func Load() (*Config, error) {
 		Master:         master,
 		Subagent:       sub,
 		MaxSubagents:   intOr("AGENI_MAX_SUBAGENTS", 8),
-		SubagentBudget: intOr("AGENI_SUBAGENT_BUDGET", 200),
-		SessionLogMode: defaultSessionLogMode(os.Getenv("AGENI_SESSION_LOG_MODE")),
+		SubagentBudget:    intOr("AGENI_SUBAGENT_BUDGET", 200),
+		SessionLogMode:    defaultSessionLogMode(os.Getenv("AGENI_SESSION_LOG_MODE")),
+		CollaborationMode: strings.TrimSpace(strings.ToLower(os.Getenv("AGENI_COLLABORATION_MODE"))),
 	}
 
 	// MasterLead is opt-in: only resolve if MASTER_LEAD_PROVIDER is set.

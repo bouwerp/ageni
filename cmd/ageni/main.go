@@ -376,6 +376,9 @@ func run() error {
 
 	// Master loop
 	master := agent.NewMaster(masterAdapter, cfg.Master.Model, masterReg, bus, tracker, manager)
+	if cfg.CollaborationMode != "" {
+		master.SetCollaborationMode(agent.CollaborationMode(cfg.CollaborationMode))
+	}
 	master.SetTodo(todo)
 	masterReg.Register(agent.CheckTool{M: manager, Supervisor: master.SupervisorState()})
 
