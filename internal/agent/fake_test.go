@@ -1456,3 +1456,61 @@ func TestSubagentRepoMap(t *testing.T) {
 		t.Fatalf("expected system prompt to contain <repo_map> tags")
 	}
 }
+
+func TestSubagentEnsuresReadFileForMutationTask(t *testing.T) {
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+
+	// Register read_file and a mutation tool
+	reg.Register(tools.ReadFile{})
+	diffTool := &scriptedTool{
+		name:    "apply_diff",
+		outputs: []string{"applied"},
+	}
+	reg.Register(diffTool)
+
+	// Case 1: task has mutation tool in AllowedTools but lacks read_file
+	task1 := SubagentTask{
+		Objective:    "do something",
+		OutputFormat: "ok",
+		AllowedTools: []string{"apply_diff"},
+	}
+	sub1 := NewSubagent("s1", task1, &fakeAdapter{}, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
+	
+	hasReadFile := false
+	for _, toolName := range sub1.Task.AllowedTools {
+		if toolName == "read_file" {
+			hasReadFile = true
+			break
+		}
+	}
+	if !hasReadFile {
+		t.Errorf("expected read_file to be added to AllowedTools")
+	}
+	if _, ok := sub1.tools.Get("read_file"); !ok {
+		t.Errorf("expected read_file to be in sub1.tools registry")
+	}
+
+	// Case 2: task objective needs mutation, AllowedTools is restricted to other tools but lacks read_file
+	task2 := SubagentTask{
+		Objective:    "fix bugs in foo.go",
+		OutputFormat: "ok",
+		AllowedTools: []string{"apply_diff"},
+	}
+	sub2 := NewSubagent("s2", task2, &fakeAdapter{}, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
+	
+	hasReadFile = false
+	for _, toolName := range sub2.Task.AllowedTools {
+		if toolName == "read_file" {
+			hasReadFile = true
+			break
+		}
+	}
+	if !hasReadFile {
+		t.Errorf("expected read_file to be added to AllowedTools for mutation objective")
+	}
+	if _, ok := sub2.tools.Get("read_file"); !ok {
+		t.Errorf("expected read_file to be in sub2.tools registry for mutation objective")
+	}
+}

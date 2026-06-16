@@ -198,6 +198,21 @@ func NewSubagent(id string, task SubagentTask, adapter llm.Adapter, model string
 	allowed := registry
 	if len(task.AllowedTools) > 0 {
 		allowed = registry.Subset(task.AllowedTools)
+		hasMutation := false
+		for _, name := range allowed.Names() {
+			if isMutationToolName(name) {
+				hasMutation = true
+				break
+			}
+		}
+		if hasMutation || taskLikelyNeedsMutation(task) {
+			if _, hasReadFile := allowed.Get("read_file"); !hasReadFile {
+				if _, ok := registry.Get("read_file"); ok {
+					task.AllowedTools = append(task.AllowedTools, "read_file")
+					allowed = registry.Subset(task.AllowedTools)
+				}
+			}
+		}
 	}
 	var filtered []string
 	for _, name := range allowed.Names() {
