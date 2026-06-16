@@ -1263,6 +1263,17 @@ Examples:
 </tool_calling_format>`
 	}
 
+	if s.Task.ModelTier == "haiku" || s.Task.ModelTier == "fast" || s.Task.ModelTier == "tiny" {
+		return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + cwdBlock + roleAddendum + memoriesBlock + capsBlock + `
+
+<rules>
+- Stay strictly within the task boundaries you were given.
+- Default all operations to the workspace directory shown in <current_directory> and remain within it. Avoid filesystem escaping or querying parent/odd paths unless explicitly required by the objective.
+- Use only the tools listed in <allowed_tools>; do not request others.
+- Final response: produce exactly one assistant turn that contains a <result>...</result> block matching the requested output_format, followed by a <reasoning>...</reasoning> block summarizing what you did. No tool calls in the final turn.
+</rules>` + editingPolicy + toolCallingFormat
+	}
+
 	// XML-tagged for Claude (no-op for OpenAI but harmless).
 	return `<role>You are a sub-agent in the ageni harness. You execute one focused task delegated by a master agent and return a structured result.</role>` + cwdBlock + roleAddendum + memoriesBlock + repoMapBlock + capsBlock + `
 
