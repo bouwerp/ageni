@@ -91,9 +91,13 @@ func (t ShellExecTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
 	}
-	s, ok := t.SM.Get(a.ID)
+	s, ok := t.SM.GetOrFallback(a.ID)
 	if !ok {
-		return "", fmt.Errorf("no such shell: %s", a.ID)
+		var err error
+		s, err = t.SM.Open("default", ShellKindTask)
+		if err != nil {
+			return "", fmt.Errorf("failed to auto-open default shell: %w", err)
+		}
 	}
 	waitDone := a.Mode != "async"
 	var timeout time.Duration
@@ -137,7 +141,7 @@ func (t ShellReadTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
 	}
-	s, ok := t.SM.Get(a.ID)
+	s, ok := t.SM.GetOrFallback(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
 	}
@@ -196,7 +200,7 @@ func (t ShellWaitTool) Call(ctx context.Context, args json.RawMessage) (string, 
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
 	}
-	s, ok := t.SM.Get(a.ID)
+	s, ok := t.SM.GetOrFallback(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
 	}
@@ -251,7 +255,7 @@ func (t ShellSendInputTool) Call(ctx context.Context, args json.RawMessage) (str
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
 	}
-	s, ok := t.SM.Get(a.ID)
+	s, ok := t.SM.GetOrFallback(a.ID)
 	if !ok {
 		return "", fmt.Errorf("no such shell: %s", a.ID)
 	}
@@ -298,6 +302,9 @@ func (t CloseShellTool) Call(ctx context.Context, args json.RawMessage) (string,
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
 	}
+	if s, ok := t.SM.GetOrFallback(a.ID); ok {
+		a.ID = s.ID()
+	}
 	if err := t.SM.Close(a.ID); err != nil {
 		return "", err
 	}
@@ -331,6 +338,9 @@ func (t InterruptShellTool) Call(ctx context.Context, args json.RawMessage) (str
 	}
 	if a.ID == "" {
 		a.ID = ResolveShellID(args)
+	}
+	if s, ok := t.SM.GetOrFallback(a.ID); ok {
+		a.ID = s.ID()
 	}
 	if err := t.SM.Interrupt(a.ID); err != nil {
 		return "", err

@@ -659,6 +659,28 @@ func (m *ShellManager) Get(id string) (*ShellSession, bool) {
 	return s, ok
 }
 
+// GetOrFallback returns the session with the given ID. If the ID is empty or not found,
+// it falls back to the only active ShellStatusOpen session, if there is exactly one.
+func (m *ShellManager) GetOrFallback(id string) (*ShellSession, bool) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if id != "" {
+		if s, ok := m.shells[id]; ok {
+			return s, true
+		}
+	}
+	var active []*ShellSession
+	for _, sh := range m.shells {
+		if sh.Status() == ShellStatusOpen {
+			active = append(active, sh)
+		}
+	}
+	if len(active) == 1 {
+		return active[0], true
+	}
+	return nil, false
+}
+
 // List returns all sessions.
 func (m *ShellManager) List() []*ShellSession {
 	m.mu.Lock()
