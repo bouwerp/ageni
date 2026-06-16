@@ -1514,3 +1514,57 @@ func TestSubagentEnsuresReadFileForMutationTask(t *testing.T) {
 		t.Errorf("expected read_file to be in sub2.tools registry for mutation objective")
 	}
 }
+
+func TestSubagentMutationReminder(t *testing.T) {
+	adapter := &fakeAdapter{
+		scripts: [][]llm.StreamEvent{
+			{
+				{Type: llm.StreamEventToolCall, ToolCall: &llm.ToolCall{
+					ID: "t1", Name: "apply_diff", Arguments: json.RawMessage(`{"path":"foo.go"}`),
+				}},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done claiming success</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+			{
+				{Type: llm.StreamEventText, TextDelta: "<result>done for real</result><reasoning>finished</reasoning>"},
+				{Type: llm.StreamEventDone, Usage: &llm.Usage{InputTokens: 10, OutputTokens: 5}},
+			},
+		},
+	}
+
+	bus := NewBus()
+	tracker := llm.NewTracker()
+	reg := tools.NewRegistry()
+
+	diffTool := &scriptedErrorTool{
+		name:   "apply_diff",
+		errors: []string{"apply_diff failed with syntax error"},
+	}
+	reg.Register(diffTool)
+
+	task := SubagentTask{
+		Objective:       "fix problems in foo.go",
+		OutputFormat:    "<result>summary</result>",
+		AllowedTools:    []string{"apply_diff"},
+		BudgetToolCalls: 5,
+	}
+	sub := NewSubagent("s1", task, adapter, "fake-model", reg, bus, tracker, "", "", "", "", nil, "test-corr")
+
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	sub.Run(ctx)
+
+	if got := sub.Status(); got != StatusDone {
+		t.Fatalf("status=%s, want done", got)
+	}
+	if len(adapter.reqs) != 4 {
+		t.Fatalf("adapter reqs=%d, want 4", len(adapter.reqs))
+	}
+	lastMsg := adapter.reqs[3].Messages[len(adapter.reqs[3].Messages)-1]
+	if lastMsg.Role != llm.RoleUser || !strings.Contains(lastMsg.Text, "you have not successfully applied any changes yet") {
+		t.Fatalf("expected mutation reminder in last message, got %+v", lastMsg)
+	}
+}

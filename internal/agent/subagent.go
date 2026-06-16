@@ -424,6 +424,9 @@ func (s *Subagent) Run(parent context.Context) {
 	pendingVerificationAttempts := 0
 	pendingEditRecoveryReminder := ""
 	pendingEditRecoveryAttempts := 0
+	mutationAttempted := false
+	mutationSucceeded := false
+	pendingMutationAttempts := 0
 
 	for turn := 0; turn < s.hardTurnCap; turn++ {
 		if err := s.waitIfPaused(ctx); err != nil {
@@ -536,6 +539,21 @@ func (s *Subagent) Run(parent context.Context) {
 				})
 				continue
 			}
+			if taskLikelyNeedsMutation(s.Task) && mutationAttempted && !mutationSucceeded && !wrappingUp && toolCallsUsed < s.maxToolCalls && pendingMutationAttempts < maxMutationReminders {
+				pendingMutationAttempts++
+				msg := buildMutationReminder(pendingMutationAttempts, maxMutationReminders)
+				s.appendTranscript("mutation reminder: no successful edits made yet")
+				s.publish(Event{
+					Kind:       EvSubagentRetry,
+					SubagentID: s.ID,
+					Text:       "no successful edits made yet — apply your changes before finalizing",
+				})
+				messages = append(messages, llm.Message{
+					Role: llm.RoleUser,
+					Text: msg,
+				})
+				continue
+			}
 			// Text-only response. If the master injected a follow-up while we
 			// were generating, keep going instead of finishing.
 			if pending := s.drainInbox(messages); len(pending) > len(messages) {
@@ -562,6 +580,12 @@ func (s *Subagent) Run(parent context.Context) {
 				return
 			}
 			result := s.tools.Execute(ctx, tc)
+			if isMutationToolName(tc.Name) {
+				mutationAttempted = true
+				if !result.IsError {
+					mutationSucceeded = true
+				}
+			}
 			s.appendTranscript(fmt.Sprintf("tool_done: %s%s", tc.Name, errMark(result.IsError)))
 			s.publish(Event{Kind: EvSubagentToolDone, SubagentID: s.ID, ToolResult: &result})
 			turnResults = append(turnResults, result)
@@ -661,6 +685,7 @@ func errMark(b bool) string {
 const maxInspectionReminders = 2
 const maxVerificationReminders = 2
 const maxEditRecoveryReminders = 2
+const maxMutationReminders = 2
 
 var inspectionToolNames = map[string]struct{}{
 	"read_file":       {},
@@ -987,6 +1012,14 @@ func buildEditRecoveryReminder(issues string, attempt, max int) string {
 	return fmt.Sprintf(
 		"<system-reminder>\nThe most recent exact-match edit tool failed in a way that suggests a more robust edit backend:\n%s\nDo not produce your final <result> yet. Switch to apply_diff for the next edit attempt, or explain explicitly in your final <result> why you cannot complete the change with the available tools.\nThis is reminder %d of %d.\n</system-reminder>",
 		issues,
+		attempt,
+		max,
+	)
+}
+
+func buildMutationReminder(attempt, max int) string {
+	return fmt.Sprintf(
+		"<system-reminder>\nYour objective requires making code changes (e.g. fix, edit, implement, add, etc.), but you have not successfully applied any changes yet (or all your edit tool calls returned errors).\nBefore producing your final <result>, you must successfully apply your changes using the editing tools (such as apply_diff or edit_file).\nIf you are unable to apply the changes, describe the specific blockers or errors in your final response, but do not claim success.\nThis is reminder %d of %d.\n</system-reminder>",
 		attempt,
 		max,
 	)

@@ -135,6 +135,22 @@ func (a ApplyDiff) Call(ctx context.Context, args json.RawMessage) (string, erro
 	case "search_replace":
 		body, err := os.ReadFile(p.Path) //nolint:gosec
 		if err != nil {
+			if os.IsNotExist(err) && !strings.Contains(p.Content, "<<<<<<< SEARCH") {
+				step := a.Tracker.BeginMutation(abs)
+				if dir := filepath.Dir(p.Path); dir != "" {
+					_ = os.MkdirAll(dir, 0o755)
+				}
+				if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
+					return "", err
+				}
+				_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, p.Content)
+				a.Tracker.Record(Change{Path: abs, Kind: ChangeCreated, Step: step})
+				result := fmt.Sprintf("wrote %d bytes to %s (whole - auto-created non-existent file)", len(p.Content), p.Path)
+				if lint := lintAfterEdit(abs); lint != "" {
+					result += "\n" + lint
+				}
+				return result, nil
+			}
 			return "", fmt.Errorf("read %s: %w", p.Path, err)
 		}
 		blocks, err := parseSearchReplaceBlocks(p.Content)

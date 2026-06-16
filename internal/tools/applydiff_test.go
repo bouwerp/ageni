@@ -101,3 +101,28 @@ func TestApplyDiffWhole(t *testing.T) {
 		t.Fatalf("got: %q", body)
 	}
 }
+
+func TestApplyDiffFallbackToWholeForNonExistentFile(t *testing.T) {
+	dir := t.TempDir()
+	target := filepath.Join(dir, "new_file.txt")
+	tr := NewChangeTracker(filepath.Join(dir, "changes.jsonl"), filepath.Join(dir, "snap"))
+	tool := ApplyDiff{Tracker: tr}
+
+	// Call apply_diff without format="whole" (so it defaults to search_replace),
+	// on a non-existent file, and without search/replace blocks.
+	args, _ := json.Marshal(map[string]any{
+		"path":    target,
+		"content": "some new file content without search blocks",
+	})
+	out, err := tool.Call(context.Background(), args)
+	if err != nil {
+		t.Fatalf("expected fallback to succeed, got error: %v", err)
+	}
+	if !strings.Contains(out, "whole - auto-created non-existent file") {
+		t.Fatalf("expected fallback success message, got: %s", out)
+	}
+	body, _ := os.ReadFile(target)
+	if string(body) != "some new file content without search blocks" {
+		t.Fatalf("expected content to be written, got: %q", body)
+	}
+}
