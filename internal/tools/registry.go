@@ -232,7 +232,9 @@ func (r *Registry) unknownToolMessage(name string) string {
 	for _, n := range names {
 		sb.WriteString("  - " + n + "\n")
 	}
-	sb.WriteString("\nFor any shell command not in this list (e.g. mv, cp, rm, find, tree), use run_bash.")
+	if _, ok := r.tools["run_bash"]; ok {
+		sb.WriteString("\nFor any shell command not in this list (e.g. mv, cp, rm, find, tree), use run_bash.")
+	}
 	return sb.String()
 }
 
