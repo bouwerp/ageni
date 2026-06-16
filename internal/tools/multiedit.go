@@ -8,6 +8,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/bouwerp/ageni/internal/lsp"
 )
 
 // MultiEdit applies a sequence of string replacements atomically. Each edit's
@@ -107,6 +109,7 @@ func (m MultiEdit) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if err := os.WriteFile(p.Path, []byte(body), 0o644); err != nil { //nolint:gosec
 		return "", err
 	}
+	_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, body)
 	m.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 	result := fmt.Sprintf("applied %d edits to %s", applied, p.Path)
 	if lint := lintAfterEdit(abs); lint != "" {

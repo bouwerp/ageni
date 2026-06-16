@@ -12,6 +12,8 @@ import (
 	"sort"
 	"strings"
 	"sync"
+
+	"github.com/bouwerp/ageni/internal/lsp"
 )
 
 // ReadFile reads a file's contents, optionally a line range.
@@ -116,6 +118,10 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 
 	GlobalLockManager.RLock(p.Path)
 	defer GlobalLockManager.RUnlock(p.Path)
+
+	if fullBody, err := os.ReadFile(p.Path); err == nil {
+		_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, string(fullBody))
+	}
 
 	f, err := os.Open(p.Path)
 	if err != nil {
@@ -240,6 +246,7 @@ func (w WriteFile) Call(ctx context.Context, args json.RawMessage) (string, erro
 	if err := os.WriteFile(p.Path, []byte(p.Content), 0o644); err != nil {
 		return "", err
 	}
+	_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, p.Content)
 	kind := ChangeCreated
 	if existed {
 		kind = ChangeEdited
@@ -309,6 +316,7 @@ func (e EditFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err := os.WriteFile(p.Path, []byte(updated), 0o644); err != nil {
 		return "", err
 	}
+	_ = lsp.GlobalLSPManager.UpdateFile(ctx, p.Path, updated)
 	e.Tracker.Record(Change{Path: abs, Kind: ChangeEdited, Step: step})
 	result := fmt.Sprintf("replaced 1 occurrence in %s", p.Path)
 	if lint := lintAfterEdit(abs); lint != "" {

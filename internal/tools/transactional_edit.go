@@ -10,6 +10,8 @@ import (
 	"path/filepath"
 	"strings"
 	"time"
+
+	"github.com/bouwerp/ageni/internal/lsp"
 )
 
 type TransactionalEdit struct{ Tracker *ChangeTracker }
@@ -165,6 +167,10 @@ func (t TransactionalEdit) Call(ctx context.Context, args json.RawMessage) (stri
 			}
 			return "", fmt.Errorf("validate_command failed: %s", strings.TrimSpace(formatTestOutput(string(out), err)))
 		}
+	}
+
+	for _, ch := range preparedChanges {
+		_ = lsp.GlobalLSPManager.UpdateFile(ctx, ch.path, ch.body)
 	}
 
 	var sb strings.Builder
