@@ -1248,6 +1248,7 @@ func (s *Subagent) systemPrompt() string {
 To optimize token generation speeds, you MUST avoid writing or overwriting entire files.
 - To create a new file, use apply_diff with "format": "whole".
 - For any edits to existing files, you MUST use apply_diff with search_replace format (SEARCH/REPLACE blocks), edit_file, or multi_edit. Do NOT use whole-file replacement. Keep edits as minimal as possible to avoid slow decoding.
+- **CONTROL FILE SIZES & MODULARITY:** Keep files small and modular (prefer under 150-200 lines). If your edits cause a file to exceed this size, you MUST refactor it, splitting and extracting functions/logic into separate files rather than letting one file grow large.
 </editing_policy>`
 
 	if isLlamaCPP(s.Adapter) {
@@ -1259,6 +1260,7 @@ You are running under local model constraints (highly sensitive to generation le
 - Keep each SEARCH block under 5 lines and the replacement under 5 lines.
 - Split larger changes into multiple incremental tool calls.
 - Never output more than 20 lines of code in a single turn.
+- **CONTROL FILE SIZES & MODULARITY:** Code files MUST be kept small and modular (prefer under 100-150 lines). If a file exceeds this size, refactor and extract utilities/functions into separate files.
 </editing_policy>`
 	}
 
