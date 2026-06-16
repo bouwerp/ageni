@@ -421,7 +421,11 @@ func (s *Subagent) Run(parent context.Context) {
 		s.mu.Lock()
 		tokens := s.lastInputTokens
 		s.mu.Unlock()
-		if tokens >= 16000 {
+		threshold := 16000
+		if isLlamaCPP(s.Adapter) {
+			threshold = 4000
+		}
+		if tokens >= threshold {
 			messages = trimSubagentHistory(messages, 3)
 			s.mu.Lock()
 			s.lastInputTokens = 0
@@ -1245,6 +1249,18 @@ To optimize token generation speeds, you MUST avoid writing or overwriting entir
 - To create a new file, use apply_diff with "format": "whole".
 - For any edits to existing files, you MUST use apply_diff with search_replace format (SEARCH/REPLACE blocks), edit_file, or multi_edit. Do NOT use whole-file replacement. Keep edits as minimal as possible to avoid slow decoding.
 </editing_policy>`
+
+	if isLlamaCPP(s.Adapter) {
+		editingPolicy = `
+<editing_policy>
+You are running under local model constraints (highly sensitive to generation length). You MUST:
+- Avoid rewriting entire files or executing long heredocs / cat writes.
+- For all edits, use apply_diff with extremely minimal SEARCH/REPLACE blocks.
+- Keep each SEARCH block under 5 lines and the replacement under 5 lines.
+- Split larger changes into multiple incremental tool calls.
+- Never output more than 20 lines of code in a single turn.
+</editing_policy>`
+	}
 
 	toolCallingFormat := ""
 	if isLlamaCPP(s.Adapter) {

@@ -205,13 +205,15 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 		}
 	}
 
-	if req.MaxTokens > 0 {
-		if isCerebras || isLlama {
-			// Cerebras and llamacpp still expect max_tokens.
-			params.MaxTokens = openai.Int(int64(req.MaxTokens))
-		} else {
-			params.MaxCompletionTokens = openai.Int(int64(req.MaxTokens))
-		}
+	maxTokens := req.MaxTokens
+	if maxTokens == 0 {
+		maxTokens = 4096
+	}
+	if isCerebras || isLlama {
+		// Cerebras and llamacpp still expect max_tokens.
+		params.MaxTokens = openai.Int(int64(maxTokens))
+	} else {
+		params.MaxCompletionTokens = openai.Int(int64(maxTokens))
 	}
 	if req.Temperature != nil {
 		params.Temperature = openai.Float(*req.Temperature)

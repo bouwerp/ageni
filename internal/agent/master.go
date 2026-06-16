@@ -1217,12 +1217,12 @@ const compactionKeepExchanges = 3
 
 const compactedContextTag = "compacted_context"
 
-// maybeCompactHistory triggers proactive context compaction when the last
-// turn's input token count exceeded compactionThreshold. It is called after
-// each terminal (no-tool) assistant turn so the compaction happens "between
-// conversations" rather than mid-tool-loop.
 func (m *Master) maybeCompactHistory(ctx context.Context) {
-	if m.lastInputTokens < compactionThreshold {
+	threshold := compactionThreshold
+	if m.leadAdapter != nil && isLlamaCPP(m.leadAdapter) {
+		threshold = 4000
+	}
+	if m.lastInputTokens < threshold {
 		return
 	}
 	// Only compact when there is enough history to make it worthwhile.
