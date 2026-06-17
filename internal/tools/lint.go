@@ -224,6 +224,10 @@ func runLinter(name string, args []string, timeout time.Duration) (string, error
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, name, args...) //nolint:gosec
-	out, _ := cmd.CombinedOutput()
-	return string(out), nil
+	out, err := cmd.CombinedOutput()
+	res := string(out)
+	if err != nil && res != "" {
+		res = EnrichErrorContext(res)
+	}
+	return res, nil
 }

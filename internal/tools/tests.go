@@ -148,7 +148,11 @@ func runGoTests(ctx context.Context, path string) string {
 	if fail == 0 && pass == 0 && skip == 0 {
 		sb.WriteString("(no tests run — check path)\n")
 	}
-	return strings.TrimRight(sb.String(), "\n")
+	res := strings.TrimRight(sb.String(), "\n")
+	if fail > 0 {
+		res = EnrichErrorContext(res)
+	}
+	return res
 }
 
 func formatTestOutput(out string, err error) string {
@@ -156,6 +160,7 @@ func formatTestOutput(out string, err error) string {
 		out = out[:12000] + "\n[truncated to 12KB]"
 	}
 	if err != nil {
+		out = EnrichErrorContext(out)
 		var ee *exec.ExitError
 		if errors.As(err, &ee) {
 			return fmt.Sprintf("[exit %d]\n%s", ee.ExitCode(), out)

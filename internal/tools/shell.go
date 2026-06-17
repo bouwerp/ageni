@@ -68,5 +68,8 @@ func (RunBash) Call(ctx context.Context, args json.RawMessage) (string, error) {
 	if len(out) > 4096 {
 		out = out[:4096] + "\n[truncated to 4KB]"
 	}
+	if exitCode != 0 {
+		out = EnrichErrorContext(out)
+	}
 	return fmt.Sprintf("[exit %d]\n%s", exitCode, out), nil
 }
