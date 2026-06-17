@@ -39,8 +39,9 @@ var toolAliases = map[string]string{
 	"apply_patch": "apply_diff",
 	"ls":          "list_dir",
 	"dir":         "list_dir",
-	"list":        "list_dir",
-	"outline":     "read_outline",
+	"list":          "list_dir",
+	"outline":       "read_outline",
+	"replace_func":  "replace_function",
 }
 
 // Tool is a typed unit of work the model can invoke.

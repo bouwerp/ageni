@@ -67,6 +67,7 @@ func registerWorkerBase(r *tools.Registry, todo *tools.TodoWrite, tr *tools.Chan
 	r.Register(tools.ReadOutline{})
 	r.Register(tools.WriteFile{Tracker: tr})
 	r.Register(tools.EditFile{Tracker: tr})
+	r.Register(tools.ReplaceFunction{Tracker: tr})
 	r.Register(tools.MultiEdit{Tracker: tr})
 	r.Register(tools.TransactionalEdit{Tracker: tr})
 	r.Register(tools.ApplyDiff{Tracker: tr})
