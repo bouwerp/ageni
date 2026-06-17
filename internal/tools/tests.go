@@ -95,6 +95,8 @@ func runGoTests(ctx context.Context, path string) string {
 	out, _ := cmd.Output()
 	pass, fail, skip := 0, 0, 0
 	var failures []string
+	outputs := make(map[string][]string)
+	pkgFailedTests := make(map[string]bool)
 	dec := json.NewDecoder(strings.NewReader(string(out)))
 	for dec.More() {
 		var ev struct {
@@ -107,17 +109,35 @@ func runGoTests(ctx context.Context, path string) string {
 		if err := dec.Decode(&ev); err != nil {
 			break
 		}
-		if ev.Test == "" {
-			continue // package-level events
+
+		key := ev.Package
+		if ev.Test != "" {
+			key += "." + ev.Test
 		}
+
+		if ev.Action == "output" && ev.Output != "" {
+			outputs[key] = append(outputs[key], ev.Output)
+		}
+
+		if ev.Test == "" {
+			if ev.Action == "fail" && !pkgFailedTests[ev.Package] {
+				fail++
+				failures = append(failures, fmt.Sprintf("FAIL %s (build/init)\n%s", ev.Package, strings.TrimSpace(strings.Join(outputs[key], ""))))
+			}
+			continue
+		}
+
 		switch ev.Action {
 		case "pass":
 			pass++
+			delete(outputs, key)
 		case "fail":
 			fail++
-			failures = append(failures, fmt.Sprintf("FAIL %s.%s (%.2fs)", ev.Package, ev.Test, ev.Elapsed))
+			pkgFailedTests[ev.Package] = true
+			failures = append(failures, fmt.Sprintf("FAIL %s (%.2fs)\n%s", key, ev.Elapsed, strings.TrimSpace(strings.Join(outputs[key], ""))))
 		case "skip":
 			skip++
+			delete(outputs, key)
 		}
 	}
 	var sb strings.Builder

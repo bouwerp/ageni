@@ -78,7 +78,7 @@ func (FindReferences) Call(ctx context.Context, args json.RawMessage) (string, e
 	}
 	var sb strings.Builder
 	for _, m := range matches {
-		fmt.Fprintf(&sb, "%s:%d:%d  %s\n", m.Path, m.Line, m.Column, strings.TrimSpace(m.Snippet))
+		fmt.Fprintf(&sb, "--- %s:%d:%d ---\n%s\n", m.Path, m.Line, m.Column, strings.TrimRight(m.Snippet, "\n"))
 	}
 	return strings.TrimRight(sb.String(), "\n"), nil
 }
@@ -118,11 +118,27 @@ func findGoReferences(ctx context.Context, root, symbol, pathPrefix string, limi
 			if err != nil {
 				rel = path
 			}
+			startLine := pos.Line - 3
+			if startLine < 0 {
+				startLine = 0
+			}
+			endLine := pos.Line + 2
+			if endLine > len(lines) {
+				endLine = len(lines)
+			}
+			var snippetSb strings.Builder
+			for i := startLine; i < endLine; i++ {
+				prefix := "  "
+				if i == pos.Line-1 {
+					prefix = "> "
+				}
+				snippetSb.WriteString(fmt.Sprintf("%s%d: %s\n", prefix, i+1, lines[i]))
+			}
 			matches = append(matches, referenceMatch{
 				Path:    rel,
 				Line:    pos.Line,
 				Column:  pos.Column,
-				Snippet: lines[pos.Line-1],
+				Snippet: snippetSb.String(),
 			})
 			return len(matches) < limit
 		})
