@@ -689,6 +689,7 @@ const maxMutationReminders = 2
 
 var inspectionToolNames = map[string]struct{}{
 	"read_file":       {},
+	"read_outline":    {},
 	"list_dir":        {},
 	"glob":            {},
 	"grep":            {},
@@ -1002,7 +1003,7 @@ func buildVerificationReminder(issues string, attempt, max int) string {
 
 func buildInspectionReminder(attempt, max int) string {
 	return fmt.Sprintf(
-		"<system-reminder>\nThis task appears to require code changes. Inspect the current code before mutating files: make a read/search tool call first (for example read_file, grep, glob, search_symbols, or git_diff), then continue with edits.\nDo not produce your final <result> yet.\nThis is reminder %d of %d.\n</system-reminder>",
+		"<system-reminder>\nThis task appears to require code changes. Inspect the current code before mutating files: make a read/search tool call first (for example read_outline, read_file, grep, glob, search_symbols, or git_diff), then continue with edits.\nDo not produce your final <result> yet.\nThis is reminder %d of %d.\n</system-reminder>",
 		attempt,
 		max,
 	)

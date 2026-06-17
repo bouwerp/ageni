@@ -64,6 +64,7 @@ func loadMemoryRegistry() *memory.Registry {
 
 func registerWorkerBase(r *tools.Registry, todo *tools.TodoWrite, tr *tools.ChangeTracker, skillReg *skills.Registry, memReg *memory.Registry, mcpTools []tools.Tool, secretStore *secrets.Store) {
 	r.Register(secrets.NewGuardedReadFile(tools.NewReadFileCache()))
+	r.Register(tools.ReadOutline{})
 	r.Register(tools.WriteFile{Tracker: tr})
 	r.Register(tools.EditFile{Tracker: tr})
 	r.Register(tools.MultiEdit{Tracker: tr})

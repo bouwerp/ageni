@@ -40,6 +40,7 @@ var toolAliases = map[string]string{
 	"ls":          "list_dir",
 	"dir":         "list_dir",
 	"list":        "list_dir",
+	"outline":     "read_outline",
 }
 
 // Tool is a typed unit of work the model can invoke.
