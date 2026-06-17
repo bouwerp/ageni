@@ -1325,7 +1325,7 @@ Examples:
 @call:grep{"pattern":"func NewOpenAI","path":"/home/code/repos/ageni"}
 
 - To read a file:
-@call:read_file{"AbsolutePath":"/home/code/repos/ageni/main.go","StartLine":1,"EndLine":50}
+@call:read_file{"path":"/home/code/repos/ageni/main.go","offset":1,"limit":50}
 </tool_calling_format>`
 	}
 

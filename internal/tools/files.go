@@ -134,6 +134,8 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	}
 	if p.Limit <= 0 {
 		p.Limit = 500
+	} else if p.Limit > 500 {
+		p.Limit = 500
 	}
 
 	scanner := bufio.NewScanner(f)
@@ -157,10 +159,10 @@ func (r ReadFile) Call(ctx context.Context, args json.RawMessage) (string, error
 	if err := scanner.Err(); err != nil {
 		return "", err
 	}
-	header := fmt.Sprintf("[%s lines %d-%d of %d]\n", p.Path, p.Offset, p.Offset+emitted-1, totalLines)
 	if emitted == 0 {
-		header = fmt.Sprintf("[%s: offset %d is past end of file (%d lines total)]\n", p.Path, p.Offset, totalLines)
+		return "", fmt.Errorf("offset %d is past end of file (%d lines total)", p.Offset, totalLines)
 	}
+	header := fmt.Sprintf("[%s lines %d-%d of %d]\n", p.Path, p.Offset, p.Offset+emitted-1, totalLines)
 	content := sb.String()
 	if stub, ok := r.cachedReadStub(p.Path, p.Offset, p.Limit, emitted, totalLines, content); ok {
 		return stub, nil
