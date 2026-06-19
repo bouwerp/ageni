@@ -233,6 +233,7 @@ func (s *Store) loadFromEnv() {
 		"OPENCODE_API_KEY",
 		"CEREBRAS_API_KEY",
 		"DEEPSEEK_API_KEY",
+		"ZAI_API_KEY",
 		"XAI_API_KEY",
 		"MOONSHOT_API_KEY",
 		"HUGGINGFACE_API_KEY",

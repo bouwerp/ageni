@@ -347,6 +347,22 @@ var providers = []ProviderSpec{
 		KnownLimits:           "Trial credits on signup, then pay-as-you-go.",
 	},
 	{
+		Name:         "zai",
+		Label:        "z.AI",
+		Description:  "z.AI PaaS coding models.",
+		Kind:         KindOpenAICompat,
+		BaseURL:      "https://api.z.ai/api/coding/paas/v4",
+		APIKeyEnv:    "ZAI_API_KEY",
+		NeedsKey:     true,
+		Free:         false,
+		DefaultModel: "zai-glm-4.7",
+		RecommendedModels: []ModelSuggestion{
+			{ID: "zai-glm-4.7", Label: "Z.ai GLM 4.7 355B (preview)"},
+		},
+		SuggestedMaxSubagents: 4,
+		KnownLimits:           "Depends on z.AI PaaS quota.",
+	},
+	{
 		Name:                  "custom",
 		Label:                 "Custom OpenAI-compatible endpoint",
 		Description:           "Point at any OpenAI-compatible server (OpenCode local proxy, internal gateways, self-hosted boxes).",

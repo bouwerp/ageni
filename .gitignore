@@ -4,3 +4,6 @@ dist/
 *.test
 *.out
 .DS_Store
+
+# Aiman: generated session scaffolding (do not commit)
+.aiman_*

@@ -8,7 +8,7 @@ Works against any OpenAI- or Anthropic-compatible hosted endpoint.
 
 - **One master, many sub-agents.** The user only talks to the master. The master decomposes work, spawns sub-agents with focused tasks, and intervenes when they go off-track.
 - **Live monitoring, not polling.** Sub-agents push events as they run. The master sees those events in its own context and can inspect, message, or kill any sub-agent at any time.
-- **Provider-agnostic.** Master and sub-agents each pick from a catalog of providers (Anthropic, OpenAI, OpenRouter, Groq, HuggingFace, Cerebras, Mistral, DeepSeek, Gemini, local Ollama / llama.cpp / vLLM, Ollama Cloud, or any custom OpenAI-compatible endpoint). Mix and match — e.g. Anthropic Opus master + free Groq Llama sub-agents.
+- **Provider-agnostic.** Master and sub-agents each pick from a catalog of providers (Anthropic, OpenAI, OpenRouter, Groq, HuggingFace, Cerebras, Mistral, DeepSeek, Gemini, z.AI, local Ollama / llama.cpp / vLLM, Ollama Cloud, or any custom OpenAI-compatible endpoint). Mix and match — e.g. Anthropic Opus master + free Groq Llama sub-agents.
 - **Distributable.** Single static binary, cross-compiled for Linux/macOS/Windows. No runtime dependencies.
 - **Day-to-day usable.** Real TUI, streaming output, persistent session log, sensible defaults.
 
@@ -313,7 +313,8 @@ Built-in presets — pick any of these in the wizard, or set `MASTER_PROVIDER` /
 | `llamacpp` | local |  | Local: `llama-server` on :8080. |
 | `vllm` | local |  | Self-hosted vLLM on :8000. |
 | `ollama-cloud` | trial |  | Hosted Ollama Turbo. |
-| `custom` | — |  | Any OpenAI-compatible endpoint (OpenCode local proxy, internal gateways, etc.). |
+| `zai` |  |  | z.AI PaaS coding models. |
+| `custom` |  |  | Arbitrary OpenAI-compatible endpoints. |
 
 The wizard shows free-tier markers, suggests free defaults, and reduces the concurrent-sub-agent cap when you pick a strict free tier (Groq → 2, HF → 2).
 
