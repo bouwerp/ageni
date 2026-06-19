@@ -26,7 +26,7 @@ import (
 // "couldn't reach provider" so the user knows verification was
 // inconclusive rather than a wrong key.
 func VerifyKey(ctx context.Context, spec ProviderSpec, apiKey string) error {
-	if spec.Name == "custom" {
+	if spec.Name == "custom" || spec.Name == "zai" {
 		return nil
 	}
 	timeout := 5 * time.Second

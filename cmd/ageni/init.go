@@ -251,7 +251,7 @@ func selectModel(role string, spec *llm.ProviderSpec, apiKey string, current *st
 	// Skips llamacpp/vllm/custom (heuristic: we don't trust their /models),
 	// and Anthropic (special-cased to curated since SDK doesn't expose it).
 	switch spec.Name {
-	case "llamacpp", "vllm", "custom", "anthropic", "ollama":
+	case "llamacpp", "vllm", "custom", "anthropic", "ollama", "zai":
 		// skip
 	default:
 		fmt.Printf("Fetching %s model catalogue...\n", spec.Label)

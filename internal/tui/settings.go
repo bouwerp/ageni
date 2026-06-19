@@ -632,7 +632,7 @@ func stringSlicesEqual(a, b []string) bool {
 
 func shouldFetchLive(name string) bool {
 	switch name {
-	case "anthropic", "ollama", "llamacpp", "vllm", "custom":
+	case "anthropic", "ollama", "llamacpp", "vllm", "custom", "zai":
 		return false
 	}
 	return true
