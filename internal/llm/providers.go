@@ -355,10 +355,10 @@ var providers = []ProviderSpec{
 		APIKeyEnv:    "ZAI_API_KEY",
 		NeedsKey:     true,
 		Free:         false,
-		DefaultModel: "zai-glm-5.2",
+		DefaultModel: "glm-5.2",
 		RecommendedModels: []ModelSuggestion{
-			{ID: "zai-glm-5.2", Label: "Z.ai GLM 5.2"},
-			{ID: "zai-glm-4.7", Label: "Z.ai GLM 4.7 355B"},
+			{ID: "glm-5.2", Label: "Z.ai GLM 5.2"},
+			{ID: "glm-4.7", Label: "Z.ai GLM 4.7 355B"},
 		},
 		SuggestedMaxSubagents: 4,
 		KnownLimits:           "Depends on z.AI PaaS quota.",

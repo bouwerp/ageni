@@ -30,6 +30,9 @@ func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
 	}
 	if baseURL != "" {
 		opts = append(opts, option.WithBaseURL(baseURL))
+		if strings.Contains(baseURL, "api.z.ai") {
+			opts = append(opts, option.WithHeader("User-Agent", "Cursor/0.45.11"))
+		}
 	}
 	return &OpenAIAdapter{
 		client:  openai.NewClient(opts...),
