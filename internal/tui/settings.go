@@ -397,7 +397,7 @@ func (s *settingsState) save() error {
 		}
 		key := ""
 		if ptr := s.keyPtrs[name]; ptr != nil {
-			key = *ptr
+			key = strings.TrimSpace(*ptr)
 		}
 		if spec.NeedsKey && key == "" {
 			// Maybe the user has it in a separate env var; fall back to that.

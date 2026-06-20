@@ -181,8 +181,13 @@ func (o *OpenAIAdapter) buildParams(req Request) openai.ChatCompletionNewParams 
 	isCerebras := strings.Contains(o.baseURL, "cerebras.ai")
 	isLlama := o.provider == "llamacpp" || o.provider == "llamacpp-fleet"
 
+	modelName := req.Model
+	if o.provider == "zai" && strings.HasPrefix(modelName, "zai-") {
+		modelName = strings.TrimPrefix(modelName, "zai-")
+	}
+
 	params := openai.ChatCompletionNewParams{
-		Model: req.Model,
+		Model: modelName,
 	}
 	if isLlama {
 		extra := map[string]any{

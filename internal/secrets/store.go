@@ -136,6 +136,7 @@ func (s *Store) Get(alias string) (string, error) {
 // Set stores a secret under the given alias in both the in-memory enclave
 // and the persistent keyring. The value bytes are zeroed after sealing.
 func (s *Store) Set(alias, value string) error {
+	value = strings.TrimSpace(value)
 	b := []byte(value)
 	enc := memguard.NewEnclave(b)
 	memguard.WipeBytes(b)
