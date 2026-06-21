@@ -2,9 +2,13 @@ package llm
 
 import (
 	"context"
+	"crypto/hmac"
+	"crypto/sha256"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/openai/openai-go"
 	"github.com/openai/openai-go/option"
@@ -21,6 +25,7 @@ type OpenAIAdapter struct {
 	client   openai.Client
 	provider string
 	baseURL  string
+	apiKey   string
 }
 
 func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
@@ -37,6 +42,7 @@ func NewOpenAIAdapter(apiKey, baseURL string) *OpenAIAdapter {
 	return &OpenAIAdapter{
 		client:  openai.NewClient(opts...),
 		baseURL: baseURL,
+		apiKey:  apiKey,
 	}
 }
 
@@ -51,7 +57,13 @@ func (o *OpenAIAdapter) Provider() string {
 
 func (o *OpenAIAdapter) Stream(ctx context.Context, req Request) (<-chan StreamEvent, error) {
 	params := o.buildParams(req)
-	stream := o.client.Chat.Completions.NewStreaming(ctx, params)
+
+	var streamOpts []option.RequestOption
+	if o.provider == "zai" {
+		streamOpts = append(streamOpts, option.WithHeader("Authorization", "Bearer "+generateZhipuJWT(o.apiKey)))
+	}
+
+	stream := o.client.Chat.Completions.NewStreaming(ctx, params, streamOpts...)
 	out := make(chan StreamEvent, 16)
 
 	go func() {
@@ -551,3 +563,29 @@ func messageToOpenAI(m Message) openai.ChatCompletionMessageParamUnion {
 	}
 	return openai.UserMessage(SanitizeText(m.Text))
 }
+
+func generateZhipuJWT(apikey string) string {
+	parts := strings.Split(apikey, ".")
+	if len(parts) != 2 {
+		return apikey
+	}
+	id, secret := parts[0], parts[1]
+
+	now := time.Now().UnixMilli()
+	exp := now + 3600*1000
+
+	header := `{"alg":"HS256","sign_type":"SIGN"}`
+	payload := fmt.Sprintf(`{"api_key":"%s","exp":%d,"timestamp":%d}`, id, exp, now)
+
+	encodedHeader := base64.RawURLEncoding.EncodeToString([]byte(header))
+	encodedPayload := base64.RawURLEncoding.EncodeToString([]byte(payload))
+
+	unsignedToken := encodedHeader + "." + encodedPayload
+
+	mac := hmac.New(sha256.New, []byte(secret))
+	mac.Write([]byte(unsignedToken))
+	signature := base64.RawURLEncoding.EncodeToString(mac.Sum(nil))
+
+	return unsignedToken + "." + signature
+}
+
