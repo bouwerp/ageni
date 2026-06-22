@@ -610,7 +610,7 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 				a.refreshSide()
 			}
 			return a, nil
-		case a.showMorePopup != "" && (msg.Type == tea.KeyEnter || msg.String() == " "):
+		case a.showMorePopup != "" && msg.Type == tea.KeyEnter:
 			// Confirm: keep current viewSub (already set during navigation).
 			// For todos, viewSub was never changed, so just close the popover.
 			a.showMorePopup = ""
@@ -649,13 +649,13 @@ func (a *App) updateChat(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return a, nil
 
 		// ── open popover ─────────────────────────────────────────────────────
-		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
+		case msg.Type == tea.KeyEnter &&
 			(a.viewSub == sentinelMoreShells || a.viewSub == sentinelMoreSubs ||
 				a.viewSub == sentinelMoreTodos || a.viewSub == sentinelOlderTodos):
 			a.openMorePopover()
 			return a, nil
 
-		case (msg.Type == tea.KeyEnter || msg.String() == " ") &&
+		case msg.Type == tea.KeyEnter &&
 			strings.HasPrefix(a.viewSub, sentinelTodoPrefix):
 			a.openTodoDetail(a.viewSub)
 			return a, nil
@@ -1450,9 +1450,8 @@ func (a *App) cycleView(dir int) {
 
 	if a.viewSub != prevSub {
 		a.refreshChatForce()
-	} else {
-		a.refreshSide()
 	}
+	a.refreshSide()
 }
 
 // sidebarCycleList returns the ordered list of IDs that Tab can cycle through,
